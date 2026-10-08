@@ -134,3 +134,38 @@ func TestPublicEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestPrincipalSearch(t *testing.T) {
+	roles := &roleprovider.Mock{
+		Groups: []roleprovider.Group{{Token: "group:wwi23seb", Description: "Kurs WWI23SEB"}, {Token: "group:it", Label: "IT-Service"}},
+		Users:  []string{"student@dhbw.de", "dozent@dhbw.de"},
+	}
+	svc, err := access.NewService(access.NewMemoryStore(), roles, access.Config{
+		Tiers: []string{"staff"}, BootstrapAdmins: []string{"admin@dhbw.de"}, BootstrapAdminTier: "staff",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{DevMode: true, Access: svc, RoleProvider: roles, Log: zap.NewNop().Sugar()}).Router()
+
+	var got PrincipalSearchResponse
+	code, body := do(t, h, "GET", "/v1/principals/search?q=kurs", "admin@dhbw.de", nil)
+	_ = json.Unmarshal(body, &got)
+	if code != 200 || len(got.Groups) != 1 || got.Groups[0].Description != "Kurs WWI23SEB" || len(got.Users) != 0 {
+		t.Fatalf("description match: %d %s", code, body)
+	}
+	code, body = do(t, h, "GET", "/v1/principals/search?q=student", "admin@dhbw.de", nil)
+	_ = json.Unmarshal(body, &got)
+	if code != 200 || len(got.Users) != 1 || got.Users[0] != "student@dhbw.de" {
+		t.Fatalf("user match: %d %s", code, body)
+	}
+	// Without a query: groups yes, people never.
+	code, body = do(t, h, "GET", "/v1/principals/search", "admin@dhbw.de", nil)
+	_ = json.Unmarshal(body, &got)
+	if code != 200 || len(got.Groups) != 2 || len(got.Users) != 0 {
+		t.Fatalf("empty query: %d %s", code, body)
+	}
+	if code, _ := do(t, h, "GET", "/v1/principals/search?q=x", "student@dhbw.de", nil); code != 403 {
+		t.Fatalf("non-admin: %d", code)
+	}
+}

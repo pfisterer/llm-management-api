@@ -16,8 +16,10 @@ import (
 
 // Group is one search hit for the access-list editor.
 type Group struct {
-	Token       string `json:"token"`
-	DisplayName string `json:"display_name,omitempty"`
+	Token string `json:"token"`
+	// Display name, left out when it only repeats the group ID (imported groups).
+	Label       string `json:"label,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // Provider is what the rest of the service needs from the role-provider.
@@ -27,6 +29,9 @@ type Provider interface {
 	// rights, never more.
 	UserTokens(ctx context.Context, email string) []string
 	SearchGroups(ctx context.Context, query string, limit int) ([]Group, error)
+	// SearchUsers matches the email address only — the role-provider stores
+	// no names, so people cannot be looked up by name.
+	SearchUsers(ctx context.Context, query string, limit int) ([]string, error)
 }
 
 // ---------------------------------------------------------------- http
@@ -79,12 +84,28 @@ func (h *HTTP) SearchGroups(ctx context.Context, query string, limit int) ([]Gro
 			continue
 		}
 		hit := Group{Token: *g.Token}
-		if g.DisplayName != nil {
-			hit.DisplayName = *g.DisplayName
+		// Imported groups get display_name = ID; dropped so the UI does not
+		// print the token twice (same as openstack-management-api).
+		if g.DisplayName != nil && *g.DisplayName != strings.TrimPrefix(*g.Token, "group:") {
+			hit.Label = *g.DisplayName
+		}
+		if g.Description != nil {
+			hit.Description = *g.Description
 		}
 		out = append(out, hit)
 	}
 	return out, nil
+}
+
+func (h *HTTP) SearchUsers(ctx context.Context, query string, limit int) ([]string, error) {
+	resp, err := h.client.SearchUsersWithResponse(ctx, &roleclient.SearchUsersParams{Q: &query, Limit: &limit})
+	if err != nil {
+		return nil, fmt.Errorf("role-provider user search: %w", err)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("role-provider user search: status %d", resp.StatusCode())
+	}
+	return *resp.JSON200, nil
 }
 
 // withUserToken makes sure the person's own token is present, whatever the
@@ -105,6 +126,7 @@ func withUserToken(tokens []string, email string) []string {
 type Mock struct {
 	Memberships map[string][]string // email -> group tokens
 	Groups      []Group
+	Users       []string
 }
 
 func (m *Mock) UserTokens(_ context.Context, email string) []string {
@@ -115,8 +137,22 @@ func (m *Mock) UserTokens(_ context.Context, email string) []string {
 func (m *Mock) SearchGroups(_ context.Context, query string, limit int) ([]Group, error) {
 	var out []Group
 	for _, g := range m.Groups {
-		if strings.Contains(g.Token, strings.ToLower(query)) || strings.Contains(strings.ToLower(g.DisplayName), strings.ToLower(query)) {
+		q := strings.ToLower(query)
+		if strings.Contains(g.Token, q) || strings.Contains(strings.ToLower(g.Label), q) || strings.Contains(strings.ToLower(g.Description), q) {
 			out = append(out, g)
+		}
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (m *Mock) SearchUsers(_ context.Context, query string, limit int) ([]string, error) {
+	var out []string
+	for _, u := range m.Users {
+		if strings.Contains(u, strings.ToLower(query)) {
+			out = append(out, u)
 		}
 		if limit > 0 && len(out) >= limit {
 			break

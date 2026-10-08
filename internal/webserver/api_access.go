@@ -174,31 +174,59 @@ func (s *Server) listTiers(c *gin.Context) {
 	c.JSON(http.StatusOK, tiers)
 }
 
-// searchGroups godoc
+// PrincipalSearchResponse is everything a rule's token may name: groups with
+// their labels, and bare email addresses for individual people. Same shape as
+// openstack-management-api's, so the UI uses one autocomplete for both.
+type PrincipalSearchResponse struct {
+	Groups []roleprovider.Group `json:"groups"`
+	Users  []string             `json:"users"`
+}
+
+// searchPrincipals godoc
 //
-//	@ID			searchGroups
-//	@Summary		Search role-provider groups
-//	@Description	For the access-rule editor: find group tokens by id or name.
+//	@ID			searchPrincipals
+//	@Summary		Search groups and users
+//	@Description	For the access-rule editor. Groups match on ID, display name or description; users on their EMAIL ADDRESS ONLY and only once q is non-empty — the directory is not browsable by person or name.
 //	@Tags			access
 //	@Produce		json
 //	@Security		BearerAuth
-//	@Param			q	query	string	true	"Search text (min. 2 characters)"
-//	@Success		200	{array}		roleprovider.Group
-//	@Failure		502	{object}	ErrorResponse
-//	@Router			/v1/groups [get]
-func (s *Server) searchGroups(c *gin.Context) {
+//	@Param			q		query		string	false	"Search text"
+//	@Param			limit	query		int		false	"Maximum entries per kind (default 10, at most 50)"
+//	@Success		200		{object}	PrincipalSearchResponse
+//	@Failure		502		{object}	ErrorResponse
+//	@Router			/v1/principals/search [get]
+func (s *Server) searchPrincipals(c *gin.Context) {
 	q := strings.TrimSpace(c.Query("q"))
-	if len([]rune(q)) < 2 {
-		c.JSON(http.StatusOK, []roleprovider.Group{})
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if err != nil || limit < 1 {
+		limit = 10
+	}
+	limit = min(limit, 50)
+	ctx := c.Request.Context()
+
+	resp := PrincipalSearchResponse{Groups: []roleprovider.Group{}, Users: []string{}}
+	groups, gErr := s.roles.SearchGroups(ctx, q, limit)
+	if gErr != nil {
+		s.log.Warnw("group search failed", "error", gErr)
+	} else if groups != nil {
+		resp.Groups = groups
+	}
+	var uErr error
+	if q != "" {
+		var users []string
+		if users, uErr = s.roles.SearchUsers(ctx, q, limit); uErr != nil {
+			s.log.Warnw("user search failed", "error", uErr)
+		} else if users != nil {
+			resp.Users = users
+		}
+	}
+	// Only when nothing could be asked: an empty answer would read as "no
+	// match" while the directory is in fact down.
+	if gErr != nil && (q == "" || uErr != nil) {
+		abort(c, http.StatusBadGateway, "role_provider", "Verzeichnis gerade nicht erreichbar.")
 		return
 	}
-	groups, err := s.roles.SearchGroups(c.Request.Context(), q, 25)
-	if err != nil {
-		s.log.Warnw("group search failed", "error", err)
-		abort(c, http.StatusBadGateway, "role_provider", "Gruppensuche gerade nicht verfügbar.")
-		return
-	}
-	c.JSON(http.StatusOK, groups)
+	c.JSON(http.StatusOK, resp)
 }
 
 func ruleID(c *gin.Context) (uint, bool) {

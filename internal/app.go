@@ -204,11 +204,12 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 				"it@dhbw.de":      {"group:mitarbeitende", "group:it-service"},
 			},
 			Groups: []roleprovider.Group{
-				{Token: "group:studierende", DisplayName: "Studierende"},
-				{Token: "group:mitarbeitende", DisplayName: "Mitarbeitende"},
-				{Token: "group:wwi23seb", DisplayName: "WWI23SEB"},
-				{Token: "group:it-service", DisplayName: "IT-Service"},
+				{Token: "group:studierende", Label: "Studierende"},
+				{Token: "group:mitarbeitende", Label: "Mitarbeitende"},
+				{Token: "group:wwi23seb", Description: "Kurs Wirtschaftsinformatik 2023, Software Engineering B"},
+				{Token: "group:it-service", Label: "IT-Service"},
 			},
+			Users: []string{"student@dhbw.de", "dozent@dhbw.de", "it@dhbw.de"},
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported ROLE_PROVIDER_TYPE %q", cfg.RoleProviderType)

@@ -104,7 +104,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.PUT("/access-rules/:id", s.updateRule)
 	admin.DELETE("/access-rules/:id", s.deleteRule)
 	admin.GET("/tiers", s.listTiers)
-	admin.GET("/groups", s.searchGroups)
+	admin.GET("/principals/search", s.searchPrincipals)
 	return r
 }
 
