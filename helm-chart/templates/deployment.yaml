@@ -83,6 +83,8 @@ spec:
             - {name: BOOTSTRAP_ADMIN_TIER, value: {{ .Values.config.bootstrapAdminTier | quote }}}
             - {name: TIERS, value: {{ required "config.tiers is required" .Values.config.tiers | toJson | quote }}}
             - {name: CHAT_URL, value: {{ .Values.config.chatUrl | quote }}}
+            - {name: API_URL, value: {{ .Values.config.apiUrl | quote }}}
+            - {name: ADMIN_UI_URL, value: {{ .Values.config.adminUiUrl | quote }}}
             - {name: LITELLM_URL, value: {{ required "config.litellmUrl is required" .Values.config.litellmUrl | quote }}}
             - name: LITELLM_MASTER_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}

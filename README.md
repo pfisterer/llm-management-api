@@ -65,6 +65,8 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `BOOTSTRAP_ADMINS`, `BOOTSTRAP_ADMIN_TIER` | always-admins and their tier |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
 | `CHAT_URL` | link to the chat, returned by `/v1/me` |
+| `API_URL` | public OpenAI-compatible base URL (`…/v1`), returned by `/v1/me` |
+| `ADMIN_UI_URL` | LiteLLM admin UI autologin link, returned by `/v1/me` to admins only |
 | `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
 | `MAX_KEYS_PER_USER` | own keys per person, default 5 |
 | `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the llm-aas inventory as JSON |

@@ -20,6 +20,9 @@ type MeResponse struct {
 	Tier         string      `json:"tier,omitempty" example:"staff"`
 	MatchedToken string      `json:"matched_token,omitempty" example:"group:mitarbeitende"`
 	ChatURL      string      `json:"chat_url,omitempty" example:"https://chat.llm.services.dhbw.cloud"`
+	APIURL       string      `json:"api_url,omitempty" example:"https://api.llm.services.dhbw.cloud/v1"`
+	// Only for admins: autologin link to the LiteLLM admin UI.
+	AdminUIURL string `json:"admin_ui_url,omitempty" example:"https://admin.llm.services.dhbw.cloud/autologin"`
 }
 
 // getMe godoc
@@ -40,6 +43,10 @@ func (s *Server) getMe(c *gin.Context) {
 		resp.Tier = cl.Decision.Tier
 		resp.MatchedToken = cl.Decision.MatchedToken
 		resp.ChatURL = s.chatURL
+		resp.APIURL = s.apiURL
+		if cl.Decision.Role.AtLeast(access.RoleAdmin) {
+			resp.AdminUIURL = s.adminUI
+		}
 	}
 	c.JSON(http.StatusOK, resp)
 }

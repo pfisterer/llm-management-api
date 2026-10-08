@@ -145,6 +145,8 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Version:      strings.TrimSpace(generated_docs.Version),
 		SwaggerJSON:  generated_docs.SwaggerJSON,
 		ChatURL:      cfg.ChatURL,
+		APIURL:       cfg.APIURL,
+		AdminUIURL:   cfg.AdminUIURL,
 		Verifier:     verifier,
 		Access:       accessSvc,
 		Keys:         keySvc,

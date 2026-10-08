@@ -46,6 +46,10 @@ type Config struct {
 	TokenCacheTTL      time.Duration
 
 	ChatURL string
+	// Public OpenAI-compatible base URL (…/v1), shown to users.
+	APIURL string
+	// LiteLLM admin UI (autologin link), shown to admins only.
+	AdminUIURL string
 
 	LiteLLMURL string
 
@@ -80,6 +84,8 @@ func LoadConfig() (Config, error) {
 		BootstrapAdminTier:  envconf.String("BOOTSTRAP_ADMIN_TIER", ""),
 		TokenCacheTTL:       time.Duration(envconf.Int("TOKEN_CACHE_SECONDS", 60)) * time.Second,
 		ChatURL:             envconf.String("CHAT_URL", ""),
+		APIURL:              envconf.String("API_URL", ""),
+		AdminUIURL:          envconf.String("ADMIN_UI_URL", ""),
 		LiteLLMURL:          envconf.String("LITELLM_URL", ""),
 		LiteLLMMasterKey:    envconf.String("LITELLM_MASTER_KEY", ""),
 		MaxKeysPerUser:      envconf.Int("MAX_KEYS_PER_USER", 5),

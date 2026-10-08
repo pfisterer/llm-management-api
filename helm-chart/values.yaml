@@ -32,6 +32,10 @@ config:
   # Quota tiers as in the llm-aas inventory (keyBroker.tiers).
   tiers: []
   chatUrl: ""
+  # Public OpenAI-compatible base URL (…/v1), shown to users.
+  apiUrl: ""
+  # LiteLLM admin UI autologin link, shown to admins only.
+  adminUiUrl: ""
   # LiteLLM management API (the "backend" service, not the gateway).
   litellmUrl: ""
   maxKeysPerUser: 5

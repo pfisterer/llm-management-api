@@ -27,6 +27,8 @@ type Options struct {
 	Version      string
 	SwaggerJSON  string
 	ChatURL      string
+	APIURL       string
+	AdminUIURL   string
 	Verifier     TokenVerifier // nil only in development mode
 	Access       *access.Service
 	Keys         *keys.Service
@@ -43,6 +45,8 @@ type Server struct {
 	version  string
 	swagger  string
 	chatURL  string
+	apiURL   string
+	adminUI  string
 	verifier TokenVerifier
 	access   *access.Service
 	keys     *keys.Service
@@ -55,7 +59,7 @@ type Server struct {
 }
 
 func New(o Options) *Server {
-	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL,
+	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers,
 		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, log: o.Log}
 }
