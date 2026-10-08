@@ -97,10 +97,12 @@ func caller(c *gin.Context) Caller {
 
 // ErrorResponse is the body of every error answer.
 type ErrorResponse struct {
-	Error   string `json:"error" example:"forbidden"`
-	Message string `json:"message" example:"Keine Berechtigung für diese Funktion."`
+	// Readable text, in the field the self-service-ui reads (as with the other DHBW Cloud APIs).
+	Error string `json:"error" example:"Keine Berechtigung für diese Funktion."`
+	// Stable machine-readable reason.
+	Code string `json:"code" example:"forbidden"`
 }
 
 func abort(c *gin.Context, status int, code, msg string) {
-	c.AbortWithStatusJSON(status, ErrorResponse{Error: code, Message: msg})
+	c.AbortWithStatusJSON(status, ErrorResponse{Error: msg, Code: code})
 }
