@@ -10,6 +10,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"go.uber.org/zap"
@@ -30,6 +31,9 @@ type Options struct {
 	Access       *access.Service
 	Keys         *keys.Service
 	Tiers        map[string]keys.Tier
+	Fleet        *fleet.Service
+	Health       fleet.HealthSource
+	Material     fleet.Material
 	RoleProvider roleprovider.Provider
 	Log          *zap.SugaredLogger
 }
@@ -43,13 +47,17 @@ type Server struct {
 	access   *access.Service
 	keys     *keys.Service
 	tiers    map[string]keys.Tier
+	fleet    *fleet.Service
+	health   fleet.HealthSource
+	material fleet.Material
 	roles    roleprovider.Provider
 	log      *zap.SugaredLogger
 }
 
 func New(o Options) *Server {
 	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL,
-		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers, roles: o.RoleProvider, log: o.Log}
+		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers,
+		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, log: o.Log}
 }
 
 // Router builds the gin engine with all routes.
@@ -72,6 +80,19 @@ func (s *Server) Router() *gin.Engine {
 	user.GET("/keys", s.listKeys)
 	user.POST("/keys", s.createKey)
 	user.DELETE("/keys/:id", s.deleteKey)
+
+	if s.fleet != nil {
+		fa := v1.Group("/fleet", require(access.RoleFleetAdmin))
+		fa.GET("", s.getFleet)
+		fa.GET("/inventory.csv", s.getFleetCSV)
+		fa.GET("/profile", s.getFleetProfile)
+		fa.GET("/package", s.getFleetPackage)
+		fa.DELETE("/package", require(access.RoleAdmin), s.deleteFleetPackage)
+		fa.GET("/readme", s.getFleetReadme)
+		fa.POST("/:serial/block", s.blockMachine)
+		fa.POST("/:serial/unblock", s.unblockMachine)
+		fa.DELETE("/:serial", s.forgetMachine)
+	}
 
 	admin := v1.Group("", require(access.RoleAdmin))
 	admin.GET("/access-rules", s.listRules)

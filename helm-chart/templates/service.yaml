@@ -9,3 +9,4 @@ spec:
     {{- include "llm-mgmt.selectorLabels" . | nindent 4 }}
   ports:
     - {name: http, port: 8086, targetPort: http}
+    - {name: machine, port: 8087, targetPort: machine}

@@ -32,9 +32,24 @@ The bearer token is the ID token the self-service BFF (oauth2-proxy) forwards: i
 | `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | user |
 | `GET/POST /v1/access-rules`, `PUT/DELETE /v1/access-rules/{id}` | admin |
 | `GET /v1/tiers`, `GET /v1/groups?q=` | admin |
+| `GET /v1/fleet`, `/v1/fleet/inventory.csv`, `/v1/fleet/profile`, `/v1/fleet/package`, `/v1/fleet/readme`, `POST /v1/fleet/{serial}/block\|unblock`, `DELETE /v1/fleet/{serial}` | fleet-admin |
+| `DELETE /v1/fleet/package` | admin |
 | `GET /health`, `GET /config.json`, `GET /swagger.json` | public |
 
-Fleet endpoints follow (see the plan). Keys: the LiteLLM user id is `kc-<sub>` (as before), names are required and unique per person (stored with an owner tag, since LiteLLM aliases are global), at most `MAX_KEYS_PER_USER` own keys (the chat key does not count), and quotas are only written on creation or tier change.
+Keys: the LiteLLM user id is `kc-<sub>` (as before), names are required and unique per person (stored with an owner tag, since LiteLLM aliases are global), at most `MAX_KEYS_PER_USER` own keys (the chat key does not count), and quotas are only written on creation or tier change.
+
+## Machine API (second listener, `MACHINE_BIND`, default `:8087`)
+
+For the machines, the WireGuard hub and the discovery job; reachable through the public enrolment host without Keycloak, so it is a separate listener that knows no person-facing route. Token authentication only:
+
+| Method and path | Token |
+|---|---|
+| `POST /enroll` | enrolment token (`fleet.enrollToken`) |
+| `GET /scripts/{name}` | enrolment token |
+| `GET /fleet/peers` (hub sync, carries the preshared keys) | admin token (`fleet.adminToken`) |
+| `GET /fleet/sites` (discovery) | admin token |
+
+The registry lives in Postgres (`fleet_peers`). One-off import of the Node broker's file: `llm-management-api import-peers /path/to/peers.json` (same environment as the service).
 
 ## Configuration
 
@@ -52,6 +67,8 @@ Fleet endpoints follow (see the plan). Keys: the LiteLLM user id is `kc-<sub>` (
 | `CHAT_URL` | link to the chat, returned by `/v1/me` |
 | `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
 | `MAX_KEYS_PER_USER` | own keys per person, default 5 |
+| `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the llm-aas inventory as JSON |
+| `FLEET_SCRIPTS_DIR`, `FLEET_PROFILE_TEMPLATE`, `FLEET_README`, `FLEET_PACKAGE_DIR` | fleet scripts, JAMF profile template, guide, uploaded package |
 
 ## Development
 

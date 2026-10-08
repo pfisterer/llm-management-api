@@ -1,0 +1,29 @@
+{{- if .Values.machineIngress.enabled }}
+# Enrolment host for the machines: token authentication only, no Keycloak.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "llm-mgmt.name" . }}-machine
+  labels:
+    {{- include "llm-mgmt.labels" . | nindent 4 }}
+  {{- with .Values.machineIngress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.machineIngress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "machineIngress.hostname is required" .Values.machineIngress.hostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "llm-mgmt.name" . }}
+                port: {name: machine}
+  tls:
+    - hosts: [{{ .Values.machineIngress.hostname }}]
+{{- end }}

@@ -12,6 +12,10 @@ secrets:
   dbConnectionString: ""
   roleProviderToken: ""
   litellmMasterKey: ""
+  # The `fleet` and `wireguard` blocks of the llm-aas inventory as JSON. Secret
+  # because they carry the enrolment and admin tokens.
+  fleetJson: ""
+  wireguardJson: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =
@@ -31,6 +35,21 @@ config:
   # LiteLLM management API (the "backend" service, not the gateway).
   litellmUrl: ""
   maxKeysPerUser: 5
+
+fleet:
+  # ConfigMap with the fleet scripts (dhbw-llm-*.sh), the JAMF profile template
+  # (de.dhbw.llm.mobileconfig.tmpl) and README-FLOTTE.md. Empty = no fleet files.
+  filesConfigMap: ""
+  # Volume for the JAMF package (build-bundle.sh --upload copies it here).
+  packageStorage: 2Gi
+
+# Machine API (enrolment, scripts, hub and discovery lists): its own port and
+# its own ingress, reachable without Keycloak — token authentication only.
+machineIngress:
+  enabled: false
+  className: ""
+  hostname: ""
+  annotations: {}
 
 ingress:
   enabled: false

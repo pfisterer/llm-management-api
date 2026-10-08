@@ -7,6 +7,9 @@ metadata:
     {{- include "llm-mgmt.labels" . | nindent 4 }}
   annotations:
     secret.reloader.stakater.com/reload: {{ $secret }}
+    {{- with .Values.fleet.filesConfigMap }}
+    configmap.reloader.stakater.com/reload: {{ . }}
+    {{- end }}
 spec:
   replicas: {{ .Values.replicas }}
   selector:
@@ -19,15 +22,26 @@ spec:
     spec:
       # Never talks to the Kubernetes API.
       automountServiceAccountToken: false
+      securityContext:
+        # The package volume is handed to root by local-path; the non-root
+        # process needs group write access to it.
+        fsGroup: 65532
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: packages
+          persistentVolumeClaim: {claimName: {{ include "llm-mgmt.name" . }}-packages}
+        {{- with .Values.fleet.filesConfigMap }}
+        - name: fleet-files
+          configMap: {name: {{ . }}}
+        {{- end }}
       containers:
         - name: api
           image: {{ .Values.image }}:{{ .Values.version | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           ports:
             - {name: http, containerPort: 8086}
+            - {name: machine, containerPort: 8087}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -46,6 +60,10 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            - {name: packages, mountPath: /var/lib/llm-mgmt/packages}
+            {{- if .Values.fleet.filesConfigMap }}
+            - {name: fleet-files, mountPath: /etc/llm-mgmt/fleet, readOnly: true}
+            {{- end }}
           env:
             - {name: API_MODE, value: production}
             - {name: API_BIND, value: ":8086"}
@@ -69,3 +87,14 @@ spec:
             - name: LITELLM_MASTER_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}
             - {name: MAX_KEYS_PER_USER, value: {{ .Values.config.maxKeysPerUser | quote }}}
+            - {name: MACHINE_BIND, value: ":8087"}
+            - name: FLEET
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: fleet-json}}
+            - name: WIREGUARD
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: wireguard-json}}
+            - {name: FLEET_PACKAGE_DIR, value: /var/lib/llm-mgmt/packages}
+            {{- if .Values.fleet.filesConfigMap }}
+            - {name: FLEET_SCRIPTS_DIR, value: /etc/llm-mgmt/fleet}
+            - {name: FLEET_PROFILE_TEMPLATE, value: /etc/llm-mgmt/fleet/de.dhbw.llm.mobileconfig.tmpl}
+            - {name: FLEET_README, value: /etc/llm-mgmt/fleet/README-FLOTTE.md}
+            {{- end }}

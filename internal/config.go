@@ -47,9 +47,13 @@ type Config struct {
 
 	ChatURL string
 
-	LiteLLMURL       string
-	LiteLLMMasterKey string
-	MaxKeysPerUser   int
+	LiteLLMURL string
+
+	FleetJSON, WireGuardJSON                        string
+	MachineBind                                     string
+	ScriptsDir, ProfileTemplate, PackageDir, Readme string
+	LiteLLMMasterKey                                string
+	MaxKeysPerUser                                  int
 }
 
 func LoadConfig() (Config, error) {
@@ -79,6 +83,13 @@ func LoadConfig() (Config, error) {
 		LiteLLMURL:          envconf.String("LITELLM_URL", ""),
 		LiteLLMMasterKey:    envconf.String("LITELLM_MASTER_KEY", ""),
 		MaxKeysPerUser:      envconf.Int("MAX_KEYS_PER_USER", 5),
+		FleetJSON:           envconf.String("FLEET", ""),
+		WireGuardJSON:       envconf.String("WIREGUARD", ""),
+		MachineBind:         envconf.String("MACHINE_BIND", ":8087"),
+		ScriptsDir:          envconf.String("FLEET_SCRIPTS_DIR", ""),
+		ProfileTemplate:     envconf.String("FLEET_PROFILE_TEMPLATE", ""),
+		PackageDir:          envconf.String("FLEET_PACKAGE_DIR", ""),
+		Readme:              envconf.String("FLEET_README", ""),
 	}
 	if raw := envconf.String("TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.Tiers); err != nil {

@@ -180,3 +180,24 @@ func mergeQuota(body map[string]any, q Quota) {
 		body["models"] = q.Models
 	}
 }
+
+// HealthEndpoint is one entry of LiteLLM's /health answer.
+type HealthEndpoint struct {
+	APIBase string `json:"api_base"`
+	Model   string `json:"model"`
+	Error   string `json:"error"`
+}
+
+// Health returns LiteLLM's cached background health check (cheap: with
+// background_health_checks the proxy answers from its cache and does NOT run
+// inference — that coupling is why this may be called per page view).
+func (c *Client) Health(ctx context.Context) (healthy, unhealthy []HealthEndpoint, err error) {
+	var r struct {
+		Healthy   []HealthEndpoint `json:"healthy_endpoints"`
+		Unhealthy []HealthEndpoint `json:"unhealthy_endpoints"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/health", nil, &r); err != nil {
+		return nil, nil, err
+	}
+	return r.Healthy, r.Unhealthy, nil
+}

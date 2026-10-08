@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "llm-mgmt.name" . }}-packages
+  labels:
+    {{- include "llm-mgmt.labels" . | nindent 4 }}
+  annotations:
+    # Survives uninstalling the chart: the package is uploaded by hand.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.fleet.packageStorage }}
