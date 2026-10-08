@@ -1,0 +1,11 @@
+vendor/
+*.exe
+.DS_Store
+tmp/
+.env
+node_modules/
+__*
+private-*
+internal/generated_docs/
+client-npm/
+*.tgz

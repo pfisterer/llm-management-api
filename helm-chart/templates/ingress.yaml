@@ -1,0 +1,29 @@
+{{- if .Values.ingress.enabled }}
+# No forward-auth in front: the API verifies the bearer token itself.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "llm-mgmt.name" . }}
+  labels:
+    {{- include "llm-mgmt.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.hostname is required" .Values.ingress.hostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "llm-mgmt.name" . }}
+                port: {name: http}
+  tls:
+    - hosts: [{{ .Values.ingress.hostname }}]
+{{- end }}

@@ -1,0 +1,67 @@
+{{- $secret := include "llm-mgmt.secretName" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-mgmt.name" . }}
+  labels:
+    {{- include "llm-mgmt.labels" . | nindent 4 }}
+  annotations:
+    secret.reloader.stakater.com/reload: {{ $secret }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "llm-mgmt.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-mgmt.selectorLabels" . | nindent 8 }}
+    spec:
+      # Never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: api
+          image: {{ .Values.image }}:{{ .Values.version | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - {name: http, containerPort: 8086}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          env:
+            - {name: API_MODE, value: production}
+            - {name: API_BIND, value: ":8086"}
+            - {name: OIDC_ISSUER_URL, value: {{ .Values.config.oidcIssuerUrl | quote }}}
+            - {name: OIDC_CLIENT_ID, value: {{ .Values.config.oidcClientId | quote }}}
+            - {name: OIDC_JWKS_URL, value: {{ .Values.config.oidcJwksUrl | quote }}}
+            - {name: ROLE_PROVIDER_TYPE, value: http}
+            - {name: ROLE_PROVIDER_URL, value: {{ required "config.roleProviderUrl is required" .Values.config.roleProviderUrl | quote }}}
+            - {name: ROLE_PROVIDER_TIMEOUT_SECONDS, value: {{ .Values.config.roleProviderTimeoutSeconds | quote }}}
+            - name: ROLE_PROVIDER_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: role-provider-token}}
+            - {name: DB_TYPE, value: postgres}
+            - name: DB_CONNECTION_STRING
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: db-connection-string}}
+            - {name: TOKEN_CACHE_SECONDS, value: {{ .Values.config.tokenCacheSeconds | quote }}}
+            - {name: BOOTSTRAP_ADMINS, value: {{ join "," .Values.config.bootstrapAdmins | quote }}}
+            - {name: BOOTSTRAP_ADMIN_TIER, value: {{ .Values.config.bootstrapAdminTier | quote }}}
+            - {name: TIERS, value: {{ required "config.tiers is required" .Values.config.tiers | toJson | quote }}}
+            - {name: CHAT_URL, value: {{ .Values.config.chatUrl | quote }}}

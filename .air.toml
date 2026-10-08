@@ -1,0 +1,10 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/build/llm-management-api"
+  cmd = "make all"
+  delay = 1000
+  exclude_dir = ["tmp", "vendor", "node_modules", "client-npm", "internal/generated_docs", "helm-chart"]
+  exclude_regex = ["_test.go", "client.gen.go"]
+  include_ext = ["go", "env"]

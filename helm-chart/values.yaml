@@ -1,0 +1,38 @@
+# Image; the tag defaults to the chart's appVersion, so a pinned chart pins the image.
+image: ghcr.io/pfisterer/llm-management-api
+version: ""
+imagePullPolicy: IfNotPresent
+replicas: 1
+
+# Secret with the keys db-connection-string and role-provider-token. Leave empty
+# to let this chart create one from `secrets` below.
+existingSecret: ""
+secrets:
+  dbConnectionString: ""
+  roleProviderToken: ""
+
+config:
+  # The ID token the self-service BFF forwards: issuer of the realm, audience =
+  # the BFF's client id.
+  oidcIssuerUrl: https://sso.dhbw.cloud/realms/dhbw-main
+  oidcClientId: dhbw-cloud-selfservice
+  oidcJwksUrl: ""
+  roleProviderUrl: ""
+  roleProviderTimeoutSeconds: 5
+  tokenCacheSeconds: 60
+  # Admins regardless of the stored access list (cannot be removed via the API).
+  bootstrapAdmins: []
+  bootstrapAdminTier: staff
+  # Quota tiers as in the llm-aas inventory (keyBroker.tiers).
+  tiers: []
+  chatUrl: ""
+
+ingress:
+  enabled: false
+  className: ""
+  hostname: ""
+  annotations: {}
+
+resources:
+  requests: {cpu: 20m, memory: 32Mi}
+  limits: {memory: 256Mi}
