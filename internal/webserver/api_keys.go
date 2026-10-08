@@ -42,7 +42,7 @@ func (s *Server) personAndTier(c *gin.Context) (keys.Person, keys.Tier, bool) {
 //	@Security		BearerAuth
 //	@Success		200	{object}	keys.Usage
 //	@Failure		403	{object}	ErrorResponse
-//	@Router			/usage [get]
+//	@Router			/v1/usage [get]
 func (s *Server) getUsage(c *gin.Context) {
 	p, t, ok := s.personAndTier(c)
 	if !ok {
@@ -65,7 +65,7 @@ func (s *Server) getUsage(c *gin.Context) {
 //	@Security	BearerAuth
 //	@Success	200	{array}		keys.KeyView
 //	@Failure	403	{object}	ErrorResponse
-//	@Router		/keys [get]
+//	@Router		/v1/keys [get]
 func (s *Server) listKeys(c *gin.Context) {
 	p, t, ok := s.personAndTier(c)
 	if !ok {
@@ -92,7 +92,7 @@ func (s *Server) listKeys(c *gin.Context) {
 //	@Success		201	{object}	CreateKeyResponse
 //	@Failure		400	{object}	ErrorResponse
 //	@Failure		409	{object}	ErrorResponse
-//	@Router			/keys [post]
+//	@Router			/v1/keys [post]
 func (s *Server) createKey(c *gin.Context) {
 	p, t, ok := s.personAndTier(c)
 	if !ok {
@@ -124,7 +124,7 @@ func (s *Server) createKey(c *gin.Context) {
 //	@Param		id	path	string	true	"Key id (from the key list, not the secret)"
 //	@Success	204
 //	@Failure	404	{object}	ErrorResponse
-//	@Router		/keys/{id} [delete]
+//	@Router		/v1/keys/{id} [delete]
 func (s *Server) deleteKey(c *gin.Context) {
 	cl := caller(c)
 	err := s.keys.Delete(c.Request.Context(), keys.Person{Subject: cl.Subject, Email: cl.Email}, c.Param("id"))

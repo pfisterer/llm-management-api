@@ -32,7 +32,7 @@ type MeResponse struct {
 //	@Security		BearerAuth
 //	@Success		200	{object}	MeResponse
 //	@Failure		401	{object}	ErrorResponse
-//	@Router			/me [get]
+//	@Router			/v1/me [get]
 func (s *Server) getMe(c *gin.Context) {
 	cl := caller(c)
 	resp := MeResponse{Email: cl.Email, Role: cl.Decision.Role}
@@ -62,7 +62,7 @@ type RuleRequest struct {
 //	@Security		BearerAuth
 //	@Success		200	{array}		access.Rule
 //	@Failure		403	{object}	ErrorResponse
-//	@Router			/access-rules [get]
+//	@Router			/v1/access-rules [get]
 func (s *Server) listRules(c *gin.Context) {
 	rules, err := s.access.Rules(c.Request.Context())
 	if err != nil {
@@ -84,7 +84,7 @@ func (s *Server) listRules(c *gin.Context) {
 //	@Success	201		{object}	access.Rule
 //	@Failure	400		{object}	ErrorResponse
 //	@Failure	409		{object}	ErrorResponse
-//	@Router		/access-rules [post]
+//	@Router		/v1/access-rules [post]
 func (s *Server) createRule(c *gin.Context) {
 	var req RuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -112,7 +112,7 @@ func (s *Server) createRule(c *gin.Context) {
 //	@Success	200		{object}	access.Rule
 //	@Failure	400		{object}	ErrorResponse
 //	@Failure	404		{object}	ErrorResponse
-//	@Router		/access-rules/{id} [put]
+//	@Router		/v1/access-rules/{id} [put]
 func (s *Server) updateRule(c *gin.Context) {
 	id, ok := ruleID(c)
 	if !ok {
@@ -140,7 +140,7 @@ func (s *Server) updateRule(c *gin.Context) {
 //	@Param		id	path	int	true	"Rule id"
 //	@Success	204
 //	@Failure	404	{object}	ErrorResponse
-//	@Router		/access-rules/{id} [delete]
+//	@Router		/v1/access-rules/{id} [delete]
 func (s *Server) deleteRule(c *gin.Context) {
 	id, ok := ruleID(c)
 	if !ok {
@@ -160,7 +160,7 @@ func (s *Server) deleteRule(c *gin.Context) {
 //	@Produce	json
 //	@Security	BearerAuth
 //	@Success	200	{array}	string
-//	@Router		/tiers [get]
+//	@Router		/v1/tiers [get]
 func (s *Server) listTiers(c *gin.Context) {
 	tiers := s.access.Tiers()
 	sort.Strings(tiers)
@@ -178,7 +178,7 @@ func (s *Server) listTiers(c *gin.Context) {
 //	@Param			q	query	string	true	"Search text (min. 2 characters)"
 //	@Success		200	{array}		roleprovider.Group
 //	@Failure		502	{object}	ErrorResponse
-//	@Router			/groups [get]
+//	@Router			/v1/groups [get]
 func (s *Server) searchGroups(c *gin.Context) {
 	q := strings.TrimSpace(c.Query("q"))
 	if len([]rune(q)) < 2 {

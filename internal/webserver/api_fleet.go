@@ -70,7 +70,7 @@ func LiteLLMHealth(lite *litellm.Client) fleet.HealthSource {
 //	@Security		BearerAuth
 //	@Success		200	{object}	fleet.FleetView
 //	@Failure		403	{object}	ErrorResponse
-//	@Router			/fleet [get]
+//	@Router			/v1/fleet [get]
 func (s *Server) getFleet(c *gin.Context) {
 	v, err := s.fleet.View(c.Request.Context(), s.health, s.material)
 	if err != nil {
@@ -88,7 +88,7 @@ func (s *Server) getFleet(c *gin.Context) {
 //	@Produce	text/csv
 //	@Security	BearerAuth
 //	@Success	200	{string}	string
-//	@Router		/fleet/inventory.csv [get]
+//	@Router		/v1/fleet/inventory.csv [get]
 func (s *Server) getFleetCSV(c *gin.Context) {
 	b, err := s.fleet.CSV(c.Request.Context())
 	if err != nil {
@@ -111,7 +111,7 @@ func (s *Server) getFleetCSV(c *gin.Context) {
 //	@Param			operator	query		string	false	"Betreiber"
 //	@Param			contact		query		string	false	"Kontakt"
 //	@Success		200			{string}	string
-//	@Router			/fleet/profile [get]
+//	@Router			/v1/fleet/profile [get]
 func (s *Server) getFleetProfile(c *gin.Context) {
 	clean := func(k string, n int) string {
 		v := strings.TrimSpace(strings.Map(func(r rune) rune {
@@ -145,7 +145,7 @@ func (s *Server) getFleetProfile(c *gin.Context) {
 //	@Security	BearerAuth
 //	@Success	200	{file}		binary
 //	@Failure	404	{object}	ErrorResponse
-//	@Router		/fleet/package [get]
+//	@Router		/v1/fleet/package [get]
 func (s *Server) getFleetPackage(c *gin.Context) {
 	path, name, err := s.material.PackagePath()
 	if err != nil {
@@ -164,7 +164,7 @@ func (s *Server) getFleetPackage(c *gin.Context) {
 //	@Tags			fleet
 //	@Security		BearerAuth
 //	@Success		204
-//	@Router			/fleet/package [delete]
+//	@Router			/v1/fleet/package [delete]
 func (s *Server) deleteFleetPackage(c *gin.Context) {
 	if err := s.material.DeletePackages(); err != nil {
 		s.internalError(c, "delete package", err)
@@ -181,7 +181,7 @@ func (s *Server) deleteFleetPackage(c *gin.Context) {
 //	@Produce	text/markdown
 //	@Security	BearerAuth
 //	@Success	200	{string}	string
-//	@Router		/fleet/readme [get]
+//	@Router		/v1/fleet/readme [get]
 func (s *Server) getFleetReadme(c *gin.Context) {
 	b, err := os.ReadFile(s.material.ReadmePath)
 	if err != nil {
@@ -201,7 +201,7 @@ func (s *Server) getFleetReadme(c *gin.Context) {
 //	@Param		serial	path	string	true	"Serial number"
 //	@Success	204
 //	@Failure	404	{object}	ErrorResponse
-//	@Router		/fleet/{serial}/block [post]
+//	@Router		/v1/fleet/{serial}/block [post]
 func (s *Server) blockMachine(c *gin.Context) { s.setBlocked(c, true) }
 
 // unblockMachine godoc
@@ -213,7 +213,7 @@ func (s *Server) blockMachine(c *gin.Context) { s.setBlocked(c, true) }
 //	@Param		serial	path	string	true	"Serial number"
 //	@Success	204
 //	@Failure	404	{object}	ErrorResponse
-//	@Router		/fleet/{serial}/unblock [post]
+//	@Router		/v1/fleet/{serial}/unblock [post]
 func (s *Server) unblockMachine(c *gin.Context) { s.setBlocked(c, false) }
 
 func (s *Server) setBlocked(c *gin.Context, blocked bool) {
@@ -239,7 +239,7 @@ func (s *Server) setBlocked(c *gin.Context, blocked bool) {
 //	@Param			serial	path	string	true	"Serial number"
 //	@Success		204
 //	@Failure		404	{object}	ErrorResponse
-//	@Router			/fleet/{serial} [delete]
+//	@Router			/v1/fleet/{serial} [delete]
 func (s *Server) forgetMachine(c *gin.Context) {
 	err := s.fleet.Forget(c.Request.Context(), c.Param("serial"))
 	if errors.Is(err, fleet.ErrPeerNotFound) {
