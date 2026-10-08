@@ -42,6 +42,7 @@ spec:
           ports:
             - {name: http, containerPort: 8086}
             - {name: machine, containerPort: 8087}
+            - {name: internal, containerPort: 8088}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -90,6 +91,7 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}
             - {name: MAX_KEYS_PER_USER, value: {{ .Values.config.maxKeysPerUser | quote }}}
             - {name: MACHINE_BIND, value: ":8087"}
+            - {name: INTERNAL_BIND, value: ":8088"}
             - name: FLEET
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: fleet-json}}
             - name: WIREGUARD

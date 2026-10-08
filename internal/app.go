@@ -161,6 +161,8 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		{Addr: cfg.Bind, Handler: srv.Router(), ReadHeaderTimeout: 10 * time.Second},
 		// Machine API: its own listener and its own Service/ingress (see MachineRouter).
 		{Addr: cfg.MachineBind, Handler: webserver.MachineRouter(fleetSvc, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second},
+		// In-cluster callers only, protected by NetworkPolicy alone (see InternalRouter).
+		{Addr: cfg.InternalBind, Handler: webserver.InternalRouter(accessSvc, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

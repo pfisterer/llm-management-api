@@ -54,6 +54,7 @@ type Config struct {
 	LiteLLMURL string
 
 	FleetJSON, WireGuardJSON                        string
+	InternalBind                                    string
 	MachineBind                                     string
 	ScriptsDir, ProfileTemplate, PackageDir, Readme string
 	LiteLLMMasterKey                                string
@@ -92,6 +93,7 @@ func LoadConfig() (Config, error) {
 		FleetJSON:           envconf.String("FLEET", ""),
 		WireGuardJSON:       envconf.String("WIREGUARD", ""),
 		MachineBind:         envconf.String("MACHINE_BIND", ":8087"),
+		InternalBind:        envconf.String("INTERNAL_BIND", ":8088"),
 		ScriptsDir:          envconf.String("FLEET_SCRIPTS_DIR", ""),
 		ProfileTemplate:     envconf.String("FLEET_PROFILE_TEMPLATE", ""),
 		PackageDir:          envconf.String("FLEET_PACKAGE_DIR", ""),
