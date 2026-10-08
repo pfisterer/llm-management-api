@@ -24,6 +24,7 @@ type MeResponse struct {
 
 // getMe godoc
 //
+//	@ID			getMe
 //	@Summary		Who am I, and what may I do?
 //	@Description	Always 200 for an authenticated caller. Without access, role is empty.
 //	@Tags			access
@@ -53,6 +54,7 @@ type RuleRequest struct {
 
 // listRules godoc
 //
+//	@ID			listAccessRules
 //	@Summary		List the access rules
 //	@Description	Rules from the configuration come first and are marked bootstrap (read-only).
 //	@Tags			access
@@ -72,6 +74,7 @@ func (s *Server) listRules(c *gin.Context) {
 
 // createRule godoc
 //
+//	@ID			createAccessRule
 //	@Summary	Add an access rule
 //	@Tags		access
 //	@Accept		json
@@ -98,6 +101,7 @@ func (s *Server) createRule(c *gin.Context) {
 
 // updateRule godoc
 //
+//	@ID			updateAccessRule
 //	@Summary	Replace an access rule
 //	@Tags		access
 //	@Accept		json
@@ -129,6 +133,7 @@ func (s *Server) updateRule(c *gin.Context) {
 
 // deleteRule godoc
 //
+//	@ID			deleteAccessRule
 //	@Summary	Delete an access rule
 //	@Tags		access
 //	@Security	BearerAuth
@@ -149,6 +154,7 @@ func (s *Server) deleteRule(c *gin.Context) {
 
 // listTiers godoc
 //
+//	@ID			listTiers
 //	@Summary	Quota tiers a rule may use
 //	@Tags		access
 //	@Produce	json
@@ -163,6 +169,7 @@ func (s *Server) listTiers(c *gin.Context) {
 
 // searchGroups godoc
 //
+//	@ID			searchGroups
 //	@Summary		Search role-provider groups
 //	@Description	For the access-rule editor: find group tokens by id or name.
 //	@Tags			access

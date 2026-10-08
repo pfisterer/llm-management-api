@@ -62,6 +62,7 @@ func LiteLLMHealth(lite *litellm.Client) fleet.HealthSource {
 
 // getFleet godoc
 //
+//	@ID			getFleet
 //	@Summary		The Mac fleet
 //	@Description	Machines with enrolment state, LiteLLM health, script state and the JAMF onboarding data.
 //	@Tags			fleet
@@ -81,6 +82,7 @@ func (s *Server) getFleet(c *gin.Context) {
 
 // getFleetCSV godoc
 //
+//	@ID			getFleetInventoryCsv
 //	@Summary	Fleet inventory as CSV
 //	@Tags		fleet
 //	@Produce	text/csv
@@ -99,6 +101,7 @@ func (s *Server) getFleetCSV(c *gin.Context) {
 
 // getFleetProfile godoc
 //
+//	@ID			getFleetProfile
 //	@Summary		JAMF configuration profile
 //	@Description	Optional location, operator and contact apply to every device in the profile's scope (one profile per device group).
 //	@Tags			fleet
@@ -135,6 +138,7 @@ func (s *Server) getFleetProfile(c *gin.Context) {
 
 // getFleetPackage godoc
 //
+//	@ID			getFleetPackage
 //	@Summary	The newest JAMF package
 //	@Tags		fleet
 //	@Produce	application/octet-stream
@@ -154,6 +158,7 @@ func (s *Server) getFleetPackage(c *gin.Context) {
 
 // deleteFleetPackage godoc
 //
+//	@ID			deleteFleetPackage
 //	@Summary		Withdraw the uploaded JAMF package
 //	@Description	Admins only. The machines are unaffected; only the download disappears.
 //	@Tags			fleet
@@ -170,6 +175,7 @@ func (s *Server) deleteFleetPackage(c *gin.Context) {
 
 // getFleetReadme godoc
 //
+//	@ID			getFleetReadme
 //	@Summary	Fleet onboarding guide (Markdown)
 //	@Tags		fleet
 //	@Produce	text/markdown
@@ -188,6 +194,7 @@ func (s *Server) getFleetReadme(c *gin.Context) {
 
 // blockMachine godoc
 //
+//	@ID			blockMachine
 //	@Summary	Block a machine (it is refused at the next enrolment)
 //	@Tags		fleet
 //	@Security	BearerAuth
@@ -199,6 +206,7 @@ func (s *Server) blockMachine(c *gin.Context) { s.setBlocked(c, true) }
 
 // unblockMachine godoc
 //
+//	@ID			unblockMachine
 //	@Summary	Unblock a machine
 //	@Tags		fleet
 //	@Security	BearerAuth
@@ -223,6 +231,7 @@ func (s *Server) setBlocked(c *gin.Context, blocked bool) {
 
 // forgetMachine godoc
 //
+//	@ID			forgetMachine
 //	@Summary		Remove a machine from the registry
 //	@Description	For decommissioned devices. A machine that boots again re-enrols with a NEW address; to keep it out, block it instead.
 //	@Tags			fleet

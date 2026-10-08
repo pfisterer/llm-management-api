@@ -34,6 +34,7 @@ func (s *Server) personAndTier(c *gin.Context) (keys.Person, keys.Tier, bool) {
 
 // getUsage godoc
 //
+//	@ID			getUsage
 //	@Summary		Quota, limits and keys of the caller
 //	@Description	Monthly budget over all keys, the per-key short-term budgets, rate limits and allowed models.
 //	@Tags			keys
@@ -57,6 +58,7 @@ func (s *Server) getUsage(c *gin.Context) {
 
 // listKeys godoc
 //
+//	@ID			listKeys
 //	@Summary	The caller's API keys
 //	@Tags		keys
 //	@Produce	json
@@ -79,6 +81,7 @@ func (s *Server) listKeys(c *gin.Context) {
 
 // createKey godoc
 //
+//	@ID			createKey
 //	@Summary		Create an API key
 //	@Description	The name is required and unique per person. The secret is returned exactly once.
 //	@Tags			keys
@@ -114,6 +117,7 @@ func (s *Server) createKey(c *gin.Context) {
 
 // deleteKey godoc
 //
+//	@ID			deleteKey
 //	@Summary	Delete one of the caller's API keys
 //	@Tags		keys
 //	@Security	BearerAuth
