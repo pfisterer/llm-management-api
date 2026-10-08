@@ -46,6 +46,10 @@ type Config struct {
 	TokenCacheTTL      time.Duration
 
 	ChatURL string
+
+	LiteLLMURL       string
+	LiteLLMMasterKey string
+	MaxKeysPerUser   int
 }
 
 func LoadConfig() (Config, error) {
@@ -72,6 +76,9 @@ func LoadConfig() (Config, error) {
 		BootstrapAdminTier:  envconf.String("BOOTSTRAP_ADMIN_TIER", ""),
 		TokenCacheTTL:       time.Duration(envconf.Int("TOKEN_CACHE_SECONDS", 60)) * time.Second,
 		ChatURL:             envconf.String("CHAT_URL", ""),
+		LiteLLMURL:          envconf.String("LITELLM_URL", ""),
+		LiteLLMMasterKey:    envconf.String("LITELLM_MASTER_KEY", ""),
+		MaxKeysPerUser:      envconf.Int("MAX_KEYS_PER_USER", 5),
 	}
 	if raw := envconf.String("TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.Tiers); err != nil {
@@ -102,6 +109,9 @@ func (c Config) validate() error {
 	}
 	if c.DBType == "postgres" && c.DBConnectionString == "" {
 		missing = append(missing, "DB_CONNECTION_STRING")
+	}
+	if c.LiteLLMURL == "" || c.LiteLLMMasterKey == "" {
+		missing = append(missing, "LITELLM_URL/LITELLM_MASTER_KEY")
 	}
 	if len(c.Tiers) == 0 {
 		missing = append(missing, "TIERS")

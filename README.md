@@ -29,11 +29,12 @@ The bearer token is the ID token the self-service BFF (oauth2-proxy) forwards: i
 | Method and path | Role |
 |---|---|
 | `GET /v1/me` | any authenticated caller (empty role without access) |
+| `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | user |
 | `GET/POST /v1/access-rules`, `PUT/DELETE /v1/access-rules/{id}` | admin |
 | `GET /v1/tiers`, `GET /v1/groups?q=` | admin |
 | `GET /health`, `GET /config.json`, `GET /swagger.json` | public |
 
-API keys, usage and fleet endpoints follow (see the plan).
+Fleet endpoints follow (see the plan). Keys: the LiteLLM user id is `kc-<sub>` (as before), names are required and unique per person (stored with an owner tag, since LiteLLM aliases are global), at most `MAX_KEYS_PER_USER` own keys (the chat key does not count), and quotas are only written on creation or tier change.
 
 ## Configuration
 
@@ -49,6 +50,8 @@ API keys, usage and fleet endpoints follow (see the plan).
 | `BOOTSTRAP_ADMINS`, `BOOTSTRAP_ADMIN_TIER` | always-admins and their tier |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
 | `CHAT_URL` | link to the chat, returned by `/v1/me` |
+| `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
+| `MAX_KEYS_PER_USER` | own keys per person, default 5 |
 
 ## Development
 

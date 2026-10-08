@@ -83,6 +83,11 @@ func TestMeAndRoles(t *testing.T) {
 		t.Fatalf("student after rule: %d %s", code, body)
 	}
 
+	// Without access, no keys either.
+	if code, _ := do(t, h, "GET", "/v1/keys", "nobody@dhbw.de", nil); code != http.StatusForbidden {
+		t.Fatalf("keys without access: want 403, got %d", code)
+	}
+
 	// A user may not touch the access list.
 	if code, _ := do(t, h, "GET", "/v1/access-rules", "student@dhbw.de", nil); code != http.StatusForbidden {
 		t.Fatalf("user listing rules: want 403, got %d", code)

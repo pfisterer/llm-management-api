@@ -16,6 +16,8 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/generated_docs"
+	"github.com/pfisterer/llm-management-api/internal/keys"
+	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/webserver"
 	"go.uber.org/zap"
@@ -66,6 +68,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		log.Warn("no OIDC issuer configured: only X-Dummy-Auth-User works (development mode)")
 	}
 
+	tiers := map[string]keys.Tier{}
+	for _, t := range cfg.Tiers {
+		tiers[t.Name] = keys.Tier{Name: t.Name, KeyBudget: t.KeyBudget, KeyBudgetDuration: t.KeyBudgetDuration,
+			UserBudget: t.UserBudget, UserBudgetDuration: t.UserBudgetDuration, RPM: t.RPM, TPM: t.TPM, Models: t.Models}
+	}
+	keySvc := keys.NewService(litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second), cfg.MaxKeysPerUser)
+
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
 		Version:      strings.TrimSpace(generated_docs.Version),
@@ -73,6 +82,8 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		ChatURL:      cfg.ChatURL,
 		Verifier:     verifier,
 		Access:       accessSvc,
+		Keys:         keySvc,
+		Tiers:        tiers,
 		RoleProvider: roles,
 		Log:          log,
 	})
