@@ -52,9 +52,15 @@ type Config struct {
 	AdminUIURL string
 
 	LiteLLMURL string
+	// Inference gateway: the chat exchange and the classification probes go here.
+	LiteLLMGatewayURL string
+	// Shared LiteLLM UI account, for the autologin.
+	LiteLLMUIUsername, LiteLLMUIPassword string
+	// modelAliases and aliasProbes from the inventory (JSON).
+	AliasesJSON, AliasProbesJSON string
+	ChatBind, AdminLoginBind     string
 
 	FleetJSON, WireGuardJSON                        string
-	InternalBind                                    string
 	MachineBind                                     string
 	ScriptsDir, ProfileTemplate, PackageDir, Readme string
 	LiteLLMMasterKey                                string
@@ -88,12 +94,18 @@ func LoadConfig() (Config, error) {
 		APIURL:              envconf.String("API_URL", ""),
 		AdminUIURL:          envconf.String("ADMIN_UI_URL", ""),
 		LiteLLMURL:          envconf.String("LITELLM_URL", ""),
+		LiteLLMGatewayURL:   envconf.String("LITELLM_GATEWAY_URL", ""),
+		LiteLLMUIUsername:   envconf.String("LITELLM_UI_USERNAME", ""),
+		LiteLLMUIPassword:   envconf.String("LITELLM_UI_PASSWORD", ""),
+		AliasesJSON:         envconf.String("ALIASES", "{}"),
+		AliasProbesJSON:     envconf.String("ALIAS_PROBES", "{}"),
+		ChatBind:            envconf.String("CHAT_BIND", ":8089"),
+		AdminLoginBind:      envconf.String("ADMIN_LOGIN_BIND", ":8090"),
 		LiteLLMMasterKey:    envconf.String("LITELLM_MASTER_KEY", ""),
 		MaxKeysPerUser:      envconf.Int("MAX_KEYS_PER_USER", 5),
 		FleetJSON:           envconf.String("FLEET", ""),
 		WireGuardJSON:       envconf.String("WIREGUARD", ""),
 		MachineBind:         envconf.String("MACHINE_BIND", ":8087"),
-		InternalBind:        envconf.String("INTERNAL_BIND", ":8088"),
 		ScriptsDir:          envconf.String("FLEET_SCRIPTS_DIR", ""),
 		ProfileTemplate:     envconf.String("FLEET_PROFILE_TEMPLATE", ""),
 		PackageDir:          envconf.String("FLEET_PACKAGE_DIR", ""),

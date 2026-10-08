@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
+	"github.com/pfisterer/llm-management-api/internal/classify"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"go.uber.org/zap"
 )
@@ -21,7 +22,7 @@ import (
 // enrolment host is reachable without Keycloak (a machine cannot log in), so it
 // must not be able to reach any person-facing route. Token authentication
 // only; no identity header is read here.
-func MachineRouter(svc *fleet.Service, log *zap.SugaredLogger, devMode bool) *gin.Engine {
+func MachineRouter(svc *fleet.Service, classifier *classify.Service, log *zap.SugaredLogger, devMode bool) *gin.Engine {
 	if !devMode {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -88,6 +89,26 @@ func MachineRouter(svc *fleet.Service, log *zap.SugaredLogger, devMode bool) *gi
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"sites": sites})
+	})
+	// Which alias a model is offered under, for the discovery job — it knows the
+	// models actually served; this side measures them through the gateway.
+	// Admin token, like the peer list. May take minutes for a new model.
+	r.POST("/fleet/classify", adminAuth, func(c *gin.Context) {
+		var body struct {
+			Models []string `json:"models"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+			return
+		}
+		if len(body.Models) > 100 {
+			body.Models = body.Models[:100]
+		}
+		if classifier == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "classification not configured"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"aliases": classifier.Many(c.Request.Context(), body.Models)})
 	})
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
 	return r

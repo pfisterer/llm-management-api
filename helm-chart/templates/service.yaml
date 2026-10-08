@@ -10,5 +10,7 @@ spec:
   ports:
     - {name: http, port: 8086, targetPort: http}
     - {name: machine, port: 8087, targetPort: machine}
-    # No ingress, ever: reachable only for what the NetworkPolicy admits (the key broker).
-    - {name: internal, port: 8088, targetPort: internal}
+    # These two trust identity headers, so each must only be reachable for the
+    # one source the NetworkPolicy admits — see the README.
+    - {name: chat, port: 8089, targetPort: chat}
+    - {name: adminlogin, port: 8090, targetPort: adminlogin}

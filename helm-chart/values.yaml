@@ -16,6 +16,8 @@ secrets:
   # because they carry the enrolment and admin tokens.
   fleetJson: ""
   wireguardJson: ""
+  # Password of the shared LiteLLM UI account, for the autologin.
+  litellmUiPassword: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =
@@ -38,6 +40,13 @@ config:
   adminUiUrl: ""
   # LiteLLM management API (the "backend" service, not the gateway).
   litellmUrl: ""
+  # LiteLLM inference gateway: chat exchange and classification probes.
+  litellmGatewayUrl: ""
+  # Shared LiteLLM UI account (autologin); password under secrets.
+  litellmUiUsername: ""
+  # modelAliases and aliasProbes of the llm-aas inventory (classification).
+  aliases: {}
+  aliasProbes: {}
   maxKeysPerUser: 5
 
 fleet:

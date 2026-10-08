@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -158,6 +159,29 @@ func (c *Client) GenerateKey(ctx context.Context, userID, alias string, q Quota,
 		return "", fmt.Errorf("litellm: /key/generate returned no key")
 	}
 	return r.Key, nil
+}
+
+// GenerateKeyWithValue creates a key whose secret the caller chose. Used for the
+// chat key, which is derived from the person's id and never stored.
+func (c *Client) GenerateKeyWithValue(ctx context.Context, userID, alias, key string, q Quota, metadata map[string]any) error {
+	body := map[string]any{"user_id": userID, "key_alias": alias, "key": key, "metadata": metadata}
+	mergeQuota(body, q)
+	return c.do(ctx, http.MethodPost, "/key/generate", body, nil)
+}
+
+// KeyExists reports whether LiteLLM knows the key (by its secret value). Any
+// answer other than success counts as "no": the caller then creates it, and a
+// real problem shows up there with a proper error.
+func (c *Client) KeyExists(ctx context.Context, key string) (bool, error) {
+	err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, nil)
+	if err == nil {
+		return true, nil
+	}
+	var le *Error
+	if errors.As(err, &le) {
+		return false, nil
+	}
+	return false, err
 }
 
 // DeleteKeys deletes keys by token (hash).

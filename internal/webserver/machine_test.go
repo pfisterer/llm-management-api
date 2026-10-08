@@ -16,7 +16,7 @@ func TestMachineTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := MachineRouter(fleet.NewService(cfg, wg, fleet.NewMemoryStore(), fleet.NewScripts(t.TempDir())), zap.NewNop().Sugar(), true)
+	h := MachineRouter(fleet.NewService(cfg, wg, fleet.NewMemoryStore(), fleet.NewScripts(t.TempDir())), nil, zap.NewNop().Sugar(), true)
 
 	req := func(method, path, token, body string) int {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))

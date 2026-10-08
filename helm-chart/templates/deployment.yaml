@@ -42,7 +42,8 @@ spec:
           ports:
             - {name: http, containerPort: 8086}
             - {name: machine, containerPort: 8087}
-            - {name: internal, containerPort: 8088}
+            - {name: chat, containerPort: 8089}
+            - {name: adminlogin, containerPort: 8090}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -91,7 +92,14 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}
             - {name: MAX_KEYS_PER_USER, value: {{ .Values.config.maxKeysPerUser | quote }}}
             - {name: MACHINE_BIND, value: ":8087"}
-            - {name: INTERNAL_BIND, value: ":8088"}
+            - {name: CHAT_BIND, value: ":8089"}
+            - {name: ADMIN_LOGIN_BIND, value: ":8090"}
+            - {name: LITELLM_GATEWAY_URL, value: {{ required "config.litellmGatewayUrl is required" .Values.config.litellmGatewayUrl | quote }}}
+            - {name: LITELLM_UI_USERNAME, value: {{ .Values.config.litellmUiUsername | quote }}}
+            - name: LITELLM_UI_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-ui-password}}
+            - {name: ALIASES, value: {{ .Values.config.aliases | toJson | quote }}}
+            - {name: ALIAS_PROBES, value: {{ .Values.config.aliasProbes | toJson | quote }}}
             - name: FLEET
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: fleet-json}}
             - name: WIREGUARD

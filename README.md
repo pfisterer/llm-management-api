@@ -64,7 +64,11 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `TIERS` | quota tiers as JSON, as in the llm-aas inventory (`keyBroker.tiers`) |
 | `BOOTSTRAP_ADMINS`, `BOOTSTRAP_ADMIN_TIER` | always-admins and their tier |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
-| `INTERNAL_BIND` | listener for in-cluster callers (`GET /internal/v1/access?email=`), default `:8088`; no ingress, NetworkPolicy only |
+| `CHAT_BIND` | chat exchange for LibreChat (`/v1/*` with `X-LibreChat-User-*` headers), default `:8089`; NetworkPolicy: LibreChat only |
+| `ADMIN_LOGIN_BIND` | LiteLLM UI autologin (`/`, `/autologin`), default `:8090`; only behind the admin host's forward-auth, role admin |
+| `LITELLM_GATEWAY_URL` | LiteLLM inference gateway (chat, classification probes) |
+| `LITELLM_UI_USERNAME`, `LITELLM_UI_PASSWORD` | shared LiteLLM UI account for the autologin |
+| `ALIASES`, `ALIAS_PROBES` | inventory `modelAliases` / `aliasProbes` (JSON) for `POST /fleet/classify` on the machine listener |
 | `CHAT_URL` | link to the chat, returned by `/v1/me` |
 | `API_URL` | public OpenAI-compatible base URL (`…/v1`), returned by `/v1/me` |
 | `ADMIN_UI_URL` | LiteLLM admin UI autologin link, returned by `/v1/me` to admins only |

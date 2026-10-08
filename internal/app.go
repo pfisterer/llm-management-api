@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/classify"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/generated_docs"
 	"github.com/pfisterer/llm-management-api/internal/keys"
@@ -34,25 +36,38 @@ func RunApplication() {
 	if err != nil {
 		log.Fatalw("invalid configuration", "error", err)
 	}
-	// One-off migration: llm-management-api import-peers <peers.json>
+	// One-off migrations from the former Node broker:
+	//   llm-management-api import-peers <peers.json>
+	//   llm-management-api import-classified <classified.json>
 	if len(os.Args) == 3 && os.Args[1] == "import-peers" {
 		if err := importPeers(cfg, os.Args[2], log); err != nil {
 			log.Fatalw("import failed", "error", err)
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "import-classified" {
+		_, _, cs, err := stores(cfg)
+		if err == nil {
+			var n int
+			if n, err = classify.Import(context.Background(), cs, os.Args[2]); err == nil {
+				log.Infow("imported classifications", "count", n, "from", os.Args[2])
+				return
+			}
+		}
+		log.Fatalw("import failed", "error", err)
+	}
 	if err := run(cfg, log); err != nil {
 		log.Fatalw("llm-management-api stopped", "error", err)
 	}
 }
 
-// stores opens the access and fleet stores on one connection.
-func stores(cfg Config) (access.Store, fleet.Store, error) {
+// stores opens the access, fleet and classification stores on one connection.
+func stores(cfg Config) (access.Store, fleet.Store, classify.Store, error) {
 	if cfg.DBType == "memory" {
-		return access.NewMemoryStore(), fleet.NewMemoryStore(), nil
+		return access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), nil
 	}
 	if cfg.DBType != "postgres" {
-		return nil, nil, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
+		return nil, nil, nil, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
 	}
 	db, err := gorm.Open(postgres.Open(cfg.DBConnectionString), &gorm.Config{
 		// Maps unique-constraint violations to gorm.ErrDuplicatedKey (-> 409).
@@ -60,17 +75,21 @@ func stores(cfg Config) (access.Store, fleet.Store, error) {
 		Logger:         gormlogger.Default.LogMode(gormlogger.Warn),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("postgres: %w", err)
+		return nil, nil, nil, fmt.Errorf("postgres: %w", err)
 	}
 	as, err := access.NewGormStore(db)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	fs, err := fleet.NewGormStore(db)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return as, fs, nil
+	cs, err := classify.NewGormStore(db)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return as, fs, cs, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -82,7 +101,7 @@ func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
 }
 
 func importPeers(cfg Config, path string, log *zap.SugaredLogger) error {
-	_, fs, err := stores(cfg)
+	_, fs, _, err := stores(cfg)
 	if err != nil {
 		return err
 	}
@@ -99,7 +118,7 @@ func importPeers(cfg Config, path string, log *zap.SugaredLogger) error {
 }
 
 func run(cfg Config, log *zap.SugaredLogger) error {
-	store, fleetStore, err := stores(cfg)
+	store, fleetStore, classifyStore, err := stores(cfg)
 	if err != nil {
 		return err
 	}
@@ -157,12 +176,28 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		RoleProvider: roles,
 		Log:          log,
 	})
+	var aliases map[string]classify.AliasDef
+	var thresholds classify.Thresholds
+	if err := json.Unmarshal([]byte(cfg.AliasesJSON), &aliases); err != nil {
+		return fmt.Errorf("ALIASES: %w", err)
+	}
+	if err := json.Unmarshal([]byte(cfg.AliasProbesJSON), &thresholds); err != nil {
+		return fmt.Errorf("ALIAS_PROBES: %w", err)
+	}
+	classifier := classify.NewService(aliases, thresholds, classifyStore, cfg.LiteLLMGatewayURL, cfg.LiteLLMMasterKey, log)
+
 	servers := []*http.Server{
 		{Addr: cfg.Bind, Handler: srv.Router(), ReadHeaderTimeout: 10 * time.Second},
 		// Machine API: its own listener and its own Service/ingress (see MachineRouter).
-		{Addr: cfg.MachineBind, Handler: webserver.MachineRouter(fleetSvc, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second},
-		// In-cluster callers only, protected by NetworkPolicy alone (see InternalRouter).
-		{Addr: cfg.InternalBind, Handler: webserver.InternalRouter(accessSvc, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second},
+		{Addr: cfg.MachineBind, Handler: webserver.MachineRouter(fleetSvc, classifier, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second},
+		// Chat exchange for LibreChat: trusts identity headers, so NetworkPolicy
+		// admits LibreChat only. No write timeout — a streamed answer of a large
+		// model can take minutes.
+		{Addr: cfg.ChatBind, Handler: webserver.ChatRouter(webserver.ChatOptions{Access: accessSvc, Keys: keySvc, Tiers: tiers,
+			Gateway: cfg.LiteLLMGatewayURL, MasterKey: cfg.LiteLLMMasterKey, Log: log}), ReadHeaderTimeout: 10 * time.Second},
+		// LiteLLM UI autologin, behind the admin host's forward-auth.
+		{Addr: cfg.AdminLoginBind, Handler: webserver.AdminLoginRouter(webserver.AdminLoginOptions{Access: accessSvc,
+			LiteLLMURL: cfg.LiteLLMURL, Username: cfg.LiteLLMUIUsername, Password: cfg.LiteLLMUIPassword, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

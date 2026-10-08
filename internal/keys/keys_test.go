@@ -75,6 +75,14 @@ func (f *fakeLiteLLM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body["token"] = tok
 		f.keys[tok] = body
 		_ = json.NewEncoder(w).Encode(map[string]any{"key": "sk-secret-" + tok})
+	case "/key/info":
+		for _, k := range f.keys {
+			if k["key"] == r.URL.Query().Get("key") {
+				_ = json.NewEncoder(w).Encode(map[string]any{"info": k})
+				return
+			}
+		}
+		w.WriteHeader(404)
 	case "/key/delete":
 		for _, t := range body["keys"].([]any) {
 			delete(f.keys, t.(string))
