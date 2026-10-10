@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 )
 
@@ -75,6 +76,30 @@ func (s *Server) getFleet(c *gin.Context) {
 	v, err := s.fleet.View(c.Request.Context(), s.health, s.material)
 	if err != nil {
 		s.internalError(c, "fleet view", err)
+		return
+	}
+	c.JSON(http.StatusOK, v)
+}
+
+// getFleetInference godoc
+//
+//	@ID				getFleetInference
+//	@Summary		The GPU cluster's inference pool
+//	@Description	vLLM replicas (one gap filler per GPU node, the base load) with node, model and state. enabled=false without the GPU part or without an inference pool.
+//	@Tags			fleet
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Success		200	{object}	gpu.InferencePool
+//	@Failure		403	{object}	ErrorResponse
+//	@Router			/v1/fleet/inference [get]
+func (s *Server) getFleetInference(c *gin.Context) {
+	if s.gpu == nil {
+		c.JSON(http.StatusOK, gpu.InferencePool{Pods: []gpu.InferencePod{}})
+		return
+	}
+	v, err := s.gpu.InferencePool(c.Request.Context())
+	if err != nil {
+		s.internalError(c, "inference pool", err)
 		return
 	}
 	c.JSON(http.StatusOK, v)

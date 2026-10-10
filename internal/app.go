@@ -171,7 +171,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 				out := make([]fleet.Site, 0, len(reps))
 				for _, r := range reps {
-					out = append(out, fleet.Site{Name: "gpu-" + r.Name, Weight: 1, Transport: "direct", APIBase: r.APIBase, APIKey: gpuSvc.InferenceAPIKey()})
+					out = append(out, fleet.Site{Name: gpu.InferenceSitePrefix + r.Name, Weight: 1, Transport: "direct", APIBase: r.APIBase, APIKey: gpuSvc.InferenceAPIKey()})
 				}
 				return out, nil
 			})

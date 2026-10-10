@@ -117,9 +117,20 @@ type podInfo struct {
 	Metadata struct {
 		Name              string            `json:"name"`
 		Labels            map[string]string `json:"labels"`
+		CreationTimestamp time.Time         `json:"creationTimestamp"`
 		DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
 	} `json:"metadata"`
+	Spec struct {
+		NodeName        string `json:"nodeName"`
+		SchedulingGates []struct {
+			Name string `json:"name"`
+		} `json:"schedulingGates"`
+		Containers []struct {
+			Args []string `json:"args"`
+		} `json:"containers"`
+	} `json:"spec"`
 	Status struct {
+		StartTime  *time.Time `json:"startTime"`
 		Conditions []struct {
 			Type   string `json:"type"`
 			Status string `json:"status"`

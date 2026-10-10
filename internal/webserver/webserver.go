@@ -93,6 +93,7 @@ func (s *Server) Router() *gin.Engine {
 		fa := v1.Group("/fleet", require(access.RoleFleetAdmin))
 		fa.GET("", s.getFleet)
 		fa.GET("/inventory.csv", s.getFleetCSV)
+		fa.GET("/inference", s.getFleetInference)
 		fa.GET("/profile", s.getFleetProfile)
 		fa.GET("/package", s.getFleetPackage)
 		fa.DELETE("/package", require(access.RoleAdmin), s.deleteFleetPackage)
