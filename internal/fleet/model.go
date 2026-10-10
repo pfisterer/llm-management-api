@@ -25,6 +25,7 @@ type Peer struct {
 	APIKey       string `json:"apiKey,omitempty"`
 
 	Hostname  string `json:"hostname"`
+	PrimaryIP string `json:"primaryIp"` // address of the default route's interface, as the machine reports it
 	Hardware  string `json:"hardware"`
 	OSVersion string `json:"osVersion"`
 	OS        string `json:"os"`

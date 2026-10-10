@@ -205,6 +205,10 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (EnrollResponse
 				*f.dst = v
 			}
 		}
+		// The machine's own address in its local network (display only). Kept when the machine sends none or garbage: an older script must not blank it.
+		if ip, err := netip.ParseAddr(req.str("primaryIp")); err == nil {
+			mine.PrimaryIP = ip.String()
+		}
 		if mine.Contact != "" && !contactRE.MatchString(mine.Contact) {
 			return nil, nil, fail(400, "contact ist keine gueltige Adresse: %s", mine.Contact)
 		}

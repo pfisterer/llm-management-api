@@ -184,6 +184,35 @@ func TestExtraSites(t *testing.T) {
 	}
 }
 
+func TestPrimaryIP(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := testService(t, nil)
+	view := func() PeerView {
+		v, err := svc.View(ctx, nil, Material{})
+		if err != nil || len(v.Peers) != 1 {
+			t.Fatalf("view: %+v %v", v.Peers, err)
+		}
+		return v.Peers[0]
+	}
+	m := mac("SERIAL0001", key1, "ok", 49152)
+	m["primaryIp"] = "141.72.16.102"
+	_, _ = svc.Enroll(ctx, m)
+	if p := view(); p.PrimaryIP != "141.72.16.102" {
+		t.Fatalf("primary ip: %q", p.PrimaryIP)
+	}
+	// An older script sends none, a broken one garbage: the known address stays.
+	for _, v := range []any{nil, "", "not-an-ip"} {
+		m := mac("SERIAL0001", key1, "ok", 49152)
+		if v != nil {
+			m["primaryIp"] = v
+		}
+		_, _ = svc.Enroll(ctx, m)
+		if p := view(); p.PrimaryIP != "141.72.16.102" {
+			t.Fatalf("after %v: %q", v, p.PrimaryIP)
+		}
+	}
+}
+
 func TestScriptsAndCanary(t *testing.T) {
 	svc, _, _ := testService(t, func(c *Config) { c.SelfUpdateCanary = []string{"CANARY0001"} })
 	if m := svc.scripts.Manifest(svc.cfg, "OTHER00001"); m != "" {

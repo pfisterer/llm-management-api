@@ -127,6 +127,7 @@ type PeerView struct {
 	Serial         string     `json:"serial"`
 	Name           string     `json:"name"`
 	Address        string     `json:"address"`
+	PrimaryIP      string     `json:"primary_ip"` // the machine's own address in its local network (default route), as it reports it at enrolment; empty until a script that sends it has enrolled
 	Transport      string     `json:"transport"`
 	APIBase        string     `json:"api_base,omitempty"`
 	OS             string     `json:"os"`
@@ -256,7 +257,7 @@ func (s *Service) View(ctx context.Context, health HealthSource, mat Material) (
 			gate = "idle-only"
 		}
 		v.Peers = append(v.Peers, PeerView{
-			Serial: p.Serial, Name: p.Name, Address: p.Address, Transport: transport, APIBase: p.APIBase, OS: p.OS,
+			Serial: p.Serial, Name: p.Name, Address: p.Address, PrimaryIP: p.PrimaryIP, Transport: transport, APIBase: p.APIBase, OS: p.OS,
 			Hostname: p.Hostname, Hardware: p.Hardware, RAMGb: p.RAMMb / 1024, Location: p.Location, Operator: p.Operator,
 			Contact: p.Contact, Profile: p.Profile, Model: p.Model, Models: serves, ModelState: modelState,
 			Serving: append([]string{}, hp.Models...), Inference: inference, InferenceError: hp.Error, Gate: gate,
@@ -279,14 +280,14 @@ func (s *Service) CSV(ctx context.Context) ([]byte, error) {
 	}
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	_ = w.Write([]string{"seriennummer", "name", "adresse", "klasse", "modell", "bietet_an", "ram_mb", "hostname",
+	_ = w.Write([]string{"seriennummer", "name", "adresse", "primaere_ip", "klasse", "modell", "bietet_an", "ram_mb", "hostname",
 		"hardware", "os", "standort", "betreuer", "kontakt", "gesperrt", "zuletzt_gemeldet"})
 	for _, p := range peers {
 		last := ""
 		if p.LastSeen != nil {
 			last = p.LastSeen.Format(time.RFC3339)
 		}
-		_ = w.Write([]string{p.Serial, p.Name, p.Address, p.Profile, p.Model, strings.Join(p.Models(), " "),
+		_ = w.Write([]string{p.Serial, p.Name, p.Address, p.PrimaryIP, p.Profile, p.Model, strings.Join(p.Models(), " "),
 			strconv.Itoa(p.RAMMb), p.Hostname, p.Hardware, p.OSVersion, p.Location, p.Operator, p.Contact,
 			strconv.FormatBool(p.Blocked), last})
 	}
@@ -342,7 +343,7 @@ func (s *Service) Import(ctx context.Context, path string) (int, error) {
 			PresharedKey: str(m, "presharedKey"), Transport: str(m, "transport"), APIBase: str(m, "apiBase"),
 			APIKey: str(m, "apiKey"), Hostname: str(m, "hostname"), Hardware: str(m, "hardware"),
 			OSVersion: str(m, "osVersion"), OS: str(m, "os"), GPU: str(m, "gpu"), Location: str(m, "location"),
-			Operator: str(m, "operator"), Contact: str(m, "contact"), RAMMb: int(num(m, "ramMb")), Port: int(num(m, "port")),
+			Operator: str(m, "operator"), Contact: str(m, "contact"), PrimaryIP: str(m, "primaryIp"), RAMMb: int(num(m, "ramMb")), Port: int(num(m, "port")),
 			Controls: m["controls"] != false, Busy: m["busy"] == true, Scripts: str(m, "scripts"),
 			PkgVersion: str(m, "pkgVersion"), Profile: str(m, "profile"), Model: str(m, "model"),
 			Weight: num(m, "weight"), Gate: str(m, "gate"), Enabled: m["enabled"] != false, Blocked: m["blocked"] == true,
