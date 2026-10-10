@@ -12,7 +12,7 @@ secrets:
   dbConnectionString: ""
   roleProviderToken: ""
   litellmMasterKey: ""
-  # The `fleet` and `wireguard` blocks of the llm-aas inventory as JSON. Secret
+  # The `fleet` and `wireguard` blocks of the dhbw-ai-service inventory as JSON. Secret
   # because they carry the enrolment and admin tokens.
   fleetJson: ""
   wireguardJson: ""
@@ -38,7 +38,7 @@ config:
   # Admins regardless of the stored access list (cannot be removed via the API).
   bootstrapAdmins: []
   bootstrapAdminTier: staff
-  # Quota tiers as in the llm-aas inventory (keyBroker.tiers).
+  # Quota tiers as in the dhbw-ai-service inventory (llmManagementApi.tiers).
   tiers: []
   chatUrl: ""
   # Public OpenAI-compatible base URL (…/v1), shown to users.
@@ -51,7 +51,7 @@ config:
   litellmGatewayUrl: ""
   # Shared LiteLLM UI account (autologin); password under secrets.
   litellmUiUsername: ""
-  # modelAliases and aliasProbes of the llm-aas inventory (classification).
+  # modelAliases and aliasProbes of the dhbw-ai-service inventory (classification).
   aliases: {}
   aliasProbes: {}
   maxKeysPerUser: 5

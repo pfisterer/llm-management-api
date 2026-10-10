@@ -2,7 +2,7 @@
 
 Self-service API of the DHBW LLM service: who may use it (access list on top of the role-provider), API keys, usage and the Mac fleet. Consumed by the LLM section of [self-service-ui](https://github.com/pfisterer/self-service-ui) through the generated client `@dhbw-cloud/llm-client`.
 
-It replaces the portal part of the Node "key broker" in the llm-aas deployment, which is where this service is built from and deployed (see `docs/plan-llm-management-api.md` there).
+It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the dhbw-ai-service project (Ansible, `docs/plan-llm-management-api.md` and `docs/bauplan.md` there).
 
 ## Access model
 
@@ -61,7 +61,7 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `ROLE_PROVIDER_TYPE` | `http` (required in production) or `mock` |
 | `ROLE_PROVIDER_URL`, `ROLE_PROVIDER_TOKEN` | role-provider base URL (without `/v1`) and read token |
 | `DB_TYPE`, `DB_CONNECTION_STRING` | `postgres` (required in production) or `memory` |
-| `TIERS` | quota tiers as JSON, as in the llm-aas inventory (`keyBroker.tiers`) |
+| `TIERS` | quota tiers as JSON, as in the dhbw-ai-service inventory (`llmManagementApi.tiers`) |
 | `BOOTSTRAP_ADMINS`, `BOOTSTRAP_ADMIN_TIER` | always-admins and their tier |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
 | `CHAT_BIND` | chat exchange for LibreChat (`/v1/*` with `X-LibreChat-User-*` headers), default `:8089`; NetworkPolicy: LibreChat only |
@@ -74,7 +74,7 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `ADMIN_UI_URL` | LiteLLM admin UI autologin link, returned by `/v1/me` to admins only |
 | `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
 | `MAX_KEYS_PER_USER` | own keys per person, default 5 |
-| `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the llm-aas inventory as JSON |
+| `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the dhbw-ai-service inventory as JSON |
 | `FLEET_SCRIPTS_DIR`, `FLEET_PROFILE_TEMPLATE`, `FLEET_README`, `FLEET_PACKAGE_DIR` | fleet scripts, JAMF profile template, guide, uploaded package |
 
 ## Development

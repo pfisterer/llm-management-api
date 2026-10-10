@@ -4,7 +4,7 @@ package gpu
 // the BuildKit engine (image platform/repo2docker-buildkit) on a build node,
 // BuildKit as root in the pod's own user namespace (hostUsers: false, nothing
 // privileged), push to Harbor with the robot account in BuilderSecret. Same as
-// gpu-aas/tests/env-build.sh. The namespace's NetworkPolicy limits the job to
+// dhbw-ai-service/tests/env-build.sh. The namespace's NetworkPolicy limits the job to
 // the internet, Harbor and DNS.
 func buildJob(cfg Config, name, builder, gitURL, commit, branch, image, slug string) map[string]any {
 	script := `repo2docker --engine buildkit --no-run --push --user-id 1000 --user-name jovyan --ref "$GIT_COMMIT" ` +

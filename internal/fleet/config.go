@@ -28,7 +28,7 @@ type Override struct {
 	Enabled      *bool    `json:"enabled"`
 }
 
-// Config is the `fleet` block of the llm-aas inventory, unchanged (env FLEET).
+// Config is the `fleet` block of the dhbw-ai-service inventory, unchanged (env FLEET).
 type Config struct {
 	Enabled          bool                `json:"enabled"`
 	Pool             string              `json:"pool"`

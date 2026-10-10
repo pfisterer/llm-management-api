@@ -166,6 +166,7 @@ type FleetView struct {
 	EnrollToken     string       `json:"enroll_token"`
 	ReenrollSeconds int          `json:"reenroll_seconds"`
 	EndpointV6      string       `json:"endpoint_v6"`
+	Endpoint        string       `json:"endpoint"` // the name machines dial (IPv4 name when set), without port
 	ListenPort      int          `json:"listen_port"`
 	AllowedSerials  int          `json:"allowed_serials"`
 	Package         *PackageInfo `json:"package"`
@@ -203,7 +204,7 @@ func (s *Service) View(ctx context.Context, health HealthSource, mat Material) (
 	sort.SliceStable(peers, func(i, j int) bool { return addrOrder(peers[i].Address) < addrOrder(peers[j].Address) })
 
 	v := FleetView{Enabled: s.cfg.Enabled, Pool: s.cfg.Pool, EnrollHost: s.cfg.EnrollHostname, EnrollToken: s.cfg.EnrollToken,
-		ReenrollSeconds: s.cfg.ReenrollSeconds, EndpointV6: s.wg.EndpointHostV6, ListenPort: s.wg.ListenPort,
+		ReenrollSeconds: s.cfg.ReenrollSeconds, EndpointV6: s.wg.EndpointHostV6, Endpoint: s.wg.EndpointHost(), ListenPort: s.wg.ListenPort,
 		AllowedSerials: len(s.cfg.AllowedSerials), Package: mat.Package(), PackageID: "de.dhbw.llm.fleet", Profiles: s.cfg.Profiles}
 	if pool, err := netip.ParsePrefix(s.cfg.Pool); err == nil {
 		v.Capacity = (1 << (32 - pool.Bits())) - 2

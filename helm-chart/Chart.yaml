@@ -2,8 +2,8 @@ apiVersion: v2
 name: llm-management-api
 description: Self-service API of the DHBW LLM service (access, API keys, usage, Mac fleet)
 type: application
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.2
+appVersion: "0.1.2"
 maintainers:
   - name: Dennis Pfisterer
     email: dennis.pfisterer@dhbw.de

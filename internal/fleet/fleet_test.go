@@ -200,6 +200,9 @@ func TestPrimaryIP(t *testing.T) {
 	if p := view(); p.PrimaryIP != "141.72.16.102" {
 		t.Fatalf("primary ip: %q", p.PrimaryIP)
 	}
+	if v, _ := svc.View(ctx, nil, Material{}); v.Endpoint != "wg6.example" {
+		t.Fatalf("endpoint without an IPv4 name: %q", v.Endpoint)
+	}
 	// An older script sends none, a broken one garbage: the known address stays.
 	for _, v := range []any{nil, "", "not-an-ip"} {
 		m := mac("SERIAL0001", key1, "ok", 49152)
