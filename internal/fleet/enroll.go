@@ -97,7 +97,14 @@ type Service struct {
 	store   Store
 	scripts *Scripts
 	now     func() time.Time
+	extra   []ExtraSites
 }
+
+// ExtraSites lists sites that are no enrolled machines but come and go like them (the GPU cluster's vLLM replicas). They are reported with Fleet=true, so the discovery job deregisters one as soon as it is no longer listed.
+type ExtraSites func(ctx context.Context) ([]Site, error)
+
+// AddSites adds a source of extra sites to Sites. An error of the source fails Sites as a whole: a partial list would make the discovery job deregister every site of that source.
+func (s *Service) AddSites(src ExtraSites) { s.extra = append(s.extra, src) }
 
 func NewService(cfg Config, wg WireGuard, store Store, scripts *Scripts) *Service {
 	return &Service{cfg: cfg, wg: wg, store: store, scripts: scripts, now: func() time.Time { return time.Now().UTC() }}

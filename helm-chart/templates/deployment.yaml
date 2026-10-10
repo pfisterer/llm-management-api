@@ -129,6 +129,12 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: jupyterhub-api-token}}
             - {name: GPU_TIERS, value: {{ required "gpu.tiers is required" .Values.gpu.tiers | toJson | quote }}}
             - {name: BOOTSTRAP_ADMIN_GPU_TIER, value: {{ .Values.gpu.bootstrapAdminGpuTier | quote }}}
+            {{- if .Values.gpu.inference.url }}
+            - {name: GPU_INFERENCE_URL, value: {{ .Values.gpu.inference.url | quote }}}
+            - {name: GPU_INFERENCE_NAMESPACE, value: {{ .Values.gpu.inference.namespace | quote }}}
+            - name: GPU_INFERENCE_API_KEY
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-inference-api-key}}
+            {{- end }}
             - {name: GPU_HUB_BIND, value: ":8091"}
             - name: GPU_HUB_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-hub-token}}

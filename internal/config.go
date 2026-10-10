@@ -132,6 +132,10 @@ func LoadConfig() (Config, error) {
 		GitHosts:        envconf.StringSlice("GPU_GIT_HOSTS", []string{"github.com", "gitlab.com"}, strings.ToLower),
 		JupyterURL:      strings.TrimRight(envconf.String("JUPYTERHUB_URL", ""), "/"),
 		JupyterAPIToken: envconf.String("JUPYTERHUB_API_TOKEN", ""),
+
+		InferenceURL:       envconf.String("GPU_INFERENCE_URL", ""),
+		InferenceAPIKey:    envconf.String("GPU_INFERENCE_API_KEY", ""),
+		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", "inference"),
 	}
 	cfg.BootstrapAdminGPUTier = envconf.String("BOOTSTRAP_ADMIN_GPU_TIER", "")
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")

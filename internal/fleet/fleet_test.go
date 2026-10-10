@@ -162,6 +162,28 @@ func TestSitesHubAndModels(t *testing.T) {
 	}
 }
 
+func TestExtraSites(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := testService(t, nil)
+	_, _ = svc.Enroll(ctx, mac("SERIAL0001", key1, "ok", 49152))
+	svc.AddSites(func(context.Context) ([]Site, error) {
+		return []Site{{Name: "gpu-gap-node", Weight: 1, Transport: "direct", APIBase: "https://inference.example/gap-node/v1", APIKey: "k"}}, nil
+	})
+	sites, err := svc.Sites(ctx)
+	if err != nil || len(sites) != 2 {
+		t.Fatalf("sites: %+v %v", sites, err)
+	}
+	// Reported like fleet machines, so the discovery job deregisters a replica that is gone.
+	if g := sites[1]; g.Name != "gpu-gap-node" || !g.Fleet || g.LiteLLMParams["extra_body"] == nil {
+		t.Fatalf("extra site: %+v", g)
+	}
+	// A failing source fails the whole list instead of returning one without it.
+	svc.AddSites(func(context.Context) ([]Site, error) { return nil, errors.New("kubernetes down") })
+	if _, err := svc.Sites(ctx); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 func TestScriptsAndCanary(t *testing.T) {
 	svc, _, _ := testService(t, func(c *Config) { c.SelfUpdateCanary = []string{"CANARY0001"} })
 	if m := svc.scripts.Manifest(svc.cfg, "OTHER00001"); m != "" {

@@ -36,6 +36,11 @@ type Config struct {
 
 	JupyterURL      string // https://jupyter.gpu.services.dhbw.cloud
 	JupyterAPIToken string // token of the hub service gpu-management-api
+
+	// vLLM replicas of the inference pool, reported to the discovery job as sites. Empty InferenceURL switches that off.
+	InferenceURL       string // https://inference.gpu.services.dhbw.cloud; a replica answers under <url>/<replica>/v1
+	InferenceAPIKey    string // the replicas' VLLM_API_KEY
+	InferenceNamespace string // inference
 }
 
 func (c Config) Validate() error {
@@ -51,6 +56,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.Tiers) == 0 {
 		missing = append(missing, "GPU_TIERS")
+	}
+	if c.InferenceURL != "" && strings.TrimSpace(c.InferenceAPIKey) == "" {
+		missing = append(missing, "GPU_INFERENCE_API_KEY")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("GPU part enabled but missing: %s", strings.Join(missing, ", "))

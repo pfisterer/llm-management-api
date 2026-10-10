@@ -51,6 +51,7 @@ type Service struct {
 	images  images
 	servers servers
 	refs    refResolver
+	pods    podLister
 	log     *zap.SugaredLogger
 }
 
@@ -61,8 +62,10 @@ func New(cfg Config, store Store, log *zap.SugaredLogger) (*Service, error) {
 		return nil, err
 	}
 	git := newGitClient()
-	return newService(cfg, store, k, newRegistry(cfg.Registry), newHub(cfg.JupyterURL, cfg.JupyterAPIToken),
-		func(ctx context.Context, u string) (gitRefs, error) { return fetchRefs(ctx, git, u) }, log), nil
+	s := newService(cfg, store, k, newRegistry(cfg.Registry), newHub(cfg.JupyterURL, cfg.JupyterAPIToken),
+		func(ctx context.Context, u string) (gitRefs, error) { return fetchRefs(ctx, git, u) }, log)
+	s.pods = k
+	return s, nil
 }
 
 func newService(cfg Config, store Store, b builds, i images, s servers, r refResolver, log *zap.SugaredLogger) *Service {

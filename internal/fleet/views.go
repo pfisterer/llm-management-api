@@ -94,6 +94,19 @@ func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 		}
 		out = append(out, site)
 	}
+	for _, src := range s.extra {
+		more, err := src(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, site := range more {
+			if site.LiteLLMParams == nil {
+				site.LiteLLMParams = params
+			}
+			site.Fleet = true
+			out = append(out, site)
+		}
+	}
 	return out, nil
 }
 

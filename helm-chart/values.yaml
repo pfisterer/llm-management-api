@@ -23,6 +23,8 @@ secrets:
   jupyterhubApiToken: ""
   # Token JupyterHub sends when it asks for a person's GPU access (listener :8091).
   gpuHubToken: ""
+  # VLLM_API_KEY of the inference pool (gpu.inference).
+  gpuInferenceApiKey: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =
@@ -71,6 +73,10 @@ gpu:
   # GPU quota tiers: [{name, maxGPUs}]; access rules may name them in gpu_tier.
   tiers: []
   bootstrapAdminGpuTier: ""
+  # vLLM replicas of the inference pool, reported to the discovery job as sites (GET /fleet/sites). Empty url = off. The key is gpu-inference-api-key in the existing secret; the ServiceAccount behind gpu-kube-token needs get/list on pods in the namespace.
+  inference:
+    url: ""
+    namespace: inference
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:
     externalIPs: []

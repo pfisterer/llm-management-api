@@ -162,6 +162,21 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			return fmt.Errorf("gpu: %w", err)
 		}
 		log.Infow("GPU part enabled", "jupyterhub", cfg.GPU.JupyterURL, "registry", cfg.GPU.Registry, "kubernetes", cfg.GPU.KubeAPIURL)
+		if gpuSvc.InferenceEnabled() {
+			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.
+			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {
+				reps, err := gpuSvc.InferenceReplicas(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("inference replicas: %w", err)
+				}
+				out := make([]fleet.Site, 0, len(reps))
+				for _, r := range reps {
+					out = append(out, fleet.Site{Name: "gpu-" + r.Name, Weight: 1, Transport: "direct", APIBase: r.APIBase, APIKey: gpuSvc.InferenceAPIKey()})
+				}
+				return out, nil
+			})
+			log.Infow("inference pool reported as sites", "url", cfg.GPU.InferenceURL)
+		}
 	}
 
 	var verifier webserver.TokenVerifier

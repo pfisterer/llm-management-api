@@ -112,6 +112,29 @@ func (k *kube) deleteJob(ctx context.Context, ns, name string) error {
 	return err
 }
 
+// podInfo is the part of a pod the inference listing reads.
+type podInfo struct {
+	Metadata struct {
+		Name              string            `json:"name"`
+		Labels            map[string]string `json:"labels"`
+		DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
+	} `json:"metadata"`
+	Status struct {
+		Conditions []struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+		} `json:"conditions"`
+	} `json:"status"`
+}
+
+func (k *kube) listPods(ctx context.Context, ns, selector string) ([]podInfo, error) {
+	var pods struct {
+		Items []podInfo `json:"items"`
+	}
+	err := k.do(ctx, http.MethodGet, "/api/v1/namespaces/"+ns+"/pods?labelSelector="+url.QueryEscape(selector), nil, &pods)
+	return pods.Items, err
+}
+
 // jobLog returns the last lines of the job's (newest) pod.
 func (k *kube) jobLog(ctx context.Context, ns, job string, tail int) (string, error) {
 	var pods struct {
