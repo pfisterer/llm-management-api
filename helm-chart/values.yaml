@@ -96,6 +96,9 @@ ingress:
   hostname: ""
   annotations: {}
 
+# Node selection, e.g. to keep the package volume (local-path) off a small node.
+nodeSelector: {}
+
 resources:
   requests: {cpu: 20m, memory: 32Mi}
   limits: {memory: 256Mi}

@@ -22,6 +22,10 @@ spec:
     spec:
       # Never talks to the Kubernetes API.
       automountServiceAccountToken: false
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         # The package volume is handed to root by local-path; the non-root
         # process needs group write access to it.
