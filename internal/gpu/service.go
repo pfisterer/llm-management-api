@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	ErrInvalidRepo = errors.New("invalid repository")
+	ErrInvalidRepo = errors.New("Repository nicht verwendbar")
 	ErrForbidden   = errors.New("not your environment")
 	ErrNotReady    = errors.New("environment not ready")
 )
@@ -102,7 +102,7 @@ var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
 func (s *Service) normaliseRepo(raw string) (string, string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", "", fmt.Errorf("%w: only public https URLs without credentials", ErrInvalidRepo)
+		return "", "", fmt.Errorf("%w: nur öffentliche https-Adressen ohne Zugangsdaten", ErrInvalidRepo)
 	}
 	host := strings.ToLower(u.Hostname())
 	allowed := false
@@ -112,11 +112,11 @@ func (s *Service) normaliseRepo(raw string) (string, string, error) {
 		}
 	}
 	if !allowed {
-		return "", "", fmt.Errorf("%w: host %s is not allowed (%s)", ErrInvalidRepo, host, strings.Join(s.cfg.GitHosts, ", "))
+		return "", "", fmt.Errorf("%w: %s ist nicht zugelassen (zugelassen: %s)", ErrInvalidRepo, host, strings.Join(s.cfg.GitHosts, ", "))
 	}
 	path := strings.Trim(strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git"), "/")
 	if strings.Count(path, "/") < 1 {
-		return "", "", fmt.Errorf("%w: expected https://%s/<owner>/<name>", ErrInvalidRepo, host)
+		return "", "", fmt.Errorf("%w: erwartet https://%s/<besitzer>/<name>", ErrInvalidRepo, host)
 	}
 	canonical := "https://" + host + "/" + path
 	slug := strings.Trim(slugUnsafe.ReplaceAllString(strings.ToLower(host+"-"+path), "-"), "-")
@@ -142,7 +142,7 @@ func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string) (
 		return Environment{}, err
 	}
 	if len(commit) < 12 {
-		return Environment{}, fmt.Errorf("%w: commit %q too short, give at least 12 characters", ErrInvalidRepo, commit)
+		return Environment{}, fmt.Errorf("%w: Commit %q zu kurz, mindestens 12 Zeichen angeben", ErrInvalidRepo, commit)
 	}
 	tag := commit[:12]
 	if strings.TrimSpace(name) == "" {

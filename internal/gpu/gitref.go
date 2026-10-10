@@ -20,7 +20,7 @@ type gitRefs struct {
 	DefaultBranch string
 }
 
-var ErrRefNotFound = errors.New("ref not found")
+var ErrRefNotFound = errors.New("Branch, Tag oder Commit nicht gefunden")
 
 // fetchRefs reads the refs of a public repository over Git's smart HTTP
 // protocol (what `git ls-remote` does), so the service needs no git binary.
@@ -33,14 +33,14 @@ func fetchRefs(ctx context.Context, client *http.Client, repoURL string) (gitRef
 	req.Header.Set("User-Agent", "git/2.45.0 (llm-management-api)")
 	resp, err := client.Do(req)
 	if err != nil {
-		return gitRefs{}, fmt.Errorf("git: %w", err)
+		return gitRefs{}, fmt.Errorf("Git-Server nicht erreichbar: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return gitRefs{}, fmt.Errorf("git: repository not found or not public (%d)", resp.StatusCode)
+		return gitRefs{}, fmt.Errorf("Repository nicht gefunden oder nicht öffentlich (HTTP %d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return gitRefs{}, fmt.Errorf("git: %s: %d", u, resp.StatusCode)
+		return gitRefs{}, fmt.Errorf("Git-Server antwortet mit HTTP %d", resp.StatusCode)
 	}
 	return parseRefAdvertisement(resp.Body)
 }
@@ -106,7 +106,7 @@ func (g gitRefs) resolve(ref string) (commit, branch string, err error) {
 	switch {
 	case ref == "" || ref == "HEAD":
 		if g.DefaultBranch == "" {
-			return "", "", errors.New("git: repository has no default branch")
+			return "", "", errors.New("Das Repository hat keinen Standard-Branch")
 		}
 		return g.Refs["refs/heads/"+g.DefaultBranch], g.DefaultBranch, nil
 	case g.Refs["refs/heads/"+ref] != "":
@@ -121,4 +121,4 @@ func (g gitRefs) resolve(ref string) (commit, branch string, err error) {
 	return "", "", fmt.Errorf("%w: %s", ErrRefNotFound, ref)
 }
 
-func newGitClient() *http.Client { return &http.Client{Timeout: 20 * time.Second} }
+func newGitClient() *http.Client { return withDNSRetry(&http.Client{Timeout: 20 * time.Second}) }

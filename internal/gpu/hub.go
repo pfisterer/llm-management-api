@@ -21,7 +21,7 @@ type hub struct {
 }
 
 func newHub(base, token string) *hub {
-	return &hub{base: base, token: token, http: &http.Client{Timeout: 30 * time.Second}}
+	return &hub{base: base, token: token, http: withDNSRetry(&http.Client{Timeout: 30 * time.Second})}
 }
 
 func (h *hub) do(ctx context.Context, method, path string, body, out any) (int, error) {

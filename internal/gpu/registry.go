@@ -23,7 +23,7 @@ type registry struct {
 }
 
 func newRegistry(host string) *registry {
-	return &registry{host: host, http: &http.Client{Timeout: 15 * time.Second}}
+	return &registry{host: host, http: withDNSRetry(&http.Client{Timeout: 15 * time.Second})}
 }
 
 func (r *registry) artifactURL(project, repo, ref string) string {
