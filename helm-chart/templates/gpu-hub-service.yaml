@@ -1,0 +1,16 @@
+{{- if and .Values.gpu.enabled .Values.gpu.hubAccess.externalIPs }}
+# JupyterHub in the GPU cluster asks here who may log in and how many GPUs a person gets (GET /gpu/hub/access, bearer token). Reachable only at the external IPs, i.e. through the node's WireGuard link to the GPU cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-mgmt.name" . }}-gpu-hub
+  labels:
+    {{- include "llm-mgmt.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "llm-mgmt.selectorLabels" . | nindent 4 }}
+  externalIPs:
+    {{- toYaml .Values.gpu.hubAccess.externalIPs | nindent 4 }}
+  ports:
+    - {name: gpu-hub, port: 8091, targetPort: gpu-hub}
+{{- end }}

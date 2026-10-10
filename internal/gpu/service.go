@@ -371,3 +371,8 @@ func (s *Service) Servers(ctx context.Context, user string) ([]Server, error) {
 func (s *Service) StopServer(ctx context.Context, user, name string) error {
 	return s.servers.stopServer(ctx, user, name, name != "")
 }
+
+// NewForTest builds a service without cluster connections (tiers only), for tests of other packages.
+func NewForTest(cfg Config) (*Service, error) {
+	return newService(cfg, NewMemoryStore(), nil, nil, nil, nil, nil), nil
+}

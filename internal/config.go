@@ -70,6 +70,9 @@ type Config struct {
 	// GPU part (environments from Git, JupyterHub servers in the GPU cluster).
 	GPU                   gpu.Config
 	BootstrapAdminGPUTier string
+	// Listener for JupyterHub's access questions (GPU part), and its token.
+	GPUHubBind  string
+	GPUHubToken string
 }
 
 func LoadConfig() (Config, error) {
@@ -131,6 +134,8 @@ func LoadConfig() (Config, error) {
 		JupyterAPIToken: envconf.String("JUPYTERHUB_API_TOKEN", ""),
 	}
 	cfg.BootstrapAdminGPUTier = envconf.String("BOOTSTRAP_ADMIN_GPU_TIER", "")
+	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
+	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	if raw := envconf.String("GPU_TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.GPU.Tiers); err != nil {
 			return Config{}, fmt.Errorf("GPU_TIERS is not valid JSON: %w", err)

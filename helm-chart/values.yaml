@@ -21,6 +21,8 @@ secrets:
   # GPU part: ServiceAccount token for the GPU cluster's Kubernetes API, token of the JupyterHub service gpu-management-api.
   gpuKubeToken: ""
   jupyterhubApiToken: ""
+  # Token JupyterHub sends when it asks for a person's GPU access (listener :8091).
+  gpuHubToken: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =
@@ -69,6 +71,9 @@ gpu:
   # GPU quota tiers: [{name, maxGPUs}]; access rules may name them in gpu_tier.
   tiers: []
   bootstrapAdminGpuTier: ""
+  # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
+  hubAccess:
+    externalIPs: []
 
 fleet:
   # ConfigMap with the fleet scripts (dhbw-llm-*.sh), the JAMF profile template

@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"go.uber.org/zap"
 )
@@ -167,5 +169,39 @@ func TestPrincipalSearch(t *testing.T) {
 	}
 	if code, _ := do(t, h, "GET", "/v1/principals/search?q=x", "student@dhbw.de", nil); code != 403 {
 		t.Fatalf("non-admin: %d", code)
+	}
+}
+
+func TestGPUHubAccess(t *testing.T) {
+	acc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{
+		Tiers: []string{"staff"}, GPUTiers: []string{"standard"}, BootstrapAdmins: []string{"root@dhbw.de"},
+		BootstrapAdminTier: "staff", BootstrapAdminGPUTier: "standard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gpu.NewForTest(gpu.Config{Tiers: []gpu.Tier{{Name: "standard", MaxGPUs: 2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := GPUHubRouter(GPUHubOptions{Access: acc, GPU: g, Token: "secret", Log: zap.NewNop().Sugar()}, true)
+	for _, tc := range []struct {
+		token, user string
+		status      int
+		body        string
+	}{
+		{"", "root@dhbw.de", 401, ""},
+		{"wrong", "root@dhbw.de", 401, ""},
+		{"secret", "root@dhbw.de", 200, `"allowed":true,"gpu_tier":"standard","max_gpus":2,"admin":true`},
+		{"secret", "nobody@dhbw.de", 200, `"allowed":false,"max_gpus":0,"admin":false`},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/gpu/hub/access?user="+tc.user, nil)
+		if tc.token != "" {
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.body) {
+			t.Errorf("%s/%s: %d %s", tc.token, tc.user, w.Code, w.Body.String())
+		}
 	}
 }

@@ -225,6 +225,12 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			LiteLLMURL: cfg.LiteLLMURL, Username: cfg.LiteLLMUIUsername, Password: cfg.LiteLLMUIPassword, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 	}
 
+	if gpuSvc != nil && cfg.GPUHubToken != "" {
+		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
+		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc, GPU: gpuSvc,
+			Token: cfg.GPUHubToken, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	errCh := make(chan error, len(servers))

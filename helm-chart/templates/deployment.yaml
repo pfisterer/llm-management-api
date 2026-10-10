@@ -44,6 +44,9 @@ spec:
             - {name: machine, containerPort: 8087}
             - {name: chat, containerPort: 8089}
             - {name: adminlogin, containerPort: 8090}
+            {{- if .Values.gpu.enabled }}
+            - {name: gpu-hub, containerPort: 8091}
+            {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -122,6 +125,9 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: jupyterhub-api-token}}
             - {name: GPU_TIERS, value: {{ required "gpu.tiers is required" .Values.gpu.tiers | toJson | quote }}}
             - {name: BOOTSTRAP_ADMIN_GPU_TIER, value: {{ .Values.gpu.bootstrapAdminGpuTier | quote }}}
+            - {name: GPU_HUB_BIND, value: ":8091"}
+            - name: GPU_HUB_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-hub-token}}
             {{- end }}
             {{- if .Values.fleet.filesConfigMap }}
             - {name: FLEET_SCRIPTS_DIR, value: /etc/llm-mgmt/fleet}
