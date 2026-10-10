@@ -19,6 +19,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/classify"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/generated_docs"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
@@ -46,10 +47,10 @@ func RunApplication() {
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == "import-classified" {
-		_, _, cs, err := stores(cfg)
+		st, err := stores(cfg)
 		if err == nil {
 			var n int
-			if n, err = classify.Import(context.Background(), cs, os.Args[2]); err == nil {
+			if n, err = classify.Import(context.Background(), st.classify, os.Args[2]); err == nil {
 				log.Infow("imported classifications", "count", n, "from", os.Args[2])
 				return
 			}
@@ -61,13 +62,20 @@ func RunApplication() {
 	}
 }
 
-// stores opens the access, fleet and classification stores on one connection.
-func stores(cfg Config) (access.Store, fleet.Store, classify.Store, error) {
+type allStores struct {
+	access   access.Store
+	fleet    fleet.Store
+	classify classify.Store
+	gpu      gpu.Store
+}
+
+// stores opens the access, fleet, classification and GPU stores on one connection.
+func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), nil
+		return allStores{access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
-		return nil, nil, nil, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
+		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
 	}
 	db, err := gorm.Open(postgres.Open(cfg.DBConnectionString), &gorm.Config{
 		// Maps unique-constraint violations to gorm.ErrDuplicatedKey (-> 409).
@@ -75,21 +83,25 @@ func stores(cfg Config) (access.Store, fleet.Store, classify.Store, error) {
 		Logger:         gormlogger.Default.LogMode(gormlogger.Warn),
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("postgres: %w", err)
+		return allStores{}, fmt.Errorf("postgres: %w", err)
 	}
 	as, err := access.NewGormStore(db)
 	if err != nil {
-		return nil, nil, nil, err
+		return allStores{}, err
 	}
 	fs, err := fleet.NewGormStore(db)
 	if err != nil {
-		return nil, nil, nil, err
+		return allStores{}, err
 	}
 	cs, err := classify.NewGormStore(db)
 	if err != nil {
-		return nil, nil, nil, err
+		return allStores{}, err
 	}
-	return as, fs, cs, nil
+	gs, err := gpu.NewGormStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{as, fs, cs, gs}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -101,11 +113,11 @@ func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
 }
 
 func importPeers(cfg Config, path string, log *zap.SugaredLogger) error {
-	_, fs, _, err := stores(cfg)
+	st, err := stores(cfg)
 	if err != nil {
 		return err
 	}
-	svc, err := fleetService(cfg, fs)
+	svc, err := fleetService(cfg, st.fleet)
 	if err != nil {
 		return err
 	}
@@ -118,10 +130,11 @@ func importPeers(cfg Config, path string, log *zap.SugaredLogger) error {
 }
 
 func run(cfg Config, log *zap.SugaredLogger) error {
-	store, fleetStore, classifyStore, err := stores(cfg)
+	st, err := stores(cfg)
 	if err != nil {
 		return err
 	}
+	store, fleetStore, classifyStore := st.access, st.fleet, st.classify
 	fleetSvc, err := fleetService(cfg, fleetStore)
 	if err != nil {
 		return err
@@ -135,9 +148,20 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		BootstrapAdmins:    cfg.BootstrapAdmins,
 		BootstrapAdminTier: cfg.BootstrapAdminTier,
 		TokenCacheTTL:      cfg.TokenCacheTTL,
+		GPUTiers:           cfg.GPU.TierNames(),
+		// Only with the GPU part: a GPU tier for admins would otherwise name a tier that does not exist.
+		BootstrapAdminGPUTier: gpuIf(cfg.GPU.Enabled, cfg.BootstrapAdminGPUTier),
 	})
 	if err != nil {
 		return err
+	}
+	var gpuSvc *gpu.Service
+	if cfg.GPU.Enabled {
+		gpuSvc, err = gpu.New(cfg.GPU, st.gpu, log)
+		if err != nil {
+			return fmt.Errorf("gpu: %w", err)
+		}
+		log.Infow("GPU part enabled", "jupyterhub", cfg.GPU.JupyterURL, "registry", cfg.GPU.Registry, "kubernetes", cfg.GPU.KubeAPIURL)
 	}
 
 	var verifier webserver.TokenVerifier
@@ -174,6 +198,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Health:       webserver.LiteLLMHealth(lite),
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
 		RoleProvider: roles,
+		GPU:          gpuSvc,
 		Log:          log,
 	})
 	var aliases map[string]classify.AliasDef
@@ -249,4 +274,11 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 	default:
 		return nil, fmt.Errorf("unsupported ROLE_PROVIDER_TYPE %q", cfg.RoleProviderType)
 	}
+}
+
+func gpuIf(enabled bool, v string) string {
+	if enabled {
+		return v
+	}
+	return ""
 }

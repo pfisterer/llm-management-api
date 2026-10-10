@@ -17,6 +17,7 @@ type TokenResolver interface {
 }
 
 var ErrUnknownTier = errors.New("unknown tier")
+var ErrUnknownGPUTier = errors.New("unknown GPU tier")
 var ErrBootstrapRule = errors.New("rules from the configuration cannot be changed here")
 
 // Service combines the stored access list with the bootstrap admins from the
@@ -25,6 +26,7 @@ type Service struct {
 	store     Store
 	resolver  TokenResolver
 	tiers     map[string]struct{}
+	gpuTiers  map[string]struct{}
 	bootstrap []Rule
 
 	cacheTTL time.Duration
@@ -45,6 +47,10 @@ type Config struct {
 	BootstrapAdmins []string
 	// Tier for bootstrap admins.
 	BootstrapAdminTier string
+	// GPU tier names that exist (GPU part, may be empty). Rules may only use these.
+	GPUTiers []string
+	// GPU tier for bootstrap admins (empty: none).
+	BootstrapAdminGPUTier string
 	// How long resolved role-provider tokens are reused. Short: a membership
 	// change should take effect within a minute, not at the next restart.
 	TokenCacheTTL time.Duration
@@ -55,10 +61,17 @@ func NewService(store Store, resolver TokenResolver, cfg Config) (*Service, erro
 	for _, t := range cfg.Tiers {
 		tiers[strings.TrimSpace(t)] = struct{}{}
 	}
-	s := &Service{store: store, resolver: resolver, tiers: tiers, cacheTTL: cfg.TokenCacheTTL, cache: map[string]cachedTokens{}}
+	gpuTiers := map[string]struct{}{}
+	for _, t := range cfg.GPUTiers {
+		gpuTiers[strings.TrimSpace(t)] = struct{}{}
+	}
+	s := &Service{store: store, resolver: resolver, tiers: tiers, gpuTiers: gpuTiers, cacheTTL: cfg.TokenCacheTTL, cache: map[string]cachedTokens{}}
 	if len(cfg.BootstrapAdmins) > 0 {
 		if _, ok := tiers[cfg.BootstrapAdminTier]; !ok {
 			return nil, fmt.Errorf("bootstrap admin tier %q: %w", cfg.BootstrapAdminTier, ErrUnknownTier)
+		}
+		if _, ok := gpuTiers[cfg.BootstrapAdminGPUTier]; cfg.BootstrapAdminGPUTier != "" && !ok {
+			return nil, fmt.Errorf("bootstrap admin GPU tier %q: %w", cfg.BootstrapAdminGPUTier, ErrUnknownGPUTier)
 		}
 	}
 	for _, email := range cfg.BootstrapAdmins {
@@ -66,7 +79,7 @@ func NewService(store Store, resolver TokenResolver, cfg Config) (*Service, erro
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap admin %q: %w", email, err)
 		}
-		s.bootstrap = append(s.bootstrap, Rule{Token: tok, Role: RoleAdmin, Tier: cfg.BootstrapAdminTier,
+		s.bootstrap = append(s.bootstrap, Rule{Token: tok, Role: RoleAdmin, Tier: cfg.BootstrapAdminTier, GPUTier: cfg.BootstrapAdminGPUTier,
 			Comment: "aus der Konfiguration", Bootstrap: true})
 	}
 	return s, nil
@@ -76,6 +89,15 @@ func NewService(store Store, resolver TokenResolver, cfg Config) (*Service, erro
 func (s *Service) Tiers() []string {
 	out := make([]string, 0, len(s.tiers))
 	for t := range s.tiers {
+		out = append(out, t)
+	}
+	return out
+}
+
+// GPUTiers lists the GPU tier names rules may use (empty without the GPU part).
+func (s *Service) GPUTiers() []string {
+	out := make([]string, 0, len(s.gpuTiers))
+	for t := range s.gpuTiers {
 		out = append(out, t)
 	}
 	return out
@@ -133,6 +155,10 @@ func (s *Service) validate(r *Rule) error {
 	}
 	if _, ok := s.tiers[r.Tier]; !ok {
 		return fmt.Errorf("%w %q", ErrUnknownTier, r.Tier)
+	}
+	r.GPUTier = strings.TrimSpace(r.GPUTier)
+	if _, ok := s.gpuTiers[r.GPUTier]; r.GPUTier != "" && !ok {
+		return fmt.Errorf("%w %q", ErrUnknownGPUTier, r.GPUTier)
 	}
 	for _, b := range s.bootstrap {
 		if b.Token == r.Token {

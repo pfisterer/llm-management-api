@@ -9,6 +9,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/pfisterer/cloud-self-service-golib/envconf"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 )
 
 // Tier is one quota class. Only the name matters to the access list; the
@@ -65,6 +66,10 @@ type Config struct {
 	ScriptsDir, ProfileTemplate, PackageDir, Readme string
 	LiteLLMMasterKey                                string
 	MaxKeysPerUser                                  int
+
+	// GPU part (environments from Git, JupyterHub servers in the GPU cluster).
+	GPU                   gpu.Config
+	BootstrapAdminGPUTier string
 }
 
 func LoadConfig() (Config, error) {
@@ -111,6 +116,26 @@ func LoadConfig() (Config, error) {
 		PackageDir:          envconf.String("FLEET_PACKAGE_DIR", ""),
 		Readme:              envconf.String("FLEET_README", ""),
 	}
+	cfg.GPU = gpu.Config{
+		Enabled:         strings.EqualFold(envconf.String("GPU_ENABLED", "false"), "true"),
+		KubeAPIURL:      envconf.String("GPU_KUBE_API_URL", ""),
+		KubeToken:       envconf.String("GPU_KUBE_TOKEN", ""),
+		KubeCA:          envconf.String("GPU_KUBE_CA", ""),
+		BuildNamespace:  envconf.String("GPU_BUILD_NAMESPACE", "env-build"),
+		Registry:        envconf.String("GPU_REGISTRY", ""),
+		EnvsProject:     envconf.String("GPU_ENVS_PROJECT", "envs"),
+		BuilderImage:    envconf.String("GPU_BUILDER_IMAGE", ""),
+		BuilderSecret:   envconf.String("GPU_BUILDER_SECRET", "harbor-envs-builder"),
+		GitHosts:        envconf.StringSlice("GPU_GIT_HOSTS", []string{"github.com", "gitlab.com"}, strings.ToLower),
+		JupyterURL:      strings.TrimRight(envconf.String("JUPYTERHUB_URL", ""), "/"),
+		JupyterAPIToken: envconf.String("JUPYTERHUB_API_TOKEN", ""),
+	}
+	cfg.BootstrapAdminGPUTier = envconf.String("BOOTSTRAP_ADMIN_GPU_TIER", "")
+	if raw := envconf.String("GPU_TIERS", ""); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.GPU.Tiers); err != nil {
+			return Config{}, fmt.Errorf("GPU_TIERS is not valid JSON: %w", err)
+		}
+	}
 	if raw := envconf.String("TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.Tiers); err != nil {
 			return Config{}, fmt.Errorf("TIERS is not valid JSON: %w", err)
@@ -150,7 +175,7 @@ func (c Config) validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("missing configuration: %s", strings.Join(missing, ", "))
 	}
-	return nil
+	return c.GPU.Validate()
 }
 
 func (c Config) TierNames() []string {

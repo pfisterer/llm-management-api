@@ -137,7 +137,7 @@ func (g *GormStore) Create(ctx context.Context, r Rule) (Rule, error) {
 
 func (g *GormStore) Update(ctx context.Context, r Rule) (Rule, error) {
 	res := g.db.WithContext(ctx).Model(&Rule{}).Where("id = ?", r.ID).Updates(map[string]any{
-		"token": r.Token, "role": r.Role, "tier": r.Tier, "comment": r.Comment,
+		"token": r.Token, "role": r.Role, "tier": r.Tier, "gpu_tier": r.GPUTier, "comment": r.Comment,
 		"updated_by": r.UpdatedBy, "updated_at": time.Now().UTC(),
 	})
 	if errors.Is(res.Error, gorm.ErrDuplicatedKey) {

@@ -23,6 +23,9 @@ type MeResponse struct {
 	APIURL       string      `json:"api_url,omitempty" example:"https://api.llm.services.dhbw.cloud/v1"`
 	// Only for admins: autologin link to the LiteLLM admin UI.
 	AdminUIURL string `json:"admin_ui_url,omitempty" example:"https://admin.llm.services.dhbw.cloud/autologin"`
+	// GPU part: tier and JupyterHub, only with GPU access (and the GPU part enabled).
+	GPUTier    string `json:"gpu_tier,omitempty" example:"student-gpu"`
+	JupyterURL string `json:"jupyter_url,omitempty" example:"https://jupyter.gpu.services.dhbw.cloud"`
 }
 
 // getMe godoc
@@ -47,16 +50,22 @@ func (s *Server) getMe(c *gin.Context) {
 		if cl.Decision.Role.AtLeast(access.RoleAdmin) {
 			resp.AdminUIURL = s.adminUI
 		}
+		if s.gpu != nil && cl.Decision.GPUTier != "" {
+			resp.GPUTier = cl.Decision.GPUTier
+			resp.JupyterURL = s.gpu.JupyterURL()
+		}
 	}
 	c.JSON(http.StatusOK, resp)
 }
 
 // RuleRequest creates or replaces an access rule.
 type RuleRequest struct {
-	Token   string      `json:"token" binding:"required" example:"group:wwi23seb"`
-	Role    access.Role `json:"role" binding:"required" example:"user" enums:"user,fleet-admin,admin"`
-	Tier    string      `json:"tier" binding:"required" example:"student"`
-	Comment string      `json:"comment" example:"Kurs WWI23SEB"`
+	Token string      `json:"token" binding:"required" example:"group:wwi23seb"`
+	Role  access.Role `json:"role" binding:"required" example:"user" enums:"user,fleet-admin,admin"`
+	Tier  string      `json:"tier" binding:"required" example:"student"`
+	// GPU tier (GPU notebooks and environments); empty = no GPU access.
+	GPUTier string `json:"gpu_tier,omitempty" example:"student-gpu"`
+	Comment string `json:"comment" example:"Kurs WWI23SEB"`
 }
 
 // listRules godoc
@@ -99,7 +108,7 @@ func (s *Server) createRule(c *gin.Context) {
 		return
 	}
 	rule, err := s.access.Create(c.Request.Context(),
-		access.Rule{Token: req.Token, Role: req.Role, Tier: req.Tier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
+		access.Rule{Token: req.Token, Role: req.Role, Tier: req.Tier, GPUTier: req.GPUTier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
 	if s.ruleError(c, err) {
 		return
 	}
@@ -131,7 +140,7 @@ func (s *Server) updateRule(c *gin.Context) {
 		return
 	}
 	rule, err := s.access.Update(c.Request.Context(),
-		access.Rule{ID: id, Token: req.Token, Role: req.Role, Tier: req.Tier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
+		access.Rule{ID: id, Token: req.Token, Role: req.Role, Tier: req.Tier, GPUTier: req.GPUTier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
 	if s.ruleError(c, err) {
 		return
 	}
@@ -170,6 +179,22 @@ func (s *Server) deleteRule(c *gin.Context) {
 //	@Router		/v1/tiers [get]
 func (s *Server) listTiers(c *gin.Context) {
 	tiers := s.access.Tiers()
+	sort.Strings(tiers)
+	c.JSON(http.StatusOK, tiers)
+}
+
+// listGPUTiers godoc
+//
+//	@ID			listGPUTiers
+//	@Summary	GPU tiers a rule may use
+//	@Description	Empty when the GPU part is not enabled.
+//	@Tags		access
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{array}	string
+//	@Router		/v1/gpu-tiers [get]
+func (s *Server) listGPUTiers(c *gin.Context) {
+	tiers := s.access.GPUTiers()
 	sort.Strings(tiers)
 	c.JSON(http.StatusOK, tiers)
 }
@@ -249,7 +274,7 @@ func (s *Server) ruleError(c *gin.Context, err error) bool {
 		abort(c, http.StatusConflict, "duplicate", "Für dieses Token gibt es schon eine Regel.")
 	case errors.Is(err, access.ErrBootstrapRule):
 		abort(c, http.StatusConflict, "bootstrap", "Admins aus der Konfiguration lassen sich hier nicht ändern.")
-	case errors.Is(err, access.ErrInvalidToken), errors.Is(err, access.ErrUnknownTier):
+	case errors.Is(err, access.ErrInvalidToken), errors.Is(err, access.ErrUnknownTier), errors.Is(err, access.ErrUnknownGPUTier):
 		abort(c, http.StatusBadRequest, "invalid", err.Error())
 	case strings.Contains(err.Error(), "unknown role"):
 		abort(c, http.StatusBadRequest, "invalid", err.Error())

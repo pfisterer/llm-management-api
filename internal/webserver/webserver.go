@@ -11,6 +11,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"go.uber.org/zap"
@@ -37,7 +38,9 @@ type Options struct {
 	Health       fleet.HealthSource
 	Material     fleet.Material
 	RoleProvider roleprovider.Provider
-	Log          *zap.SugaredLogger
+	// GPU part; nil when disabled (no /v1/gpu routes).
+	GPU *gpu.Service
+	Log *zap.SugaredLogger
 }
 
 type Server struct {
@@ -55,13 +58,14 @@ type Server struct {
 	health   fleet.HealthSource
 	material fleet.Material
 	roles    roleprovider.Provider
+	gpu      *gpu.Service
 	log      *zap.SugaredLogger
 }
 
 func New(o Options) *Server {
 	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers,
-		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, log: o.Log}
+		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, gpu: o.GPU, log: o.Log}
 }
 
 // Router builds the gin engine with all routes.
@@ -98,12 +102,26 @@ func (s *Server) Router() *gin.Engine {
 		fa.DELETE("/:serial", s.forgetMachine)
 	}
 
+	if s.gpu != nil {
+		g := v1.Group("/gpu", requireGPU)
+		g.GET("/environments", s.listEnvironments)
+		g.POST("/environments", s.createEnvironment)
+		g.GET("/environments/:id", s.getEnvironment)
+		g.DELETE("/environments/:id", s.deleteEnvironment)
+		g.GET("/environments/:id/log", s.getEnvironmentLog)
+		g.POST("/environments/:id/rebuild", s.rebuildEnvironment)
+		g.POST("/environments/:id/start", s.startEnvironment)
+		g.GET("/servers", s.listServers)
+		g.DELETE("/servers/:name", s.stopServer)
+	}
+
 	admin := v1.Group("", require(access.RoleAdmin))
 	admin.GET("/access-rules", s.listRules)
 	admin.POST("/access-rules", s.createRule)
 	admin.PUT("/access-rules/:id", s.updateRule)
 	admin.DELETE("/access-rules/:id", s.deleteRule)
 	admin.GET("/tiers", s.listTiers)
+	admin.GET("/gpu-tiers", s.listGPUTiers)
 	admin.GET("/principals/search", s.searchPrincipals)
 	return r
 }

@@ -105,6 +105,24 @@ spec:
             - name: WIREGUARD
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: wireguard-json}}
             - {name: FLEET_PACKAGE_DIR, value: /var/lib/llm-mgmt/packages}
+            {{- if .Values.gpu.enabled }}
+            - {name: GPU_ENABLED, value: "true"}
+            - {name: GPU_KUBE_API_URL, value: {{ required "gpu.kubeApiUrl is required" .Values.gpu.kubeApiUrl | quote }}}
+            - {name: GPU_KUBE_CA, value: {{ required "gpu.kubeCa is required" .Values.gpu.kubeCa | toJson }}}
+            - name: GPU_KUBE_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-kube-token}}
+            - {name: GPU_BUILD_NAMESPACE, value: {{ .Values.gpu.buildNamespace | quote }}}
+            - {name: GPU_REGISTRY, value: {{ required "gpu.registry is required" .Values.gpu.registry | quote }}}
+            - {name: GPU_ENVS_PROJECT, value: {{ .Values.gpu.envsProject | quote }}}
+            - {name: GPU_BUILDER_IMAGE, value: {{ .Values.gpu.builderImage | quote }}}
+            - {name: GPU_BUILDER_SECRET, value: {{ .Values.gpu.builderSecret | quote }}}
+            - {name: GPU_GIT_HOSTS, value: {{ join "," .Values.gpu.gitHosts | quote }}}
+            - {name: JUPYTERHUB_URL, value: {{ required "gpu.jupyterhubUrl is required" .Values.gpu.jupyterhubUrl | quote }}}
+            - name: JUPYTERHUB_API_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: jupyterhub-api-token}}
+            - {name: GPU_TIERS, value: {{ required "gpu.tiers is required" .Values.gpu.tiers | toJson | quote }}}
+            - {name: BOOTSTRAP_ADMIN_GPU_TIER, value: {{ .Values.gpu.bootstrapAdminGpuTier | quote }}}
+            {{- end }}
             {{- if .Values.fleet.filesConfigMap }}
             - {name: FLEET_SCRIPTS_DIR, value: /etc/llm-mgmt/fleet}
             - {name: FLEET_PROFILE_TEMPLATE, value: /etc/llm-mgmt/fleet/de.dhbw.llm.mobileconfig.tmpl}

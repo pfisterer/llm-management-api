@@ -18,6 +18,9 @@ secrets:
   wireguardJson: ""
   # Password of the shared LiteLLM UI account, for the autologin.
   litellmUiPassword: ""
+  # GPU part: ServiceAccount token for the GPU cluster's Kubernetes API, token of the JupyterHub service gpu-management-api.
+  gpuKubeToken: ""
+  jupyterhubApiToken: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =
@@ -48,6 +51,24 @@ config:
   aliases: {}
   aliasProbes: {}
   maxKeysPerUser: 5
+
+# GPU part: environments from Git repositories (repo2docker builds in the GPU cluster, images in Harbor) and JupyterHub servers. Off by default; tokens under secrets.
+gpu:
+  enabled: false
+  # Kubernetes API of the GPU cluster (through the node's WireGuard link) and its CA (PEM).
+  kubeApiUrl: ""
+  kubeCa: ""
+  buildNamespace: env-build
+  registry: ""
+  envsProject: envs
+  # Empty: newest tag of <registry>/platform/repo2docker-buildkit.
+  builderImage: ""
+  builderSecret: harbor-envs-builder
+  gitHosts: [github.com, gitlab.com]
+  jupyterhubUrl: ""
+  # GPU quota tiers: [{name, maxGPUs}]; access rules may name them in gpu_tier.
+  tiers: []
+  bootstrapAdminGpuTier: ""
 
 fleet:
   # ConfigMap with the fleet scripts (dhbw-llm-*.sh), the JAMF profile template

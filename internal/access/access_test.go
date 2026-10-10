@@ -20,11 +20,11 @@ func TestDecide(t *testing.T) {
 		want   Decision
 	}{
 		{"no match", []string{"user:x@dhbw.de", "group:other"}, Decision{}},
-		{"group", []string{"user:x@dhbw.de", "group:wwi23seb"}, Decision{RoleUser, "student", "group:wwi23seb"}},
-		{"higher role wins", []string{"group:wwi23seb", "group:it"}, Decision{RoleFleetAdmin, "staff", "group:it"}},
-		{"user rule beats group rule of same role", []string{"user:a@dhbw.de", "group:mitarbeitende"}, Decision{RoleUser, "special", "user:a@dhbw.de"}},
-		{"ties broken by token, not order", []string{"group:wwi23seb", "group:mitarbeitende"}, Decision{RoleUser, "staff", "group:mitarbeitende"}},
-		{"case-insensitive tokens", []string{"USER:Root@DHBW.de"}, Decision{RoleAdmin, "staff", "user:root@dhbw.de"}},
+		{"group", []string{"user:x@dhbw.de", "group:wwi23seb"}, Decision{Role: RoleUser, Tier: "student", MatchedToken: "group:wwi23seb"}},
+		{"higher role wins", []string{"group:wwi23seb", "group:it"}, Decision{Role: RoleFleetAdmin, Tier: "staff", MatchedToken: "group:it"}},
+		{"user rule beats group rule of same role", []string{"user:a@dhbw.de", "group:mitarbeitende"}, Decision{Role: RoleUser, Tier: "special", MatchedToken: "user:a@dhbw.de"}},
+		{"ties broken by token, not order", []string{"group:wwi23seb", "group:mitarbeitende"}, Decision{Role: RoleUser, Tier: "staff", MatchedToken: "group:mitarbeitende"}},
+		{"case-insensitive tokens", []string{"USER:Root@DHBW.de"}, Decision{Role: RoleAdmin, Tier: "staff", MatchedToken: "user:root@dhbw.de"}},
 	}
 	for _, c := range cases {
 		if got := Decide(rules, c.tokens); got != c.want {
@@ -84,5 +84,19 @@ func TestServiceBootstrapAndValidation(t *testing.T) {
 	}
 	if _, err := NewService(NewMemoryStore(), fixedTokens{}, Config{Tiers: []string{"staff"}, BootstrapAdmins: []string{"a@b.de"}, BootstrapAdminTier: "nope"}); !errors.Is(err, ErrUnknownTier) {
 		t.Fatalf("unknown bootstrap tier must fail, got %v", err)
+	}
+}
+
+func TestDecideGPUTierFromAnyRule(t *testing.T) {
+	rules := []Rule{
+		{Token: "user:a@dhbw.de", Role: RoleAdmin, Tier: "staff"},
+		{Token: "group:kurs-ki", Role: RoleUser, Tier: "student", GPUTier: "student-gpu"},
+	}
+	d := Decide(rules, []string{"user:a@dhbw.de", "group:kurs-ki"})
+	if d.Role != RoleAdmin || d.Tier != "staff" || d.GPUTier != "student-gpu" || d.GPUTierMatchedToken != "group:kurs-ki" {
+		t.Fatalf("got %+v", d)
+	}
+	if d := Decide(rules[:1], []string{"user:a@dhbw.de"}); d.GPUTier != "" {
+		t.Fatalf("no GPU rule, got %+v", d)
 	}
 }
