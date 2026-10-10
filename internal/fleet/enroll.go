@@ -268,7 +268,7 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (EnrollResponse
 		if mine.Transport != "direct" {
 			out.HubPublicKey = s.wg.HubPublicKey
 			out.HubAddress = s.wg.HubAddress
-			out.Endpoint = fmt.Sprintf("%s:%d", s.wg.EndpointHostV6, s.wg.ListenPort)
+			out.Endpoint = fmt.Sprintf("%s:%d", s.wg.EndpointHost(), s.wg.ListenPort)
 		}
 		return []Peer{*mine}, nil, nil
 	})

@@ -57,6 +57,14 @@ type WireGuard struct {
 	EndpointHostV4 string `json:"endpointHostV4"`
 }
 
+// EndpointHost is the name machines dial: the IPv4 name when it is set (the hub has IPv4 only since it moved into the GPU cluster), otherwise the IPv6 name.
+func (w WireGuard) EndpointHost() string {
+	if w.EndpointHostV4 != "" {
+		return w.EndpointHostV4
+	}
+	return w.EndpointHostV6
+}
+
 // ParseConfig reads both JSON blocks and checks the address pool against the
 // WireGuard network — the same start-up checks the broker made.
 func ParseConfig(fleetJSON, wgJSON string) (Config, WireGuard, error) {
