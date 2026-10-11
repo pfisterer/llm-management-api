@@ -27,7 +27,9 @@ type GPUHubOptions struct {
 	Project usage.ProjectOf
 	// Projects: what the hub offers at start (access answer) and checks before a start (spawn-check). nil = projects off.
 	Workspaces *workspace.Service
-	Log        *zap.SugaredLogger
+	// SelfServiceURL is where people get a project; passed on to the hub for those without one.
+	SelfServiceURL string
+	Log            *zap.SugaredLogger
 }
 
 // HubProject is a project as the hub needs it for its profile list.
@@ -47,6 +49,8 @@ type GPUHubAccessResponse struct {
 	MaxGPUs  int          `json:"max_gpus"`
 	Admin    bool         `json:"admin"`
 	Projects []HubProject `json:"projects"`
+	// GetProjectURL is where somebody without a project gets one (self-service start page); set when not allowed.
+	GetProjectURL string `json:"get_project_url,omitempty"`
 }
 
 // GPUHubRouter serves GET /gpu/hub/access?user=<email> for JupyterHub in the
@@ -90,6 +94,9 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 			resp.Allowed = resp.Allowed || len(mine) > 0
+		}
+		if !resp.Allowed {
+			resp.GetProjectURL = o.SelfServiceURL
 		}
 		c.JSON(http.StatusOK, resp)
 	})

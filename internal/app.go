@@ -281,7 +281,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if gpuSvc != nil && cfg.GPUHubToken != "" {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
 		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc, GPU: gpuSvc,
-			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Workspaces: wsSvc, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Workspaces: wsSvc, SelfServiceURL: cfg.SelfServiceURL, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
