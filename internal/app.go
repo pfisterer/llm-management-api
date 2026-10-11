@@ -284,7 +284,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if gpuSvc != nil {
-		// Workspace usage (docs/plan-workspaces.md, W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
+		// Workspace usage (docs/bauplan.md, Stufe 4 W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
 		go usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
 		// Budgets (W4): every five minutes, end the servers of people whose budget in the server's project is used up.
 		go func() {

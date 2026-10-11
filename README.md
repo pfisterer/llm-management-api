@@ -2,7 +2,7 @@
 
 Self-service API of the DHBW LLM service: who may use it (access list on top of the role-provider), API keys, usage and the Mac fleet. Consumed by the LLM section of [self-service-ui](https://github.com/pfisterer/self-service-ui) through the generated client `@dhbw-cloud/llm-client`.
 
-It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the dhbw-ai-service project (Ansible, `docs/plan-llm-management-api.md` and `docs/bauplan.md` there).
+It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the dhbw-ai-service project (Ansible, `docs/bauplan.md, Stufe 1` and `docs/bauplan.md` there).
 
 ## Access model
 

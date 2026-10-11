@@ -42,7 +42,7 @@ type Options struct {
 	RoleProvider roleprovider.Provider
 	// GPU part; nil when disabled (no /v1/gpu routes).
 	GPU *gpu.Service
-	// Workspace usage (docs/plan-workspaces.md); nil without the GPU part.
+	// Workspace usage (docs/bauplan.md, Stufe 4); nil without the GPU part.
 	Usage usage.Store
 	// Workspace projects; nil without the GPU part.
 	Workspaces *workspace.Service

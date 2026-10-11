@@ -2,7 +2,7 @@ package gpu
 
 import "strings"
 
-// buildScript clones the repository at the resolved commit and builds it with repo2docker from that checkout. A repository with a Dockerfile (where repo2docker looks: binder/, .binder/, else the root) is built only if every FROM names an image under ALLOWED_FROM (our platform images) or an earlier stage: environments then always rest on images we maintain (docs/plan-workspaces.md, W3). Repositories without a Dockerfile get repo2docker's own base plus our appendix, as before.
+// buildScript clones the repository at the resolved commit and builds it with repo2docker from that checkout. A repository with a Dockerfile (where repo2docker looks: binder/, .binder/, else the root) is built only if every FROM names an image under ALLOWED_FROM (our platform images) or an earlier stage: environments then always rest on images we maintain (docs/bauplan.md, Stufe 4, W3). Repositories without a Dockerfile get repo2docker's own base plus our appendix, as before.
 const buildScript = `set -euo pipefail
 git clone --quiet --no-checkout "$GIT_URL" /tmp/repo
 git -C /tmp/repo checkout --quiet "$GIT_COMMIT"

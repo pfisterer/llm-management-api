@@ -1,4 +1,4 @@
-// Package workspace holds the projects through which people use workspaces (Jupyter servers, later Coder), modelled on openstack-management-api's projects: members, what may be started (profiles, GPU classes, images), limits for concurrent use and budgets per window (docs/plan-workspaces.md). Until projects come from the budget tree (BudgetSource, resource-management-api), admins manage them here.
+// Package workspace holds the projects through which people use workspaces (Jupyter servers, later Coder), modelled on openstack-management-api's projects: members, what may be started (profiles, GPU classes, images), limits for concurrent use and budgets per window (docs/bauplan.md, Stufe 4). Until projects come from the budget tree (BudgetSource, resource-management-api), admins manage them here.
 package workspace
 
 import (

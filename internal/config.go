@@ -73,7 +73,7 @@ type Config struct {
 	// Listener for JupyterHub's access questions (GPU part), and its token.
 	GPUHubBind  string
 	GPUHubToken string
-	// Workspaces (docs/plan-workspaces.md): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
+	// Workspaces (docs/bauplan.md, Stufe 4): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
 	WorkspacesJSON string
 }
 
