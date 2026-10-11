@@ -9,6 +9,8 @@ import (
 // WorkspacePod is one running workspace pod (Jupyter server or GPU kernel) with what it reserves and, when metrics-server answers, what it uses.
 type WorkspacePod struct {
 	Pod       string
+	Running   bool   // false: waiting (Kueue, image pull); reserves nothing yet, but counts for the limits on concurrent use
+	Project   string // label dhbw.cloud/project set by the hub; empty for pods started before projects
 	Person    string // JupyterHub user name (e-mail)
 	Profile   string // label dhbw.cloud/profile set by the hub; "gpu-kernel" for kernel pods
 	GPUClass  string // from the node selector Kueue set; empty without GPU
@@ -25,7 +27,7 @@ type workspaceKube interface {
 	podMetrics(ctx context.Context, ns string) ([]podMetrics, error)
 }
 
-// WorkspacePods lists the running workspace pods in the hub's namespace. Pending pods (waiting in Kueue, pulling) reserve nothing yet and are left out. Measured use is best effort: without metrics-server the numbers stay 0.
+// WorkspacePods lists the workspace pods in the hub's namespace that are running or waiting; terminating and finished pods are left out. Measured use is best effort: without metrics-server the numbers stay 0.
 func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 	k, ok := s.pods.(workspaceKube)
 	if !ok {
@@ -51,23 +53,26 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 		}
 	}
 	// Kernel pods carry no hub annotation; their owner is the person's server pod.
-	personOf := map[string]string{}
+	personOf, projectOf := map[string]string{}, map[string]string{}
 	for _, p := range pods {
 		if u := p.Metadata.Annotations["hub.jupyter.org/username"]; u != "" {
 			personOf[p.Metadata.Name] = u
+			projectOf[p.Metadata.Name] = p.Metadata.Labels["dhbw.cloud/project"]
 		}
 	}
 	out := []WorkspacePod{}
 	for _, p := range pods {
-		if p.Status.Phase != "Running" || p.Metadata.DeletionTimestamp != nil {
+		if (p.Status.Phase != "Running" && p.Status.Phase != "Pending") || p.Metadata.DeletionTimestamp != nil {
 			continue
 		}
-		w := WorkspacePod{Pod: p.Metadata.Name, Person: personOf[p.Metadata.Name], Profile: p.Metadata.Labels["dhbw.cloud/profile"]}
+		w := WorkspacePod{Pod: p.Metadata.Name, Running: p.Status.Phase == "Running", Person: personOf[p.Metadata.Name],
+			Project: p.Metadata.Labels["dhbw.cloud/project"], Profile: p.Metadata.Labels["dhbw.cloud/profile"]}
 		if p.Metadata.Labels["component"] == "kernel" {
 			w.Profile = "gpu-kernel"
 			for _, o := range p.Metadata.OwnerReferences {
 				if o.Kind == "Pod" && personOf[o.Name] != "" {
 					w.Person = personOf[o.Name]
+					w.Project = projectOf[o.Name]
 				}
 			}
 		}

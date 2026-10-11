@@ -9,6 +9,7 @@ import (
 
 // Sample is one running workspace pod at the moment of sampling.
 type Sample struct {
+	Project   string // from the pod's label; empty = ask ProjectOf (pods from before projects)
 	Person    string
 	Profile   string
 	GPUClass  string  // empty without GPU
@@ -58,7 +59,11 @@ func (c *Collector) Tick(ctx context.Context) error {
 	day := Day(now)
 	rows := map[key]Row{}
 	for _, s := range samples {
-		r := Row{Day: day, Project: c.project(ctx, s.Person), Person: s.Person, Profile: s.Profile, GPUClass: s.GPUClass,
+		project := s.Project
+		if project == "" {
+			project = c.project(ctx, s.Person)
+		}
+		r := Row{Day: day, Project: project, Person: s.Person, Profile: s.Profile, GPUClass: s.GPUClass,
 			ServerHours: h, VCPUHours: s.CPU * h, RAMGBHours: s.RAMGB * h, GPUHours: s.GPUs * h,
 			CPUUsedHours: s.CPUUsed * h, RAMUsedGBHours: s.RAMUsedGB * h, UpdatedAt: now}
 		k := keyOf(r)

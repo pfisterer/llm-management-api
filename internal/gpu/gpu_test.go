@@ -126,7 +126,7 @@ func TestCreateBuildsOnceAndShares(t *testing.T) {
 	if err != nil || bb.Status != StatusBuilding || len(b.created) != 1 {
 		t.Fatalf("second create %+v %v, jobs %v", bb, err, b.created)
 	}
-	if _, err := s.Start(ctx, a, "a@dhbw.de", false); !errors.Is(err, ErrNotReady) {
+	if _, err := s.Start(ctx, a, "a@dhbw.de", false, ""); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("start before ready: %v", err)
 	}
 	b.status[a.JobName] = jobStatus{Succeeded: 1}
@@ -137,12 +137,12 @@ func TestCreateBuildsOnceAndShares(t *testing.T) {
 	if _, err := s.Get(ctx, a.ID, "b@dhbw.de", false); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("foreign get: %v", err)
 	}
-	u, err := s.Start(ctx, got, "a@dhbw.de", true)
+	u, err := s.Start(ctx, got, "a@dhbw.de", true, "kurs")
 	if err != nil || !strings.HasPrefix(u, "https://hub/user/a@dhbw.de/r-") {
 		t.Fatalf("start %q %v", u, err)
 	}
 	opts := h.started[ServerName(got)]
-	if opts["profile"] != "git-gpu" || opts["image--unlisted-choice"] != got.Image {
+	if opts["profile"] != "git-gpu" || opts["image--unlisted-choice"] != got.Image || opts["project"] != "kurs" {
 		t.Fatalf("hub options %v", opts)
 	}
 	// Image already in Harbor: no build at all.

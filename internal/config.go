@@ -73,6 +73,8 @@ type Config struct {
 	// Listener for JupyterHub's access questions (GPU part), and its token.
 	GPUHubBind  string
 	GPUHubToken string
+	// Workspaces (docs/plan-workspaces.md): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
+	WorkspacesJSON string
 }
 
 func LoadConfig() (Config, error) {
@@ -140,6 +142,7 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.BootstrapAdminGPUTier = envconf.String("BOOTSTRAP_ADMIN_GPU_TIER", "")
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
+	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	if raw := envconf.String("GPU_TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.GPU.Tiers); err != nil {

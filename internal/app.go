@@ -26,6 +26,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/webserver"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -70,12 +71,13 @@ type allStores struct {
 	classify classify.Store
 	gpu      gpu.Store
 	usage    usage.Store
+	projects workspace.Store
 }
 
 // stores opens the access, fleet, classification and GPU stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore()}, nil
+		return allStores{access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -108,7 +110,11 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{as, fs, cs, gs, us}, nil
+	ws, err := workspace.NewGormStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{as, fs, cs, gs, us, ws}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -163,12 +169,30 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		return err
 	}
 	var gpuSvc *gpu.Service
+	var wsSvc *workspace.Service
 	if cfg.GPU.Enabled {
 		gpuSvc, err = gpu.New(cfg.GPU, st.gpu, log)
 		if err != nil {
 			return fmt.Errorf("gpu: %w", err)
 		}
 		log.Infow("GPU part enabled", "jupyterhub", cfg.GPU.JupyterURL, "registry", cfg.GPU.Registry, "kubernetes", cfg.GPU.KubeAPIURL)
+		wsCfg := workspace.Config{}
+		if cfg.WorkspacesJSON != "" {
+			if err := json.Unmarshal([]byte(cfg.WorkspacesJSON), &wsCfg); err != nil {
+				return fmt.Errorf("WORKSPACES: %w", err)
+			}
+		}
+		if len(wsCfg.BootstrapMembers) == 0 {
+			for _, a := range cfg.BootstrapAdmins {
+				wsCfg.BootstrapMembers = append(wsCfg.BootstrapMembers, "user:"+a)
+			}
+		}
+		wsSvc = workspace.NewService(st.projects, wsCfg, runningWorkspaces(gpuSvc))
+		if created, err := wsSvc.Bootstrap(context.Background()); err != nil {
+			return fmt.Errorf("workspace projects: %w", err)
+		} else if created {
+			log.Infow("created the workspace project pilot for the bootstrap admins")
+		}
 		if gpuSvc.InferenceEnabled() {
 			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.
 			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {
@@ -222,6 +246,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		RoleProvider: roles,
 		GPU:          gpuSvc,
 		Usage:        st.usage,
+		Workspaces:   wsSvc,
 		Log:          log,
 	})
 	var aliases map[string]classify.AliasDef
@@ -252,7 +277,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if gpuSvc != nil && cfg.GPUHubToken != "" {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
 		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc, GPU: gpuSvc,
-			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Workspaces: wsSvc, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -325,7 +350,10 @@ func workspaceSource(g *gpu.Service) usage.Source {
 		}
 		out := make([]usage.Sample, 0, len(pods))
 		for _, p := range pods {
-			out = append(out, usage.Sample{Person: p.Person, Profile: p.Profile, GPUClass: p.GPUClass, CPU: p.CPU, RAMGB: p.RAMGB,
+			if !p.Running {
+				continue // waiting pods reserve nothing yet
+			}
+			out = append(out, usage.Sample{Project: p.Project, Person: p.Person, Profile: p.Profile, GPUClass: p.GPUClass, CPU: p.CPU, RAMGB: p.RAMGB,
 				GPUs: p.GPUs, CPUUsed: p.CPUUsed, RAMUsedGB: p.RAMUsedGB})
 		}
 		return out, nil
@@ -362,5 +390,20 @@ func projectOf(acc *access.Service, log *zap.SugaredLogger) usage.ProjectOf {
 		cache[person] = entry{project, time.Now().Add(10 * time.Minute)}
 		mu.Unlock()
 		return project
+	}
+}
+
+func runningWorkspaces(g *gpu.Service) func(context.Context) ([]workspace.Running, error) {
+	return func(ctx context.Context) ([]workspace.Running, error) {
+		pods, err := g.WorkspacePods(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]workspace.Running, 0, len(pods))
+		for _, p := range pods {
+			out = append(out, workspace.Running{Server: p.Pod, Person: p.Person, Project: p.Project, Profile: p.Profile, GPUClass: p.GPUClass,
+				CPU: p.CPU, RAMGB: p.RAMGB, GPUs: p.GPUs})
+		}
+		return out, nil
 	}
 }

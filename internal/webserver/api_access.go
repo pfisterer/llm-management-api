@@ -26,6 +26,8 @@ type MeResponse struct {
 	// GPU part: tier and JupyterHub, only with GPU access (and the GPU part enabled).
 	GPUTier    string `json:"gpu_tier,omitempty" example:"student-gpu"`
 	JupyterURL string `json:"jupyter_url,omitempty" example:"https://jupyter.gpu.services.dhbw.cloud"`
+	// Workspaces: number of active projects the caller belongs to; independent of the LLM role.
+	WorkspaceProjects int `json:"workspace_projects" example:"1"`
 }
 
 // getMe godoc
@@ -52,6 +54,12 @@ func (s *Server) getMe(c *gin.Context) {
 		}
 		if s.gpu != nil && cl.Decision.GPUTier != "" {
 			resp.GPUTier = cl.Decision.GPUTier
+			resp.JupyterURL = s.gpu.JupyterURL()
+		}
+	}
+	if s.gpu != nil {
+		resp.WorkspaceProjects = len(s.myProjects(c))
+		if resp.WorkspaceProjects > 0 {
 			resp.JupyterURL = s.gpu.JupyterURL()
 		}
 	}

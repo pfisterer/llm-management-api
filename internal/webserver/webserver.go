@@ -15,6 +15,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/usage"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
 
@@ -43,7 +44,9 @@ type Options struct {
 	GPU *gpu.Service
 	// Workspace usage (docs/plan-workspaces.md); nil without the GPU part.
 	Usage usage.Store
-	Log   *zap.SugaredLogger
+	// Workspace projects; nil without the GPU part.
+	Workspaces *workspace.Service
+	Log        *zap.SugaredLogger
 }
 
 type Server struct {
@@ -63,13 +66,14 @@ type Server struct {
 	roles    roleprovider.Provider
 	gpu      *gpu.Service
 	usage    usage.Store
+	ws       *workspace.Service
 	log      *zap.SugaredLogger
 }
 
 func New(o Options) *Server {
 	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers,
-		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, gpu: o.GPU, usage: o.Usage, log: o.Log}
+		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }
 
 // Router builds the gin engine with all routes.
@@ -107,14 +111,20 @@ func (s *Server) Router() *gin.Engine {
 		fa.DELETE("/:serial", s.forgetMachine)
 	}
 
-	if s.gpu != nil && s.usage != nil {
+	if s.gpu != nil && s.usage != nil && s.ws != nil {
 		w := v1.Group("/workspaces")
-		w.GET("/usage/me", requireGPU, s.getMyWorkspaceUsage)
-		w.GET("/usage", require(access.RoleAdmin), s.getWorkspaceUsage)
+		w.GET("/usage/me", s.requireWorkspace, s.getMyWorkspaceUsage)
+		// Admins: everything; project managers: their project (?project=).
+		w.GET("/usage", s.getWorkspaceUsage)
+		w.GET("/catalog", s.requireWorkspace, s.getWorkspaceCatalog)
+		w.GET("/projects", s.listWorkspaceProjects)
+		w.POST("/projects", require(access.RoleAdmin), s.createWorkspaceProject)
+		w.PUT("/projects/:slug", s.updateWorkspaceProject)
+		w.DELETE("/projects/:slug", require(access.RoleAdmin), s.deleteWorkspaceProject)
 	}
 
 	if s.gpu != nil {
-		g := v1.Group("/gpu", requireGPU)
+		g := v1.Group("/gpu", s.requireWorkspace)
 		g.GET("/environments", s.listEnvironments)
 		g.POST("/environments", s.createEnvironment)
 		g.GET("/environments/:id", s.getEnvironment)

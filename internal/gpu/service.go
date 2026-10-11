@@ -312,7 +312,7 @@ func ServerName(e Environment) string {
 // Start starts (or reuses) the person's named server for the environment.
 // gpu selects the GPU profile; JupyterHub enforces the GPU quota and answers
 // with a message if it is exhausted.
-func (s *Service) Start(ctx context.Context, e Environment, user string, gpu bool) (string, error) {
+func (s *Service) Start(ctx context.Context, e Environment, user string, gpu bool, project string) (string, error) {
 	e = s.refresh(ctx, e)
 	if e.Status != StatusReady {
 		return "", ErrNotReady
@@ -325,7 +325,11 @@ func (s *Service) Start(ctx context.Context, e Environment, user string, gpu boo
 		profile = "git-gpu"
 	}
 	name := ServerName(e)
-	err := s.servers.startServer(ctx, user, name, map[string]any{"profile": profile, "image--unlisted-choice": e.Image})
+	opts := map[string]any{"profile": profile, "image--unlisted-choice": e.Image}
+	if project != "" {
+		opts["project"] = project
+	}
+	err := s.servers.startServer(ctx, user, name, opts)
 	var he *HubError
 	if errors.As(err, &he) && he.Status == http.StatusBadRequest && strings.Contains(he.Message, "already running") {
 		err = nil

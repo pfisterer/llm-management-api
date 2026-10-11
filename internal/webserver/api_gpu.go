@@ -9,12 +9,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// requireGPU aborts unless the caller has a GPU tier (from any matching access rule).
-func requireGPU(c *gin.Context) {
-	if caller(c).Decision.GPUTier == "" {
-		abort(c, http.StatusForbidden, "forbidden", "Kein Zugang zu GPU-Umgebungen.")
+// requireWorkspace aborts unless the caller may use workspaces: a member of an active project, or (until the GPU tiers are gone) an access rule with a GPU tier.
+func (s *Server) requireWorkspace(c *gin.Context) {
+	if caller(c).Decision.GPUTier == "" && len(s.myProjects(c)) == 0 {
+		abort(c, http.StatusForbidden, "forbidden", "Kein Zugang zu Workspaces (kein Projekt).")
 		return
 	}
 	c.Next()
@@ -32,6 +33,8 @@ type EnvironmentRequest struct {
 type StartRequest struct {
 	// With a GPU (waits in the queue if all GPUs are busy; counts against the GPU quota).
 	GPU bool `json:"gpu" example:"false"`
+	// Project the server runs in (its slug); empty = the first of the caller's projects that allows the profile.
+	Project string `json:"project,omitempty" example:"wwi23seb-ml"`
 }
 
 // StartResponse is where the started server will be reachable.
@@ -241,7 +244,36 @@ func (s *Server) startEnvironment(c *gin.Context) {
 	}
 	var req StartRequest
 	_ = c.ShouldBindJSON(&req)
-	u, err := s.gpu.Start(c.Request.Context(), e, caller(c).Email, req.GPU)
+	profile := "git-cpu"
+	if req.GPU {
+		profile = "git-gpu"
+	}
+	if s.ws != nil {
+		if req.Project == "" {
+			for _, p := range s.myProjects(c) {
+				if p.Allows(profile) {
+					req.Project = p.Slug
+					break
+				}
+			}
+		}
+		// The same check the hub makes before the start, here already so the answer is immediate; the hub repeats it with the exact resources.
+		gpus := 0.0
+		if req.GPU {
+			gpus = 1
+		}
+		err := s.ws.CheckStart(c.Request.Context(), caller(c).Tokens, workspace.StartRequest{Person: caller(c).Email, Project: req.Project, Profile: profile, GPUs: gpus})
+		var refusal *workspace.Refusal
+		if errors.As(err, &refusal) {
+			abort(c, http.StatusForbidden, "forbidden", refusal.Reason)
+			return
+		}
+		if err != nil {
+			s.internalError(c, "start check", err)
+			return
+		}
+	}
+	u, err := s.gpu.Start(c.Request.Context(), e, caller(c).Email, req.GPU, req.Project)
 	if err != nil {
 		s.gpuError(c, "start environment", err)
 		return

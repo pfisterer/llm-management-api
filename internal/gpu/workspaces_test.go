@@ -38,8 +38,8 @@ func TestWorkspacePods(t *testing.T) {
 	for _, p := range pods {
 		by[p.Pod] = p
 	}
-	if len(pods) != 3 {
-		t.Fatalf("only running pods with a person: %+v", pods)
+	if len(pods) != 4 || by["jupyter-c"].Running || !by["jupyter-a"].Running {
+		t.Fatalf("running and waiting pods with a person: %+v", pods)
 	}
 	near := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 	if a := by["jupyter-a"]; a.Person != "a@dhbw.de" || a.Profile != "cpu" || !near(a.CPU, 0.5) || !near(a.RAMGB, 2e9/(1<<30)) || a.GPUClass != "" || !near(a.CPUUsed, 0.25) || !near(a.RAMUsedGB, 1) {
