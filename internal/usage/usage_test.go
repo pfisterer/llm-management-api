@@ -93,6 +93,15 @@ func TestHomes(t *testing.T) {
 	if err != nil || len(used) != 3 || !near(used["home-dennis-pfisterer-dhbw-de---c771a8ee"], 1.5) || !near(used["home-someone-dhbw-de---00000000"], 0.5) {
 		t.Fatalf("parsed: %v %v", used, err)
 	}
+	// As juicefs 1.4.1 prints it (header Path/ID, "unchanged" for inodes).
+	real := `+-------------------------------------------+--------+---------+------+-----------+-------+-------+
+|                  Path/ID                  |  Size  |   Used  | Use% |   Inodes  | IUsed | IUse% |
++-------------------------------------------+--------+---------+------+-----------+-------+-------+
+| /home-dennis-pfisterer-dhbw-de---c771a8ee | 10 GiB | 4.7 MiB |   0% | unchanged |   231 |       |
++-------------------------------------------+--------+---------+------+-----------+-------+-------+`
+	if u, err := ParseQuotaList(real); err != nil || !near(u["home-dennis-pfisterer-dhbw-de---c771a8ee"], 4.7/1024) {
+		t.Fatalf("juicefs 1.4 output: %v %v", u, err)
+	}
 	if _, err := ParseQuotaList("no table"); err == nil {
 		t.Fatal("expected an error without a table")
 	}

@@ -28,7 +28,7 @@ func ParseQuotaList(text string) (map[string]float64, error) {
 		if pathCol < 0 {
 			for i, c := range cells {
 				switch strings.ToLower(c) {
-				case "path":
+				case "path", "path/id": // juicefs 1.4 prints "Path/ID"
 					pathCol = i
 				case "used":
 					usedCol = i
