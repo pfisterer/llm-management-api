@@ -41,6 +41,8 @@ type Config struct {
 	InferenceURL       string // https://inference.gpu.services.dhbw.cloud; a replica answers under <url>/<replica>/v1
 	InferenceAPIKey    string // the replicas' VLLM_API_KEY
 	InferenceNamespace string // inference
+
+	WorkspaceNamespace string // jupyterhub: where the workspace pods run whose usage is booked
 }
 
 func (c Config) Validate() error {

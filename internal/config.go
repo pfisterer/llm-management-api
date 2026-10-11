@@ -136,6 +136,7 @@ func LoadConfig() (Config, error) {
 		InferenceURL:       envconf.String("GPU_INFERENCE_URL", ""),
 		InferenceAPIKey:    envconf.String("GPU_INFERENCE_API_KEY", ""),
 		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", "inference"),
+		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", "jupyterhub"),
 	}
 	cfg.BootstrapAdminGPUTier = envconf.String("BOOTSTRAP_ADMIN_GPU_TIER", "")
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")

@@ -117,19 +117,31 @@ type podInfo struct {
 	Metadata struct {
 		Name              string            `json:"name"`
 		Labels            map[string]string `json:"labels"`
+		Annotations       map[string]string `json:"annotations"`
 		CreationTimestamp time.Time         `json:"creationTimestamp"`
 		DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
+		OwnerReferences   []struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Spec struct {
-		NodeName        string `json:"nodeName"`
+		NodeName        string            `json:"nodeName"`
+		NodeSelector    map[string]string `json:"nodeSelector"`
 		SchedulingGates []struct {
 			Name string `json:"name"`
 		} `json:"schedulingGates"`
 		Containers []struct {
-			Args []string `json:"args"`
+			Name      string   `json:"name"`
+			Args      []string `json:"args"`
+			Resources struct {
+				Requests map[string]string `json:"requests"`
+				Limits   map[string]string `json:"limits"`
+			} `json:"resources"`
 		} `json:"containers"`
 	} `json:"spec"`
 	Status struct {
+		Phase      string     `json:"phase"`
 		StartTime  *time.Time `json:"startTime"`
 		Conditions []struct {
 			Type   string `json:"type"`
@@ -144,6 +156,24 @@ func (k *kube) listPods(ctx context.Context, ns, selector string) ([]podInfo, er
 	}
 	err := k.do(ctx, http.MethodGet, "/api/v1/namespaces/"+ns+"/pods?labelSelector="+url.QueryEscape(selector), nil, &pods)
 	return pods.Items, err
+}
+
+// podMetrics is what metrics-server reports for a pod.
+type podMetrics struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Containers []struct {
+		Usage map[string]string `json:"usage"`
+	} `json:"containers"`
+}
+
+func (k *kube) podMetrics(ctx context.Context, ns string) ([]podMetrics, error) {
+	var m struct {
+		Items []podMetrics `json:"items"`
+	}
+	err := k.do(ctx, http.MethodGet, "/apis/metrics.k8s.io/v1beta1/namespaces/"+ns+"/pods", nil, &m)
+	return m.Items, err
 }
 
 // jobLog returns the last lines of the job's (newest) pod.

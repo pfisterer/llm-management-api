@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
+	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/webserver"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
@@ -67,12 +69,13 @@ type allStores struct {
 	fleet    fleet.Store
 	classify classify.Store
 	gpu      gpu.Store
+	usage    usage.Store
 }
 
 // stores opens the access, fleet, classification and GPU stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore()}, nil
+		return allStores{access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -101,7 +104,11 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{as, fs, cs, gs}, nil
+	us, err := usage.NewGormStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{as, fs, cs, gs, us}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -214,6 +221,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
 		RoleProvider: roles,
 		GPU:          gpuSvc,
+		Usage:        st.usage,
 		Log:          log,
 	})
 	var aliases map[string]classify.AliasDef
@@ -240,14 +248,19 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			LiteLLMURL: cfg.LiteLLMURL, Username: cfg.LiteLLMUIUsername, Password: cfg.LiteLLMUIPassword, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 	}
 
+	bookTo := projectOf(accessSvc, log)
 	if gpuSvc != nil && cfg.GPUHubToken != "" {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
 		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc, GPU: gpuSvc,
-			Token: cfg.GPUHubToken, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if gpuSvc != nil {
+		// Workspace usage (docs/plan-workspaces.md, W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
+		go usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+	}
 	errCh := make(chan error, len(servers))
 	for _, hs := range servers {
 		go func(hs *http.Server) {
@@ -302,4 +315,52 @@ func gpuIf(enabled bool, v string) string {
 		return v
 	}
 	return ""
+}
+
+func workspaceSource(g *gpu.Service) usage.Source {
+	return func(ctx context.Context) ([]usage.Sample, error) {
+		pods, err := g.WorkspacePods(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]usage.Sample, 0, len(pods))
+		for _, p := range pods {
+			out = append(out, usage.Sample{Person: p.Person, Profile: p.Profile, GPUClass: p.GPUClass, CPU: p.CPU, RAMGB: p.RAMGB,
+				GPUs: p.GPUs, CPUUsed: p.CPUUsed, RAMUsedGB: p.RAMUsedGB})
+		}
+		return out, nil
+	}
+}
+
+// projectOf books usage, until projects exist (W2), to the access rule that grants the person compute (the GPU tier's rule, else the deciding rule). Cached for ten minutes: the collector asks every minute and the answer needs the role-provider.
+func projectOf(acc *access.Service, log *zap.SugaredLogger) usage.ProjectOf {
+	type entry struct {
+		project string
+		until   time.Time
+	}
+	var mu sync.Mutex
+	cache := map[string]entry{}
+	return func(ctx context.Context, person string) string {
+		mu.Lock()
+		e, ok := cache[person]
+		mu.Unlock()
+		if ok && time.Now().Before(e.until) {
+			return e.project
+		}
+		project := "ohne Regel"
+		if d, _, err := acc.Decide(ctx, strings.ToLower(person)); err != nil {
+			log.Warnw("usage: access decision failed", "person", person, "error", err)
+			if ok {
+				return e.project
+			}
+		} else if d.GPUTierMatchedToken != "" {
+			project = d.GPUTierMatchedToken
+		} else if d.MatchedToken != "" {
+			project = d.MatchedToken
+		}
+		mu.Lock()
+		cache[person] = entry{project, time.Now().Add(10 * time.Minute)}
+		mu.Unlock()
+		return project
+	}
 }
