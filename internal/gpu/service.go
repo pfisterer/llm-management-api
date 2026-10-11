@@ -230,6 +230,15 @@ func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 		e.Status, e.Message = StatusReady, ""
 	case st.Failed > 0:
 		e.Status, e.Message = StatusFailed, "Build fehlgeschlagen, Details im Build-Log."
+		// A refusal of the build script itself (lines starting with "dhbw: ", e.g. a base image that is not allowed) is the better message.
+		if log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, e.JobName, 50); err == nil {
+			for _, line := range strings.Split(log, "\n") {
+				if msg, ok := strings.CutPrefix(strings.TrimSpace(line), "dhbw: "); ok {
+					e.Message = msg
+					break
+				}
+			}
+		}
 		for _, c := range st.Conditions {
 			if c.Type == "Failed" && c.Reason == "DeadlineExceeded" {
 				e.Message = "Build hat das Zeitlimit überschritten."

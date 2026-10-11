@@ -1,5 +1,24 @@
 package gpu
 
+import "strings"
+
+// buildScript clones the repository at the resolved commit and builds it with repo2docker from that checkout. A repository with a Dockerfile (where repo2docker looks: binder/, .binder/, else the root) is built only if every FROM names an image under ALLOWED_FROM (our platform images) or an earlier stage: environments then always rest on images we maintain (docs/plan-workspaces.md, W3). Repositories without a Dockerfile get repo2docker's own base plus our appendix, as before.
+const buildScript = `set -euo pipefail
+git clone --quiet --no-checkout "$GIT_URL" /tmp/repo
+git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
+dir=/tmp/repo
+for d in binder .binder; do if [ -d "/tmp/repo/$d" ]; then dir="/tmp/repo/$d"; break; fi; done
+if [ -f "$dir/Dockerfile" ]; then
+  if ! bad=$(awk -v allow="$ALLOWED_FROM" 'toupper($1)=="FROM" { img=""; al=""; for (i=2; i<=NF; i++) { if ($i ~ /^--/) continue; if (img=="") { img=$i; continue } if (toupper($i)=="AS" && i<NF) al=$(i+1) } if (!(img in stage) && index(img, allow)!=1) { print img; bad=1 } if (al!="") stage[al]=1 } END { exit bad }' "$dir/Dockerfile"); then
+    echo "dhbw: Das Dockerfile nutzt ein Basis-Image, das hier nicht erlaubt ist: $(echo $bad | tr '\n' ' ')" >&2
+    echo "dhbw: Erlaubt sind Images unter $ALLOWED_FROM (Plattform-Images) und frühere Stufen desselben Dockerfiles. Ohne Dockerfile baut repo2docker auf seinem eigenen Basis-Image." >&2
+    exit 1
+  fi
+fi
+repo2docker --engine buildkit --no-run --push --user-id 1000 --user-name jovyan \
+  --appendix "$(cat /etc/r2d/appendix.Dockerfile)" --label "org.dhbw.git.url=$GIT_URL" --label "org.dhbw.git.branch=$GIT_BRANCH" \
+  --image-name "$IMAGE" /tmp/repo`
+
 // buildJob is the Kubernetes Job that builds one environment: repo2docker with
 // the BuildKit engine (image platform/repo2docker-buildkit) on a build node,
 // BuildKit as root in the pod's own user namespace (hostUsers: false, nothing
@@ -7,9 +26,7 @@ package gpu
 // dhbw-ai-service/tests/env-build.sh. The namespace's NetworkPolicy limits the job to
 // the internet, Harbor and DNS.
 func buildJob(cfg Config, name, builder, gitURL, commit, branch, image, slug string) map[string]any {
-	script := `repo2docker --engine buildkit --no-run --push --user-id 1000 --user-name jovyan --ref "$GIT_COMMIT" ` +
-		`--appendix "$(cat /etc/r2d/appendix.Dockerfile)" --label "org.dhbw.git.url=$GIT_URL" --label "org.dhbw.git.branch=$GIT_BRANCH" ` +
-		`--image-name "$IMAGE" "$GIT_URL"`
+	script := buildScript
 	return map[string]any{
 		"apiVersion": "batch/v1",
 		"kind":       "Job",
@@ -37,6 +54,7 @@ func buildJob(cfg Config, name, builder, gitURL, commit, branch, image, slug str
 							map[string]any{"name": "GIT_COMMIT", "value": commit},
 							map[string]any{"name": "GIT_BRANCH", "value": branch},
 							map[string]any{"name": "IMAGE", "value": image},
+							map[string]any{"name": "ALLOWED_FROM", "value": strings.TrimRight(cfg.Registry, "/") + "/platform/"},
 							map[string]any{"name": "DOCKER_CONFIG", "value": "/docker-config"},
 							map[string]any{"name": "R2D_BUILDKIT_CACHE", "value": cfg.Registry + "/" + cfg.EnvsProject + "/buildcache:" + slug},
 						},

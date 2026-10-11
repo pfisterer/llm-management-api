@@ -95,6 +95,7 @@ func TestCheckStart(t *testing.T) {
 		{"not a member", StartRequest{Person: "c@dhbw.de", Project: "cpu-only", Profile: "cpu"}, "Kein Mitglied"},
 		{"ended", StartRequest{Person: "a@dhbw.de", Project: "alt", Profile: "cpu"}, "abgelaufen"},
 		{"profile not allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "git-cpu"}, "nicht freigegeben"},
+		{"free images not allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: FreeProfile}, "nicht freigegeben"},
 		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "pytorch", GPUs: 1}, "keine GPUs"},
 		{"cores per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 1.5}, "Kerne"},
 		{"memory per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", RAMGB: 5}, "Speicher"},
@@ -113,6 +114,11 @@ func TestCheckStart(t *testing.T) {
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+	// Free images where the project allows them.
+	_, _ = s.Create(ctx, Project{Slug: "frei", Members: []Member{{Token: "user:a@dhbw.de"}}, FreeImages: true}, "admin")
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei", Profile: FreeProfile, CPU: 0.25, RAMGB: 1})); got != "" {
+		t.Fatalf("free image: %q", got)
 	}
 	// Server limit: two running servers of a in kurs.
 	s2 := service(Running{Server: "s1", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"}, Running{Server: "s2", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"},

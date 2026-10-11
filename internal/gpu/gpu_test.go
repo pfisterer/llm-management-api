@@ -59,6 +59,7 @@ func TestNormaliseRepo(t *testing.T) {
 type fakeBuilds struct {
 	created []string
 	status  map[string]jobStatus
+	log     string
 }
 
 func (f *fakeBuilds) createJob(_ context.Context, _ string, job map[string]any) error {
@@ -79,6 +80,9 @@ func (f *fakeBuilds) jobStatus(_ context.Context, _, name string) (jobStatus, er
 }
 func (f *fakeBuilds) deleteJob(context.Context, string, string) error { return nil }
 func (f *fakeBuilds) jobLog(context.Context, string, string, int) (string, error) {
+	if f.log != "" {
+		return f.log, nil
+	}
 	return "log", nil
 }
 
@@ -161,5 +165,13 @@ func TestFailedBuild(t *testing.T) {
 	list, err := s.List(ctx, "a@dhbw.de")
 	if err != nil || len(list) != 1 || list[0].Status != StatusFailed || list[0].Message == "" {
 		t.Fatalf("%+v %v", list, err)
+	}
+	// The build script's own refusal becomes the message.
+	b.log = "Cloning\ndhbw: Das Dockerfile nutzt ein Basis-Image, das hier nicht erlaubt ist: python:3.12\ndhbw: Erlaubt sind …\n"
+	e2, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "")
+	b.status[e2.JobName] = jobStatus{Failed: 1}
+	got, _ := s.Get(ctx, e2.ID, "a@dhbw.de", false)
+	if !strings.HasPrefix(got.Message, "Das Dockerfile nutzt ein Basis-Image") {
+		t.Fatalf("message: %q", got.Message)
 	}
 }
