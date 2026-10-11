@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// TreeBudget is a project's share of a budget in the budget tree: an amount per window for the whole project.
+// TreeBudget is a project's share of a budget in the budget tree: an amount per window for the whole project; 0 = no cap.
 type TreeBudget struct {
 	Unit     string  `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours"`
 	GPUClass string  `json:"gpu_class,omitempty" example:"l4-3q"`
@@ -73,7 +73,8 @@ func (s *Service) byNode(ctx context.Context, node string) (Project, bool, error
 func grantedClasses(tp TreeProject) []string {
 	var out []string
 	for _, b := range tp.Budgets {
-		if b.Unit == "gpu_hours" && b.GPUClass != "" && b.Amount > 0 && !slices.Contains(out, b.GPUClass) {
+		// A budget the tree sends grants its class; amount 0 is a share without a cap.
+		if b.Unit == "gpu_hours" && b.GPUClass != "" && !slices.Contains(out, b.GPUClass) {
 			out = append(out, b.GPUClass)
 		}
 	}
