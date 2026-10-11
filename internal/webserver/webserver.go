@@ -26,16 +26,20 @@ type TokenVerifier interface {
 
 // Options wires the server's dependencies.
 type Options struct {
-	DevMode      bool
-	Version      string
-	SwaggerJSON  string
-	ChatURL      string
-	APIURL       string
-	AdminUIURL   string
-	Verifier     TokenVerifier // nil only in development mode
-	Access       *access.Service
-	Keys         *keys.Service
-	Tiers        map[string]keys.Tier
+	DevMode     bool
+	Version     string
+	SwaggerJSON string
+	ChatURL     string
+	APIURL      string
+	AdminUIURL  string
+	Verifier    TokenVerifier // nil only in development mode
+	Access      *access.Service
+	Keys        *keys.Service
+	Tiers       map[string]keys.Tier
+	// Quota decides a person's LLM tier (from the access rule, or with the budget from the tree); zero = from Tiers.
+	Quota LLMQuota
+	// TreeToken lets the budget tree (resource-management-api) manage its projects under /v1/tree; empty = off.
+	TreeToken    string
 	Fleet        *fleet.Service
 	Health       fleet.HealthSource
 	Material     fleet.Material
@@ -60,6 +64,8 @@ type Server struct {
 	access   *access.Service
 	keys     *keys.Service
 	tiers    map[string]keys.Tier
+	quota    LLMQuota
+	treeTok  string
 	fleet    *fleet.Service
 	health   fleet.HealthSource
 	material fleet.Material
@@ -71,9 +77,13 @@ type Server struct {
 }
 
 func New(o Options) *Server {
-	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
-		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers,
+	srv := &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
+		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers, quota: o.Quota, treeTok: o.TreeToken,
 		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
+	if srv.quota.Tiers == nil {
+		srv.quota.Tiers = o.Tiers
+	}
+	return srv
 }
 
 // Router builds the gin engine with all routes.
@@ -109,6 +119,15 @@ func (s *Server) Router() *gin.Engine {
 		fa.POST("/:serial/block", s.blockMachine)
 		fa.POST("/:serial/unblock", s.unblockMachine)
 		fa.DELETE("/:serial", s.forgetMachine)
+	}
+
+	if s.ws != nil && s.treeTok != "" {
+		// The budget tree manages its projects with a token of its own, not as a person.
+		t := r.Group("/v1/tree", ginweb.DisableCaching(), s.requireTreeToken)
+		t.GET("/projects", s.listTreeProjects)
+		t.PUT("/projects/:node", s.putTreeProject)
+		t.DELETE("/projects/:node", s.deleteTreeProject)
+		t.GET("/catalog", s.getTreeCatalog)
 	}
 
 	if s.gpu != nil && s.usage != nil && s.ws != nil {

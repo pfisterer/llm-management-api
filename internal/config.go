@@ -75,6 +75,11 @@ type Config struct {
 	GPUHubToken string
 	// Workspaces (docs/bauplan.md, Stufe 4): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
 	WorkspacesJSON string
+	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off); whether the LLM budget per person comes from the tree's projects instead of the tiers (LLM_BUDGET_SOURCE=tree), which tier gives rate limits and models then to people without one, and where people get a project.
+	TreeToken      string
+	LLMBudgetTree  bool
+	LLMTreeTier    string
+	SelfServiceURL string
 }
 
 func LoadConfig() (Config, error) {
@@ -144,6 +149,16 @@ func LoadConfig() (Config, error) {
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
 	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
+	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
+	switch src := strings.ToLower(envconf.String("LLM_BUDGET_SOURCE", "tiers")); src {
+	case "tiers":
+	case "tree":
+		cfg.LLMBudgetTree = true
+	default:
+		return Config{}, fmt.Errorf("LLM_BUDGET_SOURCE must be tiers or tree (got %q)", src)
+	}
+	cfg.LLMTreeTier = envconf.String("LLM_TREE_TIER", "")
+	cfg.SelfServiceURL = envconf.String("SELF_SERVICE_URL", "")
 	if raw := envconf.String("GPU_TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.GPU.Tiers); err != nil {
 			return Config{}, fmt.Errorf("GPU_TIERS is not valid JSON: %w", err)

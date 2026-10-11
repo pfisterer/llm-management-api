@@ -168,8 +168,13 @@ func (s *Service) validate(p *Project) error {
 		}
 	}
 	l := p.Limits
-	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || l.GPUs < 0 {
+	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || p.LLMMTokens < 0 {
 		return refuse("Grenzen dürfen nicht negativ sein.")
+	}
+	for c, n := range p.GPUsByClass {
+		if n < 0 || !slices.Contains(s.cfg.GPUClasses, c) {
+			return refuse("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", c)
+		}
 	}
 	for _, b := range p.Budgets {
 		if !slices.Contains([]string{"server_hours", "vcpu_hours", "ram_gb_hours", "gpu_hours"}, b.Unit) ||
@@ -202,12 +207,20 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	if err != nil {
 		return Project{}, err
 	}
-	if !asAdmin {
+	switch {
+	case cur.Managed():
+		// The tree owns members, end and the project's amounts; managers and
+		// admins set how the project uses them.
+		keepTreeFields(&p, cur)
+	case !asAdmin:
 		desc, members, images := p.Description, p.Members, p.Images
 		p = cur
 		p.Description, p.Members, p.Images = desc, members, images
 	}
 	if err := s.validate(&p); err != nil {
+		return Project{}, err
+	}
+	if err := withinTree(p); err != nil {
 		return Project{}, err
 	}
 	p.UpdatedBy = by
@@ -262,12 +275,14 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 		return err
 	}
 	var servers int
-	var cpu, ram, gpus, projectGPUs float64
+	var cpu, ram, gpus, classGPUs float64
 	for _, x := range running {
 		if x.Server == r.Server || x.Project != p.Slug {
 			continue
 		}
-		projectGPUs += x.GPUs
+		if x.GPUClass == pr.GPUClass {
+			classGPUs += x.GPUs
+		}
 		if !strings.EqualFold(x.Person, r.Person) {
 			continue
 		}
@@ -288,8 +303,8 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 		return refuse("Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Server bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
 	case r.GPUs > 0 && gpus+r.GPUs > float64(l.GPUsPerPerson):
 		return refuse("Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", p.Name, plural(l.GPUsPerPerson, "ist 1 GPU", "sind %d GPUs"), gpus)
-	case r.GPUs > 0 && l.GPUs > 0 && projectGPUs+r.GPUs > float64(l.GPUs):
-		return refuse("Alle %d GPUs des Projekts „%s“ sind gerade belegt.", l.GPUs, p.Name)
+	case r.GPUs > 0 && p.GPUsByClass[pr.GPUClass] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[pr.GPUClass]):
+		return refuse("Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[pr.GPUClass], pr.GPUClass, p.Name)
 	}
 	if s.budget != nil {
 		return s.budget(ctx, p, r.Person, pr.GPUClass)

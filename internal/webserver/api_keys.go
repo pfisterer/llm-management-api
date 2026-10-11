@@ -23,10 +23,16 @@ type CreateKeyResponse struct {
 // configured, which would be a configuration error.
 func (s *Server) personAndTier(c *gin.Context) (keys.Person, keys.Tier, bool) {
 	cl := caller(c)
-	t, ok := s.tiers[cl.Decision.Tier]
-	if !ok {
-		s.log.Errorw("access rule names an unknown tier", "tier", cl.Decision.Tier, "email", cl.Email)
-		abort(c, http.StatusInternalServerError, "internal", "Kontingentklasse nicht konfiguriert.")
+	t, status, msg := s.quota.TierFor(c.Request.Context(), cl.Decision, cl.Tokens)
+	if status != 0 {
+		if status == http.StatusInternalServerError {
+			s.log.Errorw("no tier for the caller", "tier", cl.Decision.Tier, "email", cl.Email, "reason", msg)
+		}
+		code := map[int]string{http.StatusForbidden: "no_quota", http.StatusServiceUnavailable: "unavailable"}[status]
+		if code == "" {
+			code = "internal"
+		}
+		abort(c, status, code, msg)
 		return keys.Person{}, keys.Tier{}, false
 	}
 	return keys.Person{Subject: cl.Subject, Email: cl.Email}, t, true

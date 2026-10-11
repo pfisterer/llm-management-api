@@ -230,6 +230,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser)
 
+	quota := webserver.LLMQuota{Tiers: tiers, FromTree: cfg.LLMBudgetTree, TreeTier: cfg.LLMTreeTier, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
 		Version:      strings.TrimSpace(generated_docs.Version),
@@ -241,6 +242,8 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Access:       accessSvc,
 		Keys:         keySvc,
 		Tiers:        tiers,
+		Quota:        quota,
+		TreeToken:    cfg.TreeToken,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
@@ -267,7 +270,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// Chat exchange for LibreChat: trusts identity headers, so NetworkPolicy
 		// admits LibreChat only. No write timeout — a streamed answer of a large
 		// model can take minutes.
-		{Addr: cfg.ChatBind, Handler: webserver.ChatRouter(webserver.ChatOptions{Access: accessSvc, Keys: keySvc, Tiers: tiers,
+		{Addr: cfg.ChatBind, Handler: webserver.ChatRouter(webserver.ChatOptions{Access: accessSvc, Keys: keySvc, Tiers: tiers, Quota: quota,
 			Gateway: cfg.LiteLLMGatewayURL, MasterKey: cfg.LiteLLMMasterKey, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 		// LiteLLM UI autologin, behind the admin host's forward-auth.
 		{Addr: cfg.AdminLoginBind, Handler: webserver.AdminLoginRouter(webserver.AdminLoginOptions{Access: accessSvc,

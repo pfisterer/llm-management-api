@@ -80,7 +80,7 @@ func TestCheckStart(t *testing.T) {
 	s := service(running...)
 	yesterday := time.Now().Add(-48 * time.Hour)
 	_, _ = s.Create(ctx, Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:wwi23seb"}}, Profiles: []string{"cpu", "pytorch"},
-		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 2, RAMGBPerPerson: 8, GPUsPerPerson: 1, GPUs: 1}}, "admin")
+		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 2, RAMGBPerPerson: 8, GPUsPerPerson: 1}, GPUsByClass: map[string]int{"l4-3q": 1}}, "admin")
 	_, _ = s.Create(ctx, Project{Slug: "cpu-only", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu", "pytorch"}}, "admin")
 	_, _ = s.Create(ctx, Project{Slug: "alt", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, EndsAt: &yesterday}, "admin")
 
@@ -99,7 +99,7 @@ func TestCheckStart(t *testing.T) {
 		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "pytorch", GPUs: 1}, "keine GPUs"},
 		{"cores per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 1.5}, "Kerne"},
 		{"memory per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", RAMGB: 5}, "Speicher"},
-		{"project GPUs busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "pytorch", GPUs: 1}, "GPUs des Projekts"},
+		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "pytorch", GPUs: 1}, "GPUs der Klasse l4-3q"},
 		{"own restart does not count", StartRequest{Person: "b@dhbw.de", Project: "kurs", Profile: "pytorch", GPUs: 1, Server: "jupyter-b-gpu"}, ""},
 	}
 	for _, c := range cases {

@@ -32,40 +32,47 @@ type Limits struct {
 	CPUPerPerson     float64 `json:"cpu_per_person" example:"4"`     // requested cores of all running servers of a person in the project
 	RAMGBPerPerson   float64 `json:"ram_gb_per_person" example:"16"` // requested GiB
 	GPUsPerPerson    int     `json:"gpus_per_person" example:"1"`    // GPU servers and GPU kernels together
-	GPUs             int     `json:"gpus" example:"4"`               // the whole project at the same time; 0 = no limit
 }
 
-// Budget is a limit on accumulated use in a sliding window, in one unit (W4). Amount per person when PerPerson, else for the whole project.
+// Budget is a limit on accumulated use in a window, in one unit (W4). Amount per person when PerPerson, else for the whole project. Tree marks a budget the budget tree set: the project's share of a budget there, which only the tree changes; the others are the managers' (shares per person, shorter windows).
 type Budget struct {
 	Unit      string  `json:"unit" example:"vcpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours"`
 	GPUClass  string  `json:"gpu_class,omitempty" example:"l4-3q"` // only for gpu_hours; empty = all classes
 	Window    string  `json:"window" example:"30d" enums:"24h,7d,30d,total"`
 	Amount    float64 `json:"amount" example:"40"`
 	PerPerson bool    `json:"per_person" example:"true"`
+	Tree      bool    `json:"tree,omitempty"`
 }
 
 // Project is what a person chooses when starting a workspace.
 type Project struct {
-	ID          uint       `json:"id" gorm:"primaryKey"`
-	Slug        string     `json:"slug" gorm:"uniqueIndex;not null" example:"wwi23seb-ml"` // short name, also the pod label dhbw.cloud/project
-	Name        string     `json:"name" example:"Machine Learning WWI23SEB"`
-	Description string     `json:"description" example:"Übungen zur Vorlesung"`
-	Members     []Member   `json:"members" gorm:"serializer:json"`
-	Profiles    []string   `json:"profiles" gorm:"serializer:json" example:"cpu,pytorch"`
-	GPUClasses  []string   `json:"gpu_classes" gorm:"serializer:json" example:"l4-3q"`
-	Images      []Image    `json:"images" gorm:"serializer:json"`
-	FreeImages  bool       `json:"free_images"` // W3: any image, CPU only, without home
-	Limits      Limits     `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
-	Budgets     []Budget   `json:"budgets" gorm:"serializer:json"`
-	EndsAt      *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
-	TreeNode    string     `json:"tree_node,omitempty"` // later: the node in openstack-management-api's budget tree
-	CreatedBy   string     `json:"created_by,omitempty"`
-	UpdatedBy   string     `json:"updated_by,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          uint     `json:"id" gorm:"primaryKey"`
+	Slug        string   `json:"slug" gorm:"uniqueIndex;not null" example:"wwi23seb-ml"` // short name, also the pod label dhbw.cloud/project
+	Name        string   `json:"name" example:"Machine Learning WWI23SEB"`
+	Description string   `json:"description" example:"Übungen zur Vorlesung"`
+	Members     []Member `json:"members" gorm:"serializer:json"`
+	Profiles    []string `json:"profiles" gorm:"serializer:json" example:"cpu,pytorch"`
+	GPUClasses  []string `json:"gpu_classes" gorm:"serializer:json" example:"l4-3q"`
+	Images      []Image  `json:"images" gorm:"serializer:json"`
+	FreeImages  bool     `json:"free_images"` // W3: any image, CPU only, without home
+	Limits      Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
+	Budgets     []Budget `json:"budgets" gorm:"serializer:json"`
+	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
+	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
+	// LLMMTokens is the project's share of LLM tokens per 30 days in millions, from the budget tree; what a person may use is the sum over their projects.
+	LLMMTokens int        `json:"llm_mtokens" gorm:"column:llm_mtokens"`
+	EndsAt     *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
+	TreeNode   string     `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and LLM tokens
+	CreatedBy  string     `json:"created_by,omitempty"`
+	UpdatedBy  string     `json:"updated_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 func (Project) TableName() string { return "workspace_projects" }
+
+// Managed tells whether the budget tree manages the project.
+func (p Project) Managed() bool { return p.TreeNode != "" }
 
 // Active tells whether people can start in the project on day t.
 func (p Project) Active(t time.Time) bool {

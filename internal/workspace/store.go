@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -81,7 +82,40 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 	if err := db.AutoMigrate(&Project{}); err != nil {
 		return nil, err
 	}
+	if err := migrateProjectGPUs(db); err != nil {
+		return nil, err
+	}
 	return &GormStore{db: db}, nil
+}
+
+// migrateProjectGPUs turns the one number of GPUs a project could use at the same time (Limits.GPUs, which GORM named limit_gp_us) into a number per GPU class: the same number for each class the project allows. A no-op once the column is gone.
+func migrateProjectGPUs(db *gorm.DB) error {
+	m := db.Migrator()
+	if !m.HasColumn(&Project{}, "limit_gp_us") {
+		return nil
+	}
+	type row struct {
+		ID         uint
+		LimitGPUs  int    `gorm:"column:limit_gp_us"`
+		GPUClasses []byte `gorm:"column:gpu_classes"`
+	}
+	var rows []row
+	if err := db.Table("workspace_projects").Select("id, limit_gp_us, gpu_classes").Where("limit_gp_us > 0").Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, r := range rows {
+		var classes []string
+		_ = json.Unmarshal(r.GPUClasses, &classes)
+		byClass := map[string]int{}
+		for _, c := range classes {
+			byClass[c] = r.LimitGPUs
+		}
+		raw, _ := json.Marshal(byClass)
+		if err := db.Table("workspace_projects").Where("id = ?", r.ID).Update("gpus_by_class", string(raw)).Error; err != nil {
+			return err
+		}
+	}
+	return m.DropColumn(&Project{}, "limit_gp_us")
 }
 
 func (s *GormStore) List(ctx context.Context) ([]Project, error) {

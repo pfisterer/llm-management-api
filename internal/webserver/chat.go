@@ -22,9 +22,11 @@ import (
 
 // ChatOptions configures the chat exchange.
 type ChatOptions struct {
-	Access    *access.Service
-	Keys      *keys.Service
-	Tiers     map[string]keys.Tier
+	Access *access.Service
+	Keys   *keys.Service
+	Tiers  map[string]keys.Tier
+	// Quota decides the tier; zero = from Tiers.
+	Quota     LLMQuota
 	Gateway   string // LiteLLM inference gateway, e.g. http://litellm-gateway:4000
 	MasterKey string // derives the chat keys (see keys.ChatKey)
 	Log       *zap.SugaredLogger
@@ -170,7 +172,7 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 	v, _, _ := ex.group.Do(uid, func() (any, error) {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		d, _, err := ex.o.Access.Decide(cctx, p.Email)
+		d, tokens, err := ex.o.Access.Decide(cctx, p.Email)
 		if err != nil {
 			ex.o.Log.Errorw("chat: access decision failed", "email", p.Email, "error", err)
 			return answer{status: http.StatusServiceUnavailable, msg: "Zugriff konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen"}, nil
@@ -178,10 +180,16 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 		if d.Role == access.RoleNone {
 			return answer{status: http.StatusForbidden, msg: "Kein Zugang zum LLM-Dienst. Den Zugang vergibt die Administration des Dienstes."}, nil
 		}
-		tier, ok := ex.o.Tiers[d.Tier]
-		if !ok {
-			ex.o.Log.Errorw("chat: tier not configured", "tier", d.Tier, "email", p.Email)
-			return answer{status: http.StatusInternalServerError, msg: "Kontingentklasse nicht konfiguriert"}, nil
+		quota := ex.o.Quota
+		if quota.Tiers == nil {
+			quota.Tiers = ex.o.Tiers
+		}
+		tier, status, msg := quota.TierFor(cctx, d, tokens)
+		if status != 0 {
+			if status == http.StatusInternalServerError {
+				ex.o.Log.Errorw("chat: no tier", "tier", d.Tier, "email", p.Email, "reason", msg)
+			}
+			return answer{status: status, msg: msg}, nil
 		}
 		key, err := ex.o.Keys.EnsureChatKey(cctx, p, tier, ex.o.MasterKey)
 		if err != nil {
