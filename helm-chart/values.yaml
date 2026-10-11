@@ -25,6 +25,8 @@ secrets:
   gpuHubToken: ""
   # VLLM_API_KEY of the inference pool (gpu.inference).
   gpuInferenceApiKey: ""
+  # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
+  treeApiToken: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =
@@ -55,6 +57,10 @@ config:
   aliases: {}
   aliasProbes: {}
   maxKeysPerUser: 5
+  # Budget tree (docs/bauplan.md, Stufe 8): "tree" takes a person's LLM budget from the LLM tokens of their projects instead of the tier; llmTreeTier gives rate limits and models to people whose rule names no tier; selfServiceUrl is where people without a project get one.
+  llmBudgetSource: tiers
+  llmTreeTier: ""
+  selfServiceUrl: ""
 
 # GPU part: environments from Git repositories (repo2docker builds in the GPU cluster, images in Harbor) and JupyterHub servers. Off by default; tokens under secrets.
 gpu:

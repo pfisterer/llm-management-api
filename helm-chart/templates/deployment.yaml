@@ -98,6 +98,11 @@ spec:
             - name: LITELLM_MASTER_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}
             - {name: MAX_KEYS_PER_USER, value: {{ .Values.config.maxKeysPerUser | quote }}}
+            - {name: LLM_BUDGET_SOURCE, value: {{ .Values.config.llmBudgetSource | default "tiers" | quote }}}
+            - {name: LLM_TREE_TIER, value: {{ .Values.config.llmTreeTier | quote }}}
+            - {name: SELF_SERVICE_URL, value: {{ .Values.config.selfServiceUrl | quote }}}
+            - name: TREE_API_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: tree-api-token, optional: true}}
             - {name: MACHINE_BIND, value: ":8087"}
             - {name: CHAT_BIND, value: ":8089"}
             - {name: ADMIN_LOGIN_BIND, value: ":8090"}
