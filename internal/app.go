@@ -188,6 +188,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 		}
 		wsSvc = workspace.NewService(st.projects, wsCfg, runningWorkspaces(gpuSvc))
+		wsSvc.SetUsage(st.usage)
 		if created, err := wsSvc.Bootstrap(context.Background()); err != nil {
 			return fmt.Errorf("workspace projects: %w", err)
 		} else if created {
@@ -285,6 +286,30 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if gpuSvc != nil {
 		// Workspace usage (docs/plan-workspaces.md, W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
 		go usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+		// Budgets (W4): every five minutes, end the servers of people whose budget in the server's project is used up.
+		go func() {
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+				pods, err := gpuSvc.WorkspacePods(ctx)
+				if err != nil {
+					log.Warnw("budget: listing workspaces failed", "error", err)
+					continue
+				}
+				var running []workspace.RunningServer
+				for _, p := range pods {
+					if p.Running {
+						running = append(running, workspace.RunningServer{Running: workspace.Running{Server: p.Pod, Person: p.Person, Project: p.Project, Profile: p.Profile}, ServerName: p.Server})
+					}
+				}
+				wsSvc.Enforce(ctx, running, gpuSvc.EndServer, log)
+			}
+		}()
 	}
 	errCh := make(chan error, len(servers))
 	for _, hs := range servers {

@@ -50,6 +50,7 @@ type Service struct {
 	cfg     Config
 	running func(ctx context.Context) ([]Running, error)
 	budget  BudgetCheck
+	usage   UsageReader
 	now     func() time.Time
 }
 
@@ -94,14 +95,15 @@ func (s *Service) Bootstrap(ctx context.Context) (bool, error) {
 	return true, s.store.Create(ctx, &p)
 }
 
-// Mine is a project with the person's role in it.
+// Mine is a project with the person's role in it and its budgets as far as used (by the person for budgets per person).
 type Mine struct {
 	Project
-	Role string `json:"role" enums:"member,manager,admin"`
+	Role         string         `json:"role" enums:"member,manager,admin"`
+	BudgetStatus []BudgetStatus `json:"budget_status"`
 }
 
 // ForPerson lists the active projects the person belongs to; admins (all=true) get every project, with role "admin" where they are no member.
-func (s *Service) ForPerson(ctx context.Context, tokens []string, all bool) ([]Mine, error) {
+func (s *Service) ForPerson(ctx context.Context, tokens []string, person string, all bool) ([]Mine, error) {
 	list, err := s.store.List(ctx)
 	if err != nil {
 		return nil, err
@@ -115,7 +117,13 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, all bool) ([]M
 		if role == "" || (!all && !p.Active(s.now())) {
 			continue
 		}
-		out = append(out, Mine{Project: p, Role: role})
+		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}}
+		if person != "" {
+			if st, err := s.BudgetStatus(ctx, p, person); err == nil {
+				m.BudgetStatus = st
+			}
+		}
+		out = append(out, m)
 	}
 	return out, nil
 }

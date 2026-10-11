@@ -384,6 +384,11 @@ func (s *Service) Servers(ctx context.Context, user string) ([]Server, error) {
 }
 
 // StopServer stops (and removes) one of the person's named servers.
+// EndServer stops a server but keeps it (named servers stay in the list and can be started again), e.g. when a budget is used up.
+func (s *Service) EndServer(ctx context.Context, user, name string) error {
+	return s.servers.stopServer(ctx, user, name, false)
+}
+
 func (s *Service) StopServer(ctx context.Context, user, name string) error {
 	return s.servers.stopServer(ctx, user, name, name != "")
 }

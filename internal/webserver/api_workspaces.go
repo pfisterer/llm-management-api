@@ -114,7 +114,7 @@ func (s *Server) myProjects(c *gin.Context) []workspace.Mine {
 	if s.ws == nil {
 		return nil
 	}
-	mine, err := s.ws.ForPerson(c.Request.Context(), caller(c).Tokens, false)
+	mine, err := s.ws.ForPerson(c.Request.Context(), caller(c).Tokens, caller(c).Email, false)
 	if err != nil {
 		s.log.Warnw("workspace projects", "error", err)
 		mine = nil
@@ -150,7 +150,7 @@ func (s *Server) getWorkspaceCatalog(c *gin.Context) { c.JSON(http.StatusOK, s.w
 func (s *Server) listWorkspaceProjects(c *gin.Context) {
 	cl := caller(c)
 	if c.Query("all") == "true" && cl.Decision.Role.AtLeast(access.RoleAdmin) {
-		list, err := s.ws.ForPerson(c.Request.Context(), cl.Tokens, true)
+		list, err := s.ws.ForPerson(c.Request.Context(), cl.Tokens, cl.Email, true)
 		if err != nil {
 			s.internalError(c, "workspace projects", err)
 			return

@@ -79,7 +79,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			resp.MaxGPUs = o.GPU.Tier(d.GPUTier).MaxGPUs
 		}
 		if o.Workspaces != nil {
-			mine, err := o.Workspaces.ForPerson(c.Request.Context(), tokens, false)
+			mine, err := o.Workspaces.ForPerson(c.Request.Context(), tokens, "", false)
 			if err != nil {
 				o.Log.Errorw("gpu hub projects failed", "email", email, "error", err)
 				abort(c, http.StatusInternalServerError, "internal", "Projekte konnten nicht gelesen werden.")

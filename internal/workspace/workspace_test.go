@@ -145,11 +145,11 @@ func TestForPerson(t *testing.T) {
 	_, _ = s.Create(ctx, Project{Slug: "a", Members: []Member{{Token: "group:g", Role: RoleManager}}}, "admin")
 	_, _ = s.Create(ctx, Project{Slug: "b"}, "admin")
 	_, _ = s.Create(ctx, Project{Slug: "c", Members: []Member{{Token: "group:g"}}, EndsAt: &old}, "admin")
-	mine, _ := s.ForPerson(ctx, []string{"group:g"}, false)
+	mine, _ := s.ForPerson(ctx, []string{"group:g"}, "", false)
 	if len(mine) != 1 || mine[0].Slug != "a" || mine[0].Role != RoleManager {
 		t.Fatalf("mine: %+v", mine)
 	}
-	all, _ := s.ForPerson(ctx, []string{"group:g"}, true)
+	all, _ := s.ForPerson(ctx, []string{"group:g"}, "", true)
 	if len(all) != 3 || all[1].Role != "admin" {
 		t.Fatalf("all: %+v", all)
 	}

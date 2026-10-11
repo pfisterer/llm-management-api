@@ -10,6 +10,7 @@ import (
 type WorkspacePod struct {
 	Pod       string
 	Running   bool   // false: waiting (Kueue, image pull); reserves nothing yet, but counts for the limits on concurrent use
+	Server    string // JupyterHub's server name (label hub.jupyter.org/servername); "" = the default server
 	Project   string // label dhbw.cloud/project set by the hub; empty for pods started before projects
 	Person    string // JupyterHub user name (e-mail)
 	Profile   string // label dhbw.cloud/profile set by the hub; "gpu-kernel" for kernel pods
@@ -65,7 +66,7 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 		if (p.Status.Phase != "Running" && p.Status.Phase != "Pending") || p.Metadata.DeletionTimestamp != nil {
 			continue
 		}
-		w := WorkspacePod{Pod: p.Metadata.Name, Running: p.Status.Phase == "Running", Person: personOf[p.Metadata.Name],
+		w := WorkspacePod{Pod: p.Metadata.Name, Running: p.Status.Phase == "Running", Server: p.Metadata.Labels["hub.jupyter.org/servername"], Person: personOf[p.Metadata.Name],
 			Project: p.Metadata.Labels["dhbw.cloud/project"], Profile: p.Metadata.Labels["dhbw.cloud/profile"]}
 		if p.Metadata.Labels["component"] == "kernel" {
 			w.Profile = "gpu-kernel"
