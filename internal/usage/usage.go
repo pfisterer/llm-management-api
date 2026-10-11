@@ -6,21 +6,23 @@ import (
 	"time"
 )
 
+// Column names are explicit: the upsert in GormStore.Add names them, and gorm's own naming of VCPUHours or RAMGBHours is not that.
+//
 // Row is one UTC day of one person in one project, profile and GPU class. No foreign keys: rows outlive projects and access rules, like project_usage_daily in openstack-management-api.
 type Row struct {
 	Day      time.Time `json:"day" gorm:"primaryKey;type:date"`
 	Project  string    `json:"project" gorm:"primaryKey"` // until projects exist (W2): the access rule that grants compute, e.g. group:wwi23seb
 	Person   string    `json:"person" gorm:"primaryKey"`
 	Profile  string    `json:"profile" gorm:"primaryKey"`
-	GPUClass string    `json:"gpu_class" gorm:"primaryKey"` // empty without GPU
+	GPUClass string    `json:"gpu_class" gorm:"primaryKey;column:gpu_class"` // empty without GPU
 
-	ServerHours    float64 `json:"server_hours"`      // pod running
-	VCPUHours      float64 `json:"vcpu_hours"`        // requested cores × hours
-	RAMGBHours     float64 `json:"ram_gb_hours"`      // requested GiB × hours
-	GPUHours       float64 `json:"gpu_hours"`         // GPUs × hours, in the row's GPU class
-	CPUUsedHours   float64 `json:"cpu_used_hours"`    // measured cores × hours (metrics-server); 0 when unavailable
-	RAMUsedGBHours float64 `json:"ram_used_gb_hours"` // measured GiB × hours
-	HomeGB         float64 `json:"home_gb"`           // home size, largest sample of the day (on the profile "home" row)
+	ServerHours    float64 `json:"server_hours" gorm:"column:server_hours"`           // pod running
+	VCPUHours      float64 `json:"vcpu_hours" gorm:"column:vcpu_hours"`               // requested cores × hours
+	RAMGBHours     float64 `json:"ram_gb_hours" gorm:"column:ram_gb_hours"`           // requested GiB × hours
+	GPUHours       float64 `json:"gpu_hours" gorm:"column:gpu_hours"`                 // GPUs × hours, in the row's GPU class
+	CPUUsedHours   float64 `json:"cpu_used_hours" gorm:"column:cpu_used_hours"`       // measured cores × hours (metrics-server); 0 when unavailable
+	RAMUsedGBHours float64 `json:"ram_used_gb_hours" gorm:"column:ram_used_gb_hours"` // measured GiB × hours
+	HomeGB         float64 `json:"home_gb" gorm:"column:home_gb"`                     // home size, largest sample of the day (on the profile "home" row)
 
 	UpdatedAt time.Time `json:"-"`
 }
