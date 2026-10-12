@@ -228,6 +228,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser)
 
 	quota := webserver.LLMQuota{Tiers: tiers, DefaultTier: cfg.LLMDefaultTier, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
+	// The budget per person comes from the projects, which exist only with the GPU part.
+	var budgets *webserver.BudgetSync
+	onTree := func() {}
+	if wsSvc != nil {
+		budgets = webserver.NewBudgetSync(webserver.BudgetSync{Lite: lite, Keys: keySvc, Access: accessSvc, Quota: quota, Interval: cfg.BudgetSyncInterval, Log: log})
+		onTree = budgets.Nudge
+	}
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
 		Version:      strings.TrimSpace(generated_docs.Version),
@@ -241,6 +248,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Tiers:        tiers,
 		Quota:        quota,
 		TreeToken:    cfg.TreeToken,
+		OnTreeChange: onTree,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
@@ -283,6 +291,9 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if budgets != nil {
+		go budgets.Run(ctx)
+	}
 	if gpuSvc != nil {
 		// Workspace usage (docs/bauplan.md, Stufe 4 W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
 		go usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)

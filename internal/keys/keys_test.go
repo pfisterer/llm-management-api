@@ -115,11 +115,17 @@ func TestUsageCreatesUserAndKeepsAdjustments(t *testing.T) {
 	if f.writes[0] != "user/new:kc-abc" {
 		t.Fatalf("expected user creation, got %v", f.writes)
 	}
-	// An admin raises the budget in the LiteLLM UI; the same tier must not revert it.
+	// An admin raises the rate limit in the LiteLLM UI; the same tier must not revert it.
+	f.users["kc-abc"]["rpm_limit"] = 999
+	u, _ = svc.Usage(ctx, p, student)
+	if f.users["kc-abc"]["rpm_limit"] != 999 || len(f.writes) != 1 {
+		t.Fatalf("adjustment reverted: %v %v", f.users["kc-abc"]["rpm_limit"], f.writes)
+	}
+	// The budget is the tree's: a budget set elsewhere goes back to it, and only the budget is written.
 	f.users["kc-abc"]["max_budget"] = 99.0
 	u, _ = svc.Usage(ctx, p, student)
-	if *u.Budget != 99 {
-		t.Fatalf("adjustment reverted: %v", *u.Budget)
+	if *u.Budget != 8 || f.users["kc-abc"]["rpm_limit"] != 999 {
+		t.Fatalf("budget not brought back: %v %v", *u.Budget, f.users["kc-abc"])
 	}
 	// A tier change does write the new quota.
 	u, _ = svc.Usage(ctx, p, staff)
@@ -198,5 +204,30 @@ func TestDeleteOnlyOwnKeys(t *testing.T) {
 	}
 	if err := svc.Delete(ctx, b, bTok); err != nil {
 		t.Fatalf("own delete: %v", err)
+	}
+}
+
+// SyncBudget writes only a budget that differs, and only budget and duration.
+func TestSyncBudget(t *testing.T) {
+	ctx := context.Background()
+	svc, f := setup(t)
+	p := Person{Subject: "abc", Email: "a@dhbw.de"}
+	if _, err := svc.Usage(ctx, p, student); err != nil {
+		t.Fatal(err)
+	}
+	u, _, _, err := svc.lite.GetUser(ctx, "kc-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := svc.SyncBudget(ctx, u, student); wrote || err != nil {
+		t.Fatalf("same budget written: %v %v", wrote, err)
+	}
+	none := student
+	none.UserBudget = 0
+	if wrote, err := svc.SyncBudget(ctx, u, none); !wrote || err != nil {
+		t.Fatalf("budget 0 not written: %v %v", wrote, err)
+	}
+	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["rpm_limit"] != 60.0 {
+		t.Fatalf("after sync: %v", f.users["kc-abc"])
 	}
 }

@@ -119,6 +119,24 @@ func (c *Client) GetUser(ctx context.Context, userID string) (UserInfo, []Key, b
 	return *r.UserInfo, r.Keys, true, nil
 }
 
+// ListUsers returns every user LiteLLM knows, page by page.
+func (c *Client) ListUsers(ctx context.Context) ([]UserInfo, error) {
+	var out []UserInfo
+	for page := 1; ; page++ {
+		var r struct {
+			Users      []UserInfo `json:"users"`
+			TotalPages int        `json:"total_pages"`
+		}
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/user/list?page=%d&page_size=100", page), nil, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r.Users...)
+		if page >= r.TotalPages || len(r.Users) == 0 {
+			return out, nil
+		}
+	}
+}
+
 // Quota is what a tier writes onto a user or key.
 type Quota struct {
 	MaxBudget      float64  `json:"max_budget"`

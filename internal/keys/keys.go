@@ -1,9 +1,11 @@
 // Package keys manages a person's LiteLLM user, API keys and usage.
 //
 // Carried over from the Node key broker, including the lessons learned there:
-//   - Quotas are written when the user is created or changes tier — never on
-//     every call, which would silently revert adjustments made in the LiteLLM
-//     admin UI. Spend is never touched.
+//   - Rate limits and models are written when the user is created or changes
+//     tier — never on every call, which would silently revert adjustments made
+//     in the LiteLLM admin UI. The monthly budget is different: it comes from
+//     the budget tree and is kept in step with it (SyncBudget). Spend is never
+//     touched.
 //   - Key aliases are unique across ALL users in LiteLLM, so every alias gets a
 //     short, stable tag of its owner ("laptop@3f9a12c4"); it is shown without.
 //   - The chat key ("librechat@…") is created by the chat exchange, not by the
@@ -16,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"maps"
+	"math"
 	"regexp"
 	"strings"
 
@@ -134,15 +137,19 @@ func (s *Service) reconcile(ctx context.Context, p Person, tier Tier) (litellm.U
 	meta := map[string]any{}
 	maps.Copy(meta, info.Metadata)
 	previous, _ := meta["tier"].(string)
-	changed := previous != tier.Name || info.MaxBudget == nil
+	tierChanged := previous != tier.Name
+	changed := tierChanged || budgetDiffers(info, tier)
 	meta["tier"], meta["source"] = tier.Name, "llm-management-api"
 	if !changed && strings.EqualFold(info.Email, p.Email) {
 		return info, keys, nil // nothing to write
 	}
 	var q *litellm.Quota
-	if changed {
+	switch {
+	case tierChanged:
 		uq := tier.userQuota()
 		q = &uq
+	case changed:
+		q = &litellm.Quota{MaxBudget: tier.UserBudget, BudgetDuration: tier.UserBudgetDuration}
 	}
 	if err := s.lite.UpdateUser(ctx, uid, p.Email, q, meta); err != nil {
 		return litellm.UserInfo{}, nil, err
@@ -152,6 +159,27 @@ func (s *Service) reconcile(ctx context.Context, p Person, tier Tier) (litellm.U
 	}
 	info, keys, _, err = s.lite.GetUser(ctx, uid)
 	return info, keys, err
+}
+
+// budgetDiffers: the user's monthly budget in LiteLLM is not the one the tier (with the tree's budget) asks for.
+func budgetDiffers(info litellm.UserInfo, t Tier) bool {
+	if info.MaxBudget == nil || math.Abs(*info.MaxBudget-t.UserBudget) > 1e-9 {
+		return true
+	}
+	return t.UserBudgetDuration != "" && (info.BudgetDuration == nil || *info.BudgetDuration != t.UserBudgetDuration)
+}
+
+// SyncBudget brings a LiteLLM user's monthly budget in step with tier, whose budget is the tree's (0 without a project): so keys made earlier stop once the projects are gone, and a project with more tokens raises the cap without the person asking for anything. Rate limits and models are left alone. Reports whether it wrote.
+func (s *Service) SyncBudget(ctx context.Context, info litellm.UserInfo, tier Tier) (bool, error) {
+	if !budgetDiffers(info, tier) {
+		return false, nil
+	}
+	q := litellm.Quota{MaxBudget: tier.UserBudget, BudgetDuration: tier.UserBudgetDuration}
+	meta := info.Metadata
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	return true, s.lite.UpdateUser(ctx, info.UserID, info.Email, &q, meta)
 }
 
 func view(keys []litellm.Key) ([]KeyView, int) {

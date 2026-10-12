@@ -39,7 +39,9 @@ type Options struct {
 	// Quota decides a person's LLM tier (from the access rule, or with the budget from the tree); zero = from Tiers.
 	Quota LLMQuota
 	// TreeToken lets the budget tree (resource-management-api) manage its projects under /v1/tree; empty = off.
-	TreeToken    string
+	TreeToken string
+	// OnTreeChange runs after the tree created, changed or removed a project (the budget sync's nudge); nil = nothing.
+	OnTreeChange func()
 	Fleet        *fleet.Service
 	Health       fleet.HealthSource
 	Material     fleet.Material
@@ -66,6 +68,7 @@ type Server struct {
 	tiers    map[string]keys.Tier
 	quota    LLMQuota
 	treeTok  string
+	onTree   func()
 	fleet    *fleet.Service
 	health   fleet.HealthSource
 	material fleet.Material
@@ -78,7 +81,7 @@ type Server struct {
 
 func New(o Options) *Server {
 	srv := &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
-		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers, quota: o.Quota, treeTok: o.TreeToken,
+		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
 		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 	if srv.quota.Tiers == nil {
 		srv.quota.Tiers = o.Tiers

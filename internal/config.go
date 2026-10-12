@@ -79,6 +79,8 @@ type Config struct {
 	TreeToken      string
 	LLMDefaultTier string
 	SelfServiceURL string
+	// How often every person's monthly budget in LiteLLM is brought in step with the tree (besides right after each change from the tree).
+	BudgetSyncInterval time.Duration
 }
 
 func LoadConfig() (Config, error) {
@@ -150,6 +152,7 @@ func LoadConfig() (Config, error) {
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
 	cfg.LLMDefaultTier = envconf.String("LLM_DEFAULT_TIER", "")
 	cfg.SelfServiceURL = envconf.String("SELF_SERVICE_URL", "")
+	cfg.BudgetSyncInterval = time.Duration(envconf.Int("BUDGET_SYNC_SECONDS", 600)) * time.Second
 	if raw := envconf.String("TIERS", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.Tiers); err != nil {
 			return Config{}, fmt.Errorf("TIERS is not valid JSON: %w", err)

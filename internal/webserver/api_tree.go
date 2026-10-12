@@ -65,6 +65,7 @@ func (s *Server) putTreeProject(c *gin.Context) {
 	if s.workspaceError(c, err) {
 		return
 	}
+	s.treeChanged()
 	c.JSON(http.StatusOK, st)
 }
 
@@ -89,6 +90,7 @@ func (s *Server) deleteTreeProject(c *gin.Context) {
 	if s.workspaceError(c, err) {
 		return
 	}
+	s.treeChanged()
 	c.Status(http.StatusNoContent)
 }
 
@@ -103,4 +105,12 @@ func (s *Server) deleteTreeProject(c *gin.Context) {
 //	@Success		200	{object}	workspace.Config
 //	@Failure		401	{object}	ErrorResponse
 //	@Router			/v1/tree/catalog [get]
+//
+// treeChanged tells whoever listens (the budget sync) that members or LLM tokens may have changed.
+func (s *Server) treeChanged() {
+	if s.onTree != nil {
+		s.onTree()
+	}
+}
+
 func (s *Server) getTreeCatalog(c *gin.Context) { c.JSON(http.StatusOK, s.ws.Catalog()) }
