@@ -28,19 +28,11 @@ func reason(err error) string {
 	return ""
 }
 
-func TestBootstrapAndValidation(t *testing.T) {
+func TestValidation(t *testing.T) {
 	ctx := context.Background()
 	s := service()
-	s.cfg.BootstrapMembers = []string{"user:a@dhbw.de"}
-	if created, err := s.Bootstrap(ctx); !created || err != nil {
-		t.Fatalf("bootstrap: %v %v", created, err)
-	}
-	if created, _ := s.Bootstrap(ctx); created {
-		t.Fatal("bootstrap only when there is no project")
-	}
-	p, _ := s.Get(ctx, "pilot")
-	if p.RoleOf([]string{"user:a@dhbw.de"}) != RoleManager || len(p.Profiles) != 3 || !p.AllowsGPUClass("l4-3q") {
-		t.Fatalf("pilot: %+v", p)
+	if _, err := s.create(ctx, Project{Slug: "pilot", Profiles: []string{"cpu"}}, "admin"); err != nil {
+		t.Fatal(err)
 	}
 	for _, bad := range []Project{
 		{Slug: "Bad Name"},
@@ -49,11 +41,11 @@ func TestBootstrapAndValidation(t *testing.T) {
 		{Slug: "ok", GPUClasses: []string{"h100"}},
 		{Slug: "ok", Budgets: []Budget{{Unit: "euro", Window: "30d", Amount: 1}}},
 	} {
-		if _, err := s.Create(ctx, bad, "admin"); reason(err) == "" || strings.HasPrefix(reason(err), "ERROR") {
+		if _, err := s.create(ctx, bad, "admin"); reason(err) == "" || strings.HasPrefix(reason(err), "ERROR") {
 			t.Errorf("%+v: want a refusal, got %v", bad, err)
 		}
 	}
-	if _, err := s.Create(ctx, Project{Slug: "pilot"}, "admin"); !strings.Contains(reason(err), "gibt es schon") {
+	if _, err := s.create(ctx, Project{Slug: "pilot"}, "admin"); !strings.Contains(reason(err), "gibt es schon") {
 		t.Fatalf("duplicate: %v", err)
 	}
 }
@@ -61,7 +53,7 @@ func TestBootstrapAndValidation(t *testing.T) {
 func TestManagerMayOnlyChangeMembersImagesDescription(t *testing.T) {
 	ctx := context.Background()
 	s := service()
-	_, _ = s.Create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Limits: Limits{ServersPerPerson: 1}}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Limits: Limits{ServersPerPerson: 1}}, "admin")
 	out, err := s.Update(ctx, Project{Slug: "kurs", Description: "neu", Members: []Member{{Token: "group:wwi23seb"}},
 		Profiles: []string{"cpu", "pytorch"}, Limits: Limits{ServersPerPerson: 9}}, "manager@dhbw.de", false)
 	if err != nil || out.Description != "neu" || len(out.Members) != 1 || out.Members[0].Role != RoleMember || len(out.Profiles) != 1 || out.Limits.ServersPerPerson != 1 {
@@ -79,10 +71,10 @@ func TestCheckStart(t *testing.T) {
 	}
 	s := service(running...)
 	yesterday := time.Now().Add(-48 * time.Hour)
-	_, _ = s.Create(ctx, Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:wwi23seb"}}, Profiles: []string{"cpu", "pytorch"},
+	_, _ = s.create(ctx, Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:wwi23seb"}}, Profiles: []string{"cpu", "pytorch"},
 		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 2, RAMGBPerPerson: 8, GPUsPerPerson: 1}, GPUsByClass: map[string]int{"l4-3q": 1}}, "admin")
-	_, _ = s.Create(ctx, Project{Slug: "cpu-only", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu", "pytorch"}}, "admin")
-	_, _ = s.Create(ctx, Project{Slug: "alt", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, EndsAt: &yesterday}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "cpu-only", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu", "pytorch"}}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "alt", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, EndsAt: &yesterday}, "admin")
 
 	cases := []struct {
 		name string
@@ -116,14 +108,14 @@ func TestCheckStart(t *testing.T) {
 		}
 	}
 	// Free images where the project allows them.
-	_, _ = s.Create(ctx, Project{Slug: "frei", Members: []Member{{Token: "user:a@dhbw.de"}}, FreeImages: true}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "frei", Members: []Member{{Token: "user:a@dhbw.de"}}, FreeImages: true}, "admin")
 	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei", Profile: FreeProfile, CPU: 0.25, RAMGB: 1})); got != "" {
 		t.Fatalf("free image: %q", got)
 	}
 	// Server limit: two running servers of a in kurs.
 	s2 := service(Running{Server: "s1", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"}, Running{Server: "s2", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"},
 		Running{Server: "k1", Person: "a@dhbw.de", Project: "kurs", Profile: "gpu-kernel"})
-	_, _ = s2.Create(ctx, Project{Slug: "kurs", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, Limits: Limits{ServersPerPerson: 2}}, "admin")
+	_, _ = s2.create(ctx, Project{Slug: "kurs", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, Limits: Limits{ServersPerPerson: 2}}, "admin")
 	if got := reason(s2.CheckStart(ctx, []string{"user:a@dhbw.de"}, StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"})); !strings.Contains(got, "2 Server") {
 		t.Fatalf("server limit: %q", got)
 	}
@@ -142,9 +134,9 @@ func TestForPerson(t *testing.T) {
 	ctx := context.Background()
 	s := service()
 	old := time.Now().Add(-72 * time.Hour)
-	_, _ = s.Create(ctx, Project{Slug: "a", Members: []Member{{Token: "group:g", Role: RoleManager}}}, "admin")
-	_, _ = s.Create(ctx, Project{Slug: "b"}, "admin")
-	_, _ = s.Create(ctx, Project{Slug: "c", Members: []Member{{Token: "group:g"}}, EndsAt: &old}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "a", Members: []Member{{Token: "group:g", Role: RoleManager}}}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "b"}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "c", Members: []Member{{Token: "group:g"}}, EndsAt: &old}, "admin")
 	mine, _ := s.ForPerson(ctx, []string{"group:g"}, "", false)
 	if len(mine) != 1 || mine[0].Slug != "a" || mine[0].Role != RoleManager {
 		t.Fatalf("mine: %+v", mine)

@@ -13,7 +13,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 )
 
-// BudgetSync keeps the monthly budget of every person in LiteLLM in step with the budget tree. Without it a budget is only written when the person asks this service for something (keys, usage, chat): keys made earlier would keep their old budget, and somebody whose projects ended would go on using them. Runs every Interval and right after the tree changed a project (Nudge).
+// BudgetSync keeps every person's quota in LiteLLM in step with their tier and the budget tree (the monthly budget). Without it a quota is only written when the person asks this service for something (keys, usage, chat): keys made earlier would keep their old budget, and somebody whose projects ended would go on using them. Runs every Interval and right after the tree changed a project (Nudge).
 type BudgetSync struct {
 	Lite     *litellm.Client
 	Keys     *keys.Service
@@ -46,7 +46,7 @@ func (b *BudgetSync) Run(ctx context.Context) {
 		if n, err := b.Pass(ctx); err != nil {
 			b.Log.Warnw("budget sync: pass failed", "error", err)
 		} else if n > 0 {
-			b.Log.Infow("budget sync: budgets brought in step with the tree", "users", n)
+			b.Log.Infow("budget sync: quotas brought in step with tiers and tree", "users", n)
 		}
 		select {
 		case <-ctx.Done():
@@ -57,7 +57,7 @@ func (b *BudgetSync) Run(ctx context.Context) {
 	}
 }
 
-// Pass goes through every LiteLLM user that is a person (has an email) and writes the budget the tree gives them: the sum of their projects' LLM tokens, 0 without. A person whose access or projects cannot be read right now is skipped, never set to 0. Returns how many budgets were written.
+// Pass goes through every LiteLLM user that is a person (has an email) and writes their tier with the budget the tree gives them: the sum of their projects' LLM tokens, 0 without. A person whose access or projects cannot be read right now is skipped, never set to 0. Returns how many budgets were written.
 func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 	users, err := b.Lite.ListUsers(ctx)
 	if err != nil {
@@ -73,13 +73,13 @@ func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 		if !ok {
 			continue
 		}
-		wrote, err := b.Keys.SyncBudget(ctx, u, tier)
+		wrote, err := b.Keys.SyncQuota(ctx, u, tier)
 		if err != nil {
 			b.Log.Warnw("budget sync: write failed", "email", email, "error", err)
 			continue
 		}
 		if wrote {
-			b.Log.Infow("budget sync: budget set", "email", email, "budget", tier.UserBudget)
+			b.Log.Infow("budget sync: quota set", "email", email, "tier", tier.Name, "budget", tier.UserBudget)
 			written++
 		}
 	}

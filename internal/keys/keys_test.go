@@ -115,17 +115,17 @@ func TestUsageCreatesUserAndKeepsAdjustments(t *testing.T) {
 	if f.writes[0] != "user/new:kc-abc" {
 		t.Fatalf("expected user creation, got %v", f.writes)
 	}
-	// An admin raises the rate limit in the LiteLLM UI; the same tier must not revert it.
+	// Nothing differs: nothing is written.
+	_, _ = svc.Usage(ctx, p, student)
+	if len(f.writes) != 1 {
+		t.Fatalf("written without a difference: %v", f.writes)
+	}
+	// Limits are the tier's and the tree's: a change made in the LiteLLM UI goes back.
+	f.users["kc-abc"]["max_budget"] = 99.0
 	f.users["kc-abc"]["rpm_limit"] = 999
 	u, _ = svc.Usage(ctx, p, student)
-	if f.users["kc-abc"]["rpm_limit"] != 999 || len(f.writes) != 1 {
-		t.Fatalf("adjustment reverted: %v %v", f.users["kc-abc"]["rpm_limit"], f.writes)
-	}
-	// The budget is the tree's: a budget set elsewhere goes back to it, and only the budget is written.
-	f.users["kc-abc"]["max_budget"] = 99.0
-	u, _ = svc.Usage(ctx, p, student)
-	if *u.Budget != 8 || f.users["kc-abc"]["rpm_limit"] != 999 {
-		t.Fatalf("budget not brought back: %v %v", *u.Budget, f.users["kc-abc"])
+	if *u.Budget != 8 || f.users["kc-abc"]["rpm_limit"] != 60.0 {
+		t.Fatalf("quota not brought back: %v %v", *u.Budget, f.users["kc-abc"])
 	}
 	// A tier change does write the new quota.
 	u, _ = svc.Usage(ctx, p, staff)
@@ -207,8 +207,8 @@ func TestDeleteOnlyOwnKeys(t *testing.T) {
 	}
 }
 
-// SyncBudget writes only a budget that differs, and only budget and duration.
-func TestSyncBudget(t *testing.T) {
+// SyncQuota writes only a quota that differs, and then the whole tier with the tree's budget.
+func TestSyncQuota(t *testing.T) {
 	ctx := context.Background()
 	svc, f := setup(t)
 	p := Person{Subject: "abc", Email: "a@dhbw.de"}
@@ -219,15 +219,15 @@ func TestSyncBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wrote, err := svc.SyncBudget(ctx, u, student); wrote || err != nil {
+	if wrote, err := svc.SyncQuota(ctx, u, student); wrote || err != nil {
 		t.Fatalf("same budget written: %v %v", wrote, err)
 	}
 	none := student
 	none.UserBudget = 0
-	if wrote, err := svc.SyncBudget(ctx, u, none); !wrote || err != nil {
+	if wrote, err := svc.SyncQuota(ctx, u, none); !wrote || err != nil {
 		t.Fatalf("budget 0 not written: %v %v", wrote, err)
 	}
-	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["rpm_limit"] != 60.0 {
+	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["rpm_limit"] != 60.0 || f.users["kc-abc"]["metadata"].(map[string]any)["tier"] != "student" {
 		t.Fatalf("after sync: %v", f.users["kc-abc"])
 	}
 }

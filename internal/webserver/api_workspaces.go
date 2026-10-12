@@ -165,32 +165,6 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 	c.JSON(http.StatusOK, mine)
 }
 
-// createWorkspaceProject godoc
-//
-//	@ID				createWorkspaceProject
-//	@Summary		Create a workspace project
-//	@Tags			workspaces
-//	@Accept			json
-//	@Produce		json
-//	@Security		BearerAuth
-//	@Param			project	body		workspace.Project	true	"the project"
-//	@Success		201		{object}	workspace.Project
-//	@Failure		400		{object}	ErrorResponse
-//	@Failure		403		{object}	ErrorResponse
-//	@Router			/v1/workspaces/projects [post]
-func (s *Server) createWorkspaceProject(c *gin.Context) {
-	var p workspace.Project
-	if err := c.ShouldBindJSON(&p); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültiger Inhalt.")
-		return
-	}
-	out, err := s.ws.Create(c.Request.Context(), p, caller(c).Email)
-	if s.workspaceError(c, err) {
-		return
-	}
-	c.JSON(http.StatusCreated, out)
-}
-
 // updateWorkspaceProject godoc
 //
 //	@ID				updateWorkspaceProject

@@ -179,18 +179,8 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				return fmt.Errorf("WORKSPACES: %w", err)
 			}
 		}
-		if len(wsCfg.BootstrapMembers) == 0 {
-			for _, a := range cfg.BootstrapAdmins {
-				wsCfg.BootstrapMembers = append(wsCfg.BootstrapMembers, "user:"+a)
-			}
-		}
 		wsSvc = workspace.NewService(st.projects, wsCfg, runningWorkspaces(gpuSvc))
 		wsSvc.SetUsage(st.usage)
-		if created, err := wsSvc.Bootstrap(context.Background()); err != nil {
-			return fmt.Errorf("workspace projects: %w", err)
-		} else if created {
-			log.Infow("created the workspace project pilot for the bootstrap admins")
-		}
 		if gpuSvc.InferenceEnabled() {
 			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.
 			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {

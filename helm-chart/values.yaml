@@ -79,7 +79,7 @@ gpu:
   inference:
     url: ""
     namespace: inference
-  # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bootstrapMembers: [user:...]}; empty = no catalogue. bootstrapMembers default to the bootstrap admins.
+  # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...]}; empty = no catalogue. The projects themselves come only from the budget tree.
   workspaces: {}
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:

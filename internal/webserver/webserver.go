@@ -140,7 +140,6 @@ func (s *Server) Router() *gin.Engine {
 		w.GET("/usage", s.getWorkspaceUsage)
 		w.GET("/catalog", s.requireWorkspace, s.getWorkspaceCatalog)
 		w.GET("/projects", s.listWorkspaceProjects)
-		w.POST("/projects", require(access.RoleAdmin), s.createWorkspaceProject)
 		w.PUT("/projects/:slug", s.updateWorkspaceProject)
 		w.DELETE("/projects/:slug", require(access.RoleAdmin), s.deleteWorkspaceProject)
 	}

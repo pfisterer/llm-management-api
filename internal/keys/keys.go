@@ -1,11 +1,10 @@
 // Package keys manages a person's LiteLLM user, API keys and usage.
 //
 // Carried over from the Node key broker, including the lessons learned there:
-//   - Rate limits and models are written when the user is created or changes
-//     tier — never on every call, which would silently revert adjustments made
-//     in the LiteLLM admin UI. The monthly budget is different: it comes from
-//     the budget tree and is kept in step with it (SyncBudget). Spend is never
-//     touched.
+//   - A person's quota in LiteLLM is the tier's, with the monthly budget from
+//     the budget tree: kept in step on every request and by SyncQuota, so a
+//     change made in the LiteLLM admin UI does not last — limits are set in
+//     the tiers and the tree. Spend is never touched.
 //   - Key aliases are unique across ALL users in LiteLLM, so every alias gets a
 //     short, stable tag of its owner ("laptop@3f9a12c4"); it is shown without.
 //   - The chat key ("librechat@…") is created by the chat exchange, not by the
@@ -19,6 +18,7 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"slices"
 	"regexp"
 	"strings"
 
@@ -137,19 +137,15 @@ func (s *Service) reconcile(ctx context.Context, p Person, tier Tier) (litellm.U
 	meta := map[string]any{}
 	maps.Copy(meta, info.Metadata)
 	previous, _ := meta["tier"].(string)
-	tierChanged := previous != tier.Name
-	changed := tierChanged || budgetDiffers(info, tier)
+	changed := previous != tier.Name || quotaDiffers(info, tier)
 	meta["tier"], meta["source"] = tier.Name, "llm-management-api"
 	if !changed && strings.EqualFold(info.Email, p.Email) {
 		return info, keys, nil // nothing to write
 	}
 	var q *litellm.Quota
-	switch {
-	case tierChanged:
+	if changed {
 		uq := tier.userQuota()
 		q = &uq
-	case changed:
-		q = &litellm.Quota{MaxBudget: tier.UserBudget, BudgetDuration: tier.UserBudgetDuration}
 	}
 	if err := s.lite.UpdateUser(ctx, uid, p.Email, q, meta); err != nil {
 		return litellm.UserInfo{}, nil, err
@@ -161,24 +157,32 @@ func (s *Service) reconcile(ctx context.Context, p Person, tier Tier) (litellm.U
 	return info, keys, err
 }
 
-// budgetDiffers: the user's monthly budget in LiteLLM is not the one the tier (with the tree's budget) asks for.
-func budgetDiffers(info litellm.UserInfo, t Tier) bool {
+// quotaDiffers: the user's quota in LiteLLM is not the tier's (with the tree's budget): budget, its window, rate limits or models.
+func quotaDiffers(info litellm.UserInfo, t Tier) bool {
 	if info.MaxBudget == nil || math.Abs(*info.MaxBudget-t.UserBudget) > 1e-9 {
 		return true
 	}
-	return t.UserBudgetDuration != "" && (info.BudgetDuration == nil || *info.BudgetDuration != t.UserBudgetDuration)
+	if t.UserBudgetDuration != "" && (info.BudgetDuration == nil || *info.BudgetDuration != t.UserBudgetDuration) {
+		return true
+	}
+	if t.RPM > 0 && (info.RPMLimit == nil || *info.RPMLimit != t.RPM) {
+		return true
+	}
+	if t.TPM > 0 && (info.TPMLimit == nil || *info.TPMLimit != t.TPM) {
+		return true
+	}
+	return len(t.Models) > 0 && !slices.Equal(info.Models, t.Models)
 }
 
-// SyncBudget brings a LiteLLM user's monthly budget in step with tier, whose budget is the tree's (0 without a project): so keys made earlier stop once the projects are gone, and a project with more tokens raises the cap without the person asking for anything. Rate limits and models are left alone. Reports whether it wrote.
-func (s *Service) SyncBudget(ctx context.Context, info litellm.UserInfo, tier Tier) (bool, error) {
-	if !budgetDiffers(info, tier) {
+// SyncQuota brings a LiteLLM user's quota in step with tier, whose budget is the tree's (0 without a project): so keys made earlier stop once the projects are gone, a project with more tokens raises the cap and a new tier applies, without the person asking for anything. Reports whether it wrote.
+func (s *Service) SyncQuota(ctx context.Context, info litellm.UserInfo, tier Tier) (bool, error) {
+	if !quotaDiffers(info, tier) {
 		return false, nil
 	}
-	q := litellm.Quota{MaxBudget: tier.UserBudget, BudgetDuration: tier.UserBudgetDuration}
-	meta := info.Metadata
-	if meta == nil {
-		meta = map[string]any{}
-	}
+	q := tier.userQuota()
+	meta := map[string]any{}
+	maps.Copy(meta, info.Metadata)
+	meta["tier"], meta["source"] = tier.Name, "llm-management-api"
 	return true, s.lite.UpdateUser(ctx, info.UserID, info.Email, &q, meta)
 }
 

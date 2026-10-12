@@ -17,12 +17,10 @@ type Profile struct {
 	GPUClass string `json:"gpu_class,omitempty" example:"l4-3q"`
 }
 
-// Config is the catalogue (from the inventory, next to the JupyterHub profiles) and who gets the first project.
+// Config is the catalogue (from the inventory, next to the JupyterHub profiles). Projects come only from the budget tree (/v1/tree).
 type Config struct {
 	Profiles   []Profile `json:"profiles"`
 	GPUClasses []string  `json:"gpuClasses"`
-	// Tokens of the members of the project "pilot" created when there is none (bootstrap admins), with every profile and GPU class.
-	BootstrapMembers []string `json:"bootstrapMembers"`
 }
 
 // Running is a running (or waiting) workspace pod, for the limits on concurrent use.
@@ -75,24 +73,6 @@ func (s *Service) profile(slug string) (Profile, bool) {
 		}
 	}
 	return Profile{}, false
-}
-
-// Bootstrap creates the project "pilot" when there is none, so the bootstrap admins have a project (and with it workspaces) from the start.
-func (s *Service) Bootstrap(ctx context.Context) (bool, error) {
-	list, err := s.store.List(ctx)
-	if err != nil || len(list) > 0 || len(s.cfg.BootstrapMembers) == 0 {
-		return false, err
-	}
-	p := Project{Slug: "pilot", Name: "Pilot", Description: "Angelegt beim Umstieg auf Projekte: die Bootstrap-Admins mit allen Profilen und GPU-Klassen.",
-		Limits: Limits{ServersPerPerson: 3, GPUsPerPerson: 1}, CreatedBy: "bootstrap"}
-	for _, t := range s.cfg.BootstrapMembers {
-		p.Members = append(p.Members, Member{Token: t, Role: RoleManager})
-	}
-	for _, pr := range s.cfg.Profiles {
-		p.Profiles = append(p.Profiles, pr.Slug)
-	}
-	p.GPUClasses = append([]string{}, s.cfg.GPUClasses...)
-	return true, s.store.Create(ctx, &p)
 }
 
 // Mine is a project with the person's role in it and its budgets as far as used (by the person for budgets per person).
@@ -189,17 +169,6 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-func (s *Service) Create(ctx context.Context, p Project, by string) (Project, error) {
-	if err := s.validate(&p); err != nil {
-		return Project{}, err
-	}
-	p.CreatedBy, p.UpdatedBy = by, by
-	err := s.store.Create(ctx, &p)
-	if errors.Is(err, ErrExists) {
-		return Project{}, refuse("Ein Projekt %q gibt es schon.", p.Slug)
-	}
-	return p, err
-}
 
 // Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the images; everything else is kept.
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
