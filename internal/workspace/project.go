@@ -59,7 +59,7 @@ type Project struct {
 	Budgets     []Budget `json:"budgets" gorm:"serializer:json"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
 	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
-	// LLMMTokens is the project's share of LLM tokens per 30 days in millions, from the budget tree; what a person may use is the sum over their projects.
+	// LLMMTokens is the project's LLM tokens per 30 days in millions, from the budget tree: one pool (a LiteLLM team) that all members draw from together, not an amount per member.
 	LLMMTokens int        `json:"llm_mtokens" gorm:"column:llm_mtokens"`
 	EndsAt     *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
 	TreeNode   string     `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and LLM tokens

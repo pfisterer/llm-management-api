@@ -49,6 +49,7 @@ type Service struct {
 	running func(ctx context.Context) ([]Running, error)
 	budget  BudgetCheck
 	usage   UsageReader
+	llm     LLMUsed
 	now     func() time.Time
 }
 
@@ -168,7 +169,6 @@ func (s *Service) validate(p *Project) error {
 func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
-
 
 // Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the images; everything else is kept.
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {

@@ -2,12 +2,10 @@ package webserver
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -18,40 +16,6 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
-
-// A LiteLLM management API that knows users and keys by value — just enough
-// for the chat exchange.
-func fakeBackend(t *testing.T) *httptest.Server {
-	var mu sync.Mutex
-	users, keyVals := map[string]bool{}, map[string]bool{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		switch r.URL.Path {
-		case "/user/info":
-			if !users[r.URL.Query().Get("user_id")] {
-				w.WriteHeader(404)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"user_info": map[string]any{"user_id": r.URL.Query().Get("user_id"), "max_budget": 1, "metadata": map[string]any{"tier": "staff"}}, "keys": []any{}})
-		case "/user/new":
-			users[body["user_id"].(string)] = true
-		case "/user/update":
-		case "/key/info":
-			if !keyVals[r.URL.Query().Get("key")] {
-				w.WriteHeader(404)
-			}
-		case "/key/generate":
-			keyVals[body["key"].(string)] = true
-		default:
-			w.WriteHeader(404)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
 
 func TestChatExchange(t *testing.T) {
 	var gotAuth, gotBody string

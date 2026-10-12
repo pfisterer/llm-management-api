@@ -25,7 +25,7 @@ type ChatOptions struct {
 	Access *access.Service
 	Keys   *keys.Service
 	Tiers  map[string]keys.Tier
-	// Quota decides the tier and the budget (from the projects); its Tiers default to Tiers.
+	// Quota decides the tier and the pools (from the projects); its Tiers default to Tiers.
 	Quota     LLMQuota
 	Gateway   string // LiteLLM inference gateway, e.g. http://litellm-gateway:4000
 	MasterKey string // derives the chat keys (see keys.ChatKey)
@@ -45,8 +45,8 @@ const chatBodyLimit = 64 << 20
 // use a personal key if something on this path swaps it in: LibreChat sends the
 // identity as headers ({{LIBRECHAT_USER_OPENIDID}} = Keycloak sub,
 // {{LIBRECHAT_USER_EMAIL}}), and this exchange answers with the person's key.
-// Tier, budget and limits therefore apply exactly as for their own API keys, and
-// spend lands with the right person.
+// Tier and limits therefore apply exactly as for their own API keys, and spend
+// lands in the pool of the person's default project.
 //
 // Trust in those headers rests on the NetworkPolicy alone: only the LibreChat
 // pod reaches this listener. That is why it is a listener of its own.
@@ -181,14 +181,14 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 		if quota.Tiers == nil {
 			quota.Tiers = ex.o.Tiers
 		}
-		tier, status, msg := quota.TierFor(cctx, d, tokens)
+		g, status, msg := quota.GrantFor(cctx, d, tokens)
 		if status != 0 {
 			if status == http.StatusInternalServerError {
 				ex.o.Log.Errorw("chat: no tier", "tier", d.Tier, "email", p.Email, "reason", msg)
 			}
 			return answer{status: status, msg: msg}, nil
 		}
-		key, err := ex.o.Keys.EnsureChatKey(cctx, p, tier, ex.o.MasterKey)
+		key, err := ex.o.Keys.EnsureChatKey(cctx, p, g, ex.o.MasterKey)
 		if err != nil {
 			ex.o.Log.Errorw("chat: key not available", "user", uid, "error", err)
 			return answer{status: http.StatusBadGateway, msg: "Key konnte nicht angelegt werden"}, nil

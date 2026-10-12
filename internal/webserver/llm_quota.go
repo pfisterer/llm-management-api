@@ -9,10 +9,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// DollarsPerMTokens is what a million tokens cost in LiteLLM's budgets here: every model is priced at 1e-7 per token, so a budget in "dollars" is a token budget.
-const DollarsPerMTokens = 0.1
-
-// LLMQuota decides what a person may use of the LLM: the budget per person comes from the budget tree — the sum of the LLM tokens of their projects, no tokens no access — and the tier gives rate limits, models and the short-term budget per key.
+// LLMQuota decides what a person may use of the LLM: the projects whose token pools they may draw from come from the budget tree — every project with LLM tokens is one pool shared by its members, no project no access — and the tier gives rate limits, models and the short-term budget per key.
 type LLMQuota struct {
 	Tiers map[string]keys.Tier
 	// DefaultTier is the tier of people whose access rule names none (or an unknown one) and of people without a rule.
@@ -22,41 +19,47 @@ type LLMQuota struct {
 	SelfServiceURL string
 }
 
-// TierFor is the person's tier with the monthly budget from their projects; a status and message when they may not use the LLM.
-func (q LLMQuota) TierFor(ctx context.Context, d access.Decision, tokens []string) (keys.Tier, int, string) {
+// GrantFor is the person's tier with the pools they may draw from; a status and message when they may not use the LLM (no tier configured, projects not readable, no project with tokens).
+func (q LLMQuota) GrantFor(ctx context.Context, d access.Decision, tokens []string) (keys.Grant, int, string) {
 	t, ok := q.Tiers[q.TierName(d)]
 	if !ok {
-		return keys.Tier{}, http.StatusInternalServerError, "Standard-Kontingentklasse nicht konfiguriert."
+		return keys.Grant{}, http.StatusInternalServerError, "Standard-Kontingentklasse nicht konfiguriert."
 	}
-	mtokens, status, msg := q.MTokensFor(ctx, tokens)
+	pools, status, msg := q.PoolsFor(ctx, tokens)
 	if status != 0 {
-		return keys.Tier{}, status, msg
+		return keys.Grant{}, status, msg
 	}
-	if mtokens == 0 {
+	if len(pools) == 0 {
 		msg := "Kein Projekt mit LLM-Tokens."
 		if q.SelfServiceURL != "" {
 			msg += " Ein Projekt gibt es unter " + q.SelfServiceURL
 		}
-		return keys.Tier{}, http.StatusForbidden, msg
+		return keys.Grant{}, http.StatusForbidden, msg
 	}
-	t.UserBudget = float64(mtokens) * DollarsPerMTokens
-	t.UserBudgetDuration = "30d"
-	return t, 0, ""
+	return keys.Grant{Tier: t, Pools: pools}, 0, ""
 }
 
-// MTokensFor is the person's LLM budget in millions of tokens per 30 days; a status and message when the projects cannot be read.
-func (q LLMQuota) MTokensFor(ctx context.Context, tokens []string) (int, int, string) {
+// PoolsFor lists the pools the person may draw from (see workspace.LLMPoolsFor); a status and message when the projects cannot be read.
+func (q LLMQuota) PoolsFor(ctx context.Context, tokens []string) ([]keys.Pool, int, string) {
 	if q.Projects == nil {
-		return 0, http.StatusServiceUnavailable, "Projekte sind hier nicht verfügbar."
+		return nil, http.StatusServiceUnavailable, "Projekte sind hier nicht verfügbar."
 	}
-	mtokens, err := q.Projects.LLMMTokensFor(ctx, tokens)
+	list, err := q.Projects.LLMPoolsFor(ctx, tokens)
 	if err != nil {
-		return 0, http.StatusServiceUnavailable, "Projekte konnten gerade nicht gelesen werden."
+		return nil, http.StatusServiceUnavailable, "Projekte konnten gerade nicht gelesen werden."
 	}
-	return mtokens, 0, ""
+	return toPools(list), 0, ""
 }
 
-// TierName is the tier TierFor uses: the rule's if it is configured, else the default tier.
+func toPools(list []workspace.LLMPool) []keys.Pool {
+	out := make([]keys.Pool, 0, len(list))
+	for _, p := range list {
+		out = append(out, keys.Pool{Slug: p.Slug, Name: p.Name, MTokens: p.MTokens})
+	}
+	return out
+}
+
+// TierName is the tier GrantFor uses: the rule's if it is configured, else the default tier.
 func (q LLMQuota) TierName(d access.Decision) string {
 	if _, ok := q.Tiers[d.Tier]; ok {
 		return d.Tier

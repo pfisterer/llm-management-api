@@ -17,7 +17,7 @@ type MeResponse struct {
 	Email        string      `json:"email" example:"a@dhbw.de"`
 	Role         access.Role `json:"role" example:"user" enums:"user,fleet-admin,admin"`
 	MatchedToken string      `json:"matched_token,omitempty" example:"group:mitarbeitende"`
-	// LLM: tokens per 30 days in millions, summed over the caller's projects; tier, chat and API only when that is more than 0.
+	// LLM: tokens per 30 days in millions of the projects whose pools the caller may draw from, added up — each pool is shared with the project's other members, so this is no allowance of the caller's own; tier, chat and API only when it is more than 0.
 	LLMMTokens int    `json:"llm_mtokens" example:"100"`
 	Tier       string `json:"tier,omitempty" example:"staff"`
 	ChatURL    string `json:"chat_url,omitempty" example:"https://chat.llm.services.dhbw.cloud"`
@@ -51,8 +51,10 @@ func (s *Server) getMe(c *gin.Context) {
 		}
 	}
 	if s.ws != nil {
-		if n, status, _ := s.quota.MTokensFor(c.Request.Context(), cl.Tokens); status == 0 {
-			resp.LLMMTokens = n
+		if pools, status, _ := s.quota.PoolsFor(c.Request.Context(), cl.Tokens); status == 0 {
+			for _, p := range pools {
+				resp.LLMMTokens += p.MTokens
+			}
 		}
 	}
 	if resp.LLMMTokens > 0 {

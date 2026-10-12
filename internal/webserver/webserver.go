@@ -104,10 +104,11 @@ func (s *Server) Router() *gin.Engine {
 	v1 := r.Group("/v1", ginweb.DisableCaching(), s.withCaller)
 	v1.GET("/me", s.getMe)
 
-	// No role needed: the LLM budget from the caller's projects decides (personAndTier).
+	// No role needed: the caller's projects with LLM tokens decide (personAndGrant).
 	v1.GET("/usage", s.getUsage)
 	v1.GET("/keys", s.listKeys)
 	v1.POST("/keys", s.createKey)
+	v1.PUT("/keys/default-project", s.setDefaultProject)
 	v1.DELETE("/keys/:id", s.deleteKey)
 
 	if s.fleet != nil {

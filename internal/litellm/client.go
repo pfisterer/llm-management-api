@@ -96,6 +96,16 @@ type Key struct {
 	MaxBudget      *float64 `json:"max_budget"`
 	BudgetDuration *string  `json:"budget_duration"`
 	BudgetResetAt  *string  `json:"budget_reset_at"`
+	// TeamID is the team whose budget the key spends; nil for a personal key.
+	TeamID *string `json:"team_id"`
+}
+
+// Team returns the key's team id, "" for a personal key.
+func (k Key) Team() string {
+	if k.TeamID == nil {
+		return ""
+	}
+	return *k.TeamID
 }
 
 type userInfoResponse struct {
@@ -148,7 +158,8 @@ type Quota struct {
 
 // NewUser creates a user with quota and metadata.
 func (c *Client) NewUser(ctx context.Context, userID, email string, q Quota, metadata map[string]any) error {
-	body := map[string]any{"user_id": userID, "user_email": email, "user_role": "internal_user", "metadata": metadata}
+	// Without auto_create_key LiteLLM makes a nameless key for every new user, whose secret nobody keeps and which counts as one of the person's keys.
+	body := map[string]any{"user_id": userID, "user_email": email, "user_role": "internal_user", "metadata": metadata, "auto_create_key": false}
 	mergeQuota(body, q)
 	return c.do(ctx, http.MethodPost, "/user/new", body, nil)
 }
@@ -163,9 +174,9 @@ func (c *Client) UpdateUser(ctx context.Context, userID, email string, q *Quota,
 	return c.do(ctx, http.MethodPost, "/user/update", body, nil)
 }
 
-// GenerateKey creates a key and returns its secret value (shown exactly once).
-func (c *Client) GenerateKey(ctx context.Context, userID, alias string, q Quota, metadata map[string]any) (string, error) {
-	body := map[string]any{"user_id": userID, "key_alias": alias, "metadata": metadata}
+// GenerateKey creates a key in a team and returns its secret value (shown exactly once).
+func (c *Client) GenerateKey(ctx context.Context, userID, teamID, alias string, q Quota, metadata map[string]any) (string, error) {
+	body := map[string]any{"user_id": userID, "team_id": teamID, "key_alias": alias, "metadata": metadata}
 	mergeQuota(body, q)
 	var r struct {
 		Key string `json:"key"`
@@ -181,30 +192,145 @@ func (c *Client) GenerateKey(ctx context.Context, userID, alias string, q Quota,
 
 // GenerateKeyWithValue creates a key whose secret the caller chose. Used for the
 // chat key, which is derived from the person's id and never stored.
-func (c *Client) GenerateKeyWithValue(ctx context.Context, userID, alias, key string, q Quota, metadata map[string]any) error {
-	body := map[string]any{"user_id": userID, "key_alias": alias, "key": key, "metadata": metadata}
+func (c *Client) GenerateKeyWithValue(ctx context.Context, userID, teamID, alias, key string, q Quota, metadata map[string]any) error {
+	body := map[string]any{"user_id": userID, "team_id": teamID, "key_alias": alias, "key": key, "metadata": metadata}
 	mergeQuota(body, q)
 	return c.do(ctx, http.MethodPost, "/key/generate", body, nil)
 }
 
-// KeyExists reports whether LiteLLM knows the key (by its secret value). Any
-// answer other than success counts as "no": the caller then creates it, and a
-// real problem shows up there with a proper error.
-func (c *Client) KeyExists(ctx context.Context, key string) (bool, error) {
-	err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, nil)
-	if err == nil {
-		return true, nil
+// KeyInfo returns the key LiteLLM knows by its secret value. Any answer other than success counts as "not found": the caller then creates it, and a real problem shows up there with a proper error.
+func (c *Client) KeyInfo(ctx context.Context, key string) (Key, bool, error) {
+	var r struct {
+		Info *Key `json:"info"`
 	}
+	err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, &r)
 	var le *Error
 	if errors.As(err, &le) {
-		return false, nil
+		return Key{}, false, nil
 	}
-	return false, err
+	if err != nil {
+		return Key{}, false, err
+	}
+	if r.Info == nil {
+		return Key{}, true, nil
+	}
+	return *r.Info, true, nil
+}
+
+// SetKeyTeam moves a key (by token or secret) into a team, or with teamID "" out of every team: LiteLLM 1.94 writes an explicit null (UpdateKeyRequest is dumped with exclude_unset, team_id is a plain nullable column) and checks nothing for it, while a move INTO a team requires the key's user to be a member of that team (validate_key_team_change, even for the master key).
+func (c *Client) SetKeyTeam(ctx context.Context, token, teamID string) error {
+	body := map[string]any{"key": token, "team_id": nil}
+	if teamID != "" {
+		body["team_id"] = teamID
+	}
+	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
 }
 
 // DeleteKeys deletes keys by token (hash).
 func (c *Client) DeleteKeys(ctx context.Context, tokens ...string) error {
 	return c.do(ctx, http.MethodPost, "/key/delete", map[string]any{"keys": tokens}, nil)
+}
+
+// Team is the part of a LiteLLM team this service reads.
+type Team struct {
+	TeamID         string         `json:"team_id"`
+	Alias          *string        `json:"team_alias"`
+	Spend          float64        `json:"spend"`
+	MaxBudget      *float64       `json:"max_budget"`
+	BudgetDuration *string        `json:"budget_duration"`
+	BudgetResetAt  *string        `json:"budget_reset_at"`
+	Metadata       map[string]any `json:"metadata"`
+	Members        []TeamMember   `json:"members_with_roles"`
+}
+
+// TeamMember is one entry of a team's members_with_roles.
+type TeamMember struct {
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
+}
+
+// HasMember reports whether the user is a member of the team.
+func (t Team) HasMember(userID string) bool {
+	for _, m := range t.Members {
+		if m.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// GetTeam returns a team; found=false when LiteLLM does not know it. /team/info answers {"team_id", "team_info": {...}, "keys", "team_memberships"}.
+func (c *Client) GetTeam(ctx context.Context, teamID string) (Team, bool, error) {
+	var r struct {
+		TeamInfo *Team `json:"team_info"`
+	}
+	err := c.do(ctx, http.MethodGet, "/team/info?team_id="+url.QueryEscape(teamID), nil, &r)
+	if IsStatus(err, http.StatusNotFound) {
+		return Team{}, false, nil
+	}
+	if err != nil {
+		return Team{}, false, err
+	}
+	if r.TeamInfo == nil || r.TeamInfo.TeamID == "" {
+		return Team{}, false, nil
+	}
+	return *r.TeamInfo, true, nil
+}
+
+// ListTeams returns every team. /team/list answers a bare array in 1.94; an object with "teams" (the paginated /v2 shape) is read as well, so a change of shape does not read as "no teams".
+func (c *Client) ListTeams(ctx context.Context) ([]Team, error) {
+	var raw json.RawMessage
+	if err := c.do(ctx, http.MethodGet, "/team/list", nil, &raw); err != nil {
+		return nil, err
+	}
+	var list []Team
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list, nil
+	}
+	var wrapped struct {
+		Teams *[]Team `json:"teams"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Teams == nil {
+		return nil, fmt.Errorf("litellm: /team/list answered neither a list nor {teams: [...]}")
+	}
+	return *wrapped.Teams, nil
+}
+
+// TeamSpec is what this service sets on a team. BudgetDuration "" leaves the team's window (and its reset date) alone on an update: LiteLLM restarts the window whenever budget_duration is sent.
+type TeamSpec struct {
+	TeamID         string
+	Alias          string
+	MaxBudget      float64
+	BudgetDuration string
+	Metadata       map[string]any
+}
+
+func (t TeamSpec) body() map[string]any {
+	body := map[string]any{"team_id": t.TeamID, "team_alias": t.Alias, "max_budget": t.MaxBudget, "metadata": t.Metadata}
+	if t.BudgetDuration != "" {
+		body["budget_duration"] = t.BudgetDuration
+	}
+	return body
+}
+
+// NewTeam creates a team without members and without a model list (all models; the keys carry the models).
+func (c *Client) NewTeam(ctx context.Context, t TeamSpec) error {
+	return c.do(ctx, http.MethodPost, "/team/new", t.body(), nil)
+}
+
+// UpdateTeam sets alias, budget and metadata of a team (and its window when BudgetDuration is set). Spend is never touched.
+func (c *Client) UpdateTeam(ctx context.Context, t TeamSpec) error {
+	return c.do(ctx, http.MethodPost, "/team/update", t.body(), nil)
+}
+
+// AddTeamMember adds the user to the team as a plain member; already being one is fine.
+func (c *Client) AddTeamMember(ctx context.Context, teamID, userID string) error {
+	err := c.do(ctx, http.MethodPost, "/team/member_add", map[string]any{"team_id": teamID, "member": map[string]any{"role": "user", "user_id": userID}}, nil)
+	var le *Error
+	if errors.As(err, &le) && le.Status == http.StatusBadRequest && strings.Contains(le.Body, "already in team") {
+		return nil
+	}
+	return err
 }
 
 func mergeQuota(body map[string]any, q Quota) {

@@ -264,3 +264,69 @@ func TestGPUHubAccess(t *testing.T) {
 		}
 	}
 }
+
+// Keys go into a project's pool: the named one if the caller may draw from it, the default project otherwise; the default can be set to an eligible project only, and the usage shows the pools.
+func TestKeysWithProjects(t *testing.T) {
+	ctx := context.Background()
+	acc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{Tiers: []string{"student"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
+	for node, tp := range map[string]workspace.TreeProject{
+		"p_1": {Name: "Kurs A", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 80},
+		"p_2": {Name: "Kurs B", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 20},
+		"p_3": {Name: "Fremd", Members: []workspace.Member{{Token: "user:other@dhbw.de"}}, LLMMTokens: 50},
+	} {
+		if _, err := ws.UpsertFromTree(ctx, node, tp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, srv := newFakeLite(t)
+	h := New(Options{DevMode: true, Access: acc, RoleProvider: &roleprovider.Mock{}, Log: zap.NewNop().Sugar(),
+		Keys: keys.NewService(litellm.New(srv.URL, "master", 5*time.Second), 5), Tiers: map[string]keys.Tier{"student": {Name: "student", KeyBudget: 1}},
+		Quota: LLMQuota{DefaultTier: "student", Projects: ws}, Workspaces: ws}).Router()
+
+	var created CreateKeyResponse
+	code, body := do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "laptop"})
+	if _ = json.Unmarshal(body, &created); code != http.StatusCreated || created.Project != "t-1" || created.ProjectName != "Kurs A" {
+		t.Fatalf("default project: %d %s", code, body)
+	}
+	code, body = do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "vscode", Project: "t-2"})
+	if _ = json.Unmarshal(body, &created); code != http.StatusCreated || created.Project != "t-2" {
+		t.Fatalf("named project: %d %s", code, body)
+	}
+	for _, slug := range []string{"t-3", "t-unknown"} {
+		if code, body := do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "x" + slug, Project: slug}); code != http.StatusForbidden || !strings.Contains(string(body), "project_not_allowed") {
+			t.Errorf("project %s: %d %s", slug, code, body)
+		}
+	}
+	if f.teams["t-1"]["max_budget"] != 8.0 || f.teams["t-2"]["max_budget"] != 2.0 {
+		t.Errorf("teams: %v %v", f.teams["t-1"], f.teams["t-2"])
+	}
+
+	if code, body := do(t, h, "PUT", "/v1/keys/default-project", "member@dhbw.de", DefaultProjectRequest{Project: "t-3"}); code != http.StatusForbidden {
+		t.Errorf("default to a project of others: %d %s", code, body)
+	}
+	if code, body := do(t, h, "PUT", "/v1/keys/default-project", "member@dhbw.de", map[string]string{}); code != http.StatusBadRequest {
+		t.Errorf("default without project: %d %s", code, body)
+	}
+	var def DefaultProjectResponse
+	code, body = do(t, h, "PUT", "/v1/keys/default-project", "member@dhbw.de", DefaultProjectRequest{Project: "t-2"})
+	if _ = json.Unmarshal(body, &def); code != http.StatusOK || def.Project != "t-2" || def.ProjectName != "Kurs B" {
+		t.Fatalf("default: %d %s", code, body)
+	}
+	code, body = do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "tablet"})
+	if _ = json.Unmarshal(body, &created); code != http.StatusCreated || created.Project != "t-2" {
+		t.Fatalf("after the default changed: %d %s", code, body)
+	}
+
+	var u keys.Usage
+	code, body = do(t, h, "GET", "/v1/usage", "member@dhbw.de", nil)
+	if _ = json.Unmarshal(body, &u); code != http.StatusOK || len(u.Projects) != 2 || u.Projects[0].Slug != "t-1" || u.Projects[0].Default || !u.Projects[1].Default || u.Projects[1].Budget != 2 || len(u.Keys) != 3 {
+		t.Fatalf("usage: %d %s", code, body)
+	}
+	if !strings.Contains(string(body), `"project_name":"Kurs B"`) {
+		t.Errorf("usage JSON: %s", body)
+	}
+}

@@ -8,22 +8,36 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/keys"
 )
 
-// CreateKeyRequest names the new key.
+// CreateKeyRequest names the new key and the project whose LLM tokens it spends.
 type CreateKeyRequest struct {
 	Name string `json:"name" binding:"required" example:"vscode"`
+	// Project is the slug of one of the caller's projects with LLM tokens; empty = the caller's default project.
+	Project string `json:"project" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
 }
 
 // CreateKeyResponse carries the secret — the only time it is ever shown.
 type CreateKeyResponse struct {
-	Key  string `json:"key" example:"sk-…"`
-	Name string `json:"name" example:"vscode"`
+	Key         string `json:"key" example:"sk-…"`
+	Name        string `json:"name" example:"vscode"`
+	Project     string `json:"project" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
+	ProjectName string `json:"project_name" example:"Machine Learning WWI23SEB"`
 }
 
-// person and tier of the caller; false (and an answer) when the tier is not
-// configured, which would be a configuration error.
-func (s *Server) personAndTier(c *gin.Context) (keys.Person, keys.Tier, bool) {
+// DefaultProjectRequest names the caller's default project.
+type DefaultProjectRequest struct {
+	Project string `json:"project" binding:"required" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
+}
+
+// DefaultProjectResponse is the caller's default project after the change.
+type DefaultProjectResponse struct {
+	Project     string `json:"project" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
+	ProjectName string `json:"project_name" example:"Machine Learning WWI23SEB"`
+}
+
+// person and grant (tier and pools) of the caller; false (and an answer) when they may not use the LLM or the tier is not configured, which would be a configuration error.
+func (s *Server) personAndGrant(c *gin.Context) (keys.Person, keys.Grant, bool) {
 	cl := caller(c)
-	t, status, msg := s.quota.TierFor(c.Request.Context(), cl.Decision, cl.Tokens)
+	g, status, msg := s.quota.GrantFor(c.Request.Context(), cl.Decision, cl.Tokens)
 	if status != 0 {
 		if status == http.StatusInternalServerError {
 			s.log.Errorw("no tier for the caller", "tier", cl.Decision.Tier, "email", cl.Email, "reason", msg)
@@ -33,16 +47,21 @@ func (s *Server) personAndTier(c *gin.Context) (keys.Person, keys.Tier, bool) {
 			code = "internal"
 		}
 		abort(c, status, code, msg)
-		return keys.Person{}, keys.Tier{}, false
+		return keys.Person{}, keys.Grant{}, false
 	}
-	return keys.Person{Subject: cl.Subject, Email: cl.Email}, t, true
+	return keys.Person{Subject: cl.Subject, Email: cl.Email}, g, true
+}
+
+// notEligible answers a project the caller may not draw LLM tokens from.
+func notEligible(c *gin.Context) {
+	abort(c, http.StatusForbidden, "project_not_allowed", "Für dieses Projekt stehen keine LLM-Tokens zur Verfügung: Es gehört nicht zu den eigenen Projekten, ist abgelaufen oder hat keine LLM-Tokens.")
 }
 
 // getUsage godoc
 //
 //	@ID			getUsage
 //	@Summary		Quota, limits and keys of the caller
-//	@Description	Monthly budget over all keys, the per-key short-term budgets, rate limits and allowed models.
+//	@Description	The projects whose LLM tokens the caller may use — each one pool shared by all its members, with its spend, budget and window from LiteLLM, and which one is the caller's default —, the per-key short-term budgets, rate limits and allowed models.
 //	@Tags			keys
 //	@Produce		json
 //	@Security		BearerAuth
@@ -50,11 +69,11 @@ func (s *Server) personAndTier(c *gin.Context) (keys.Person, keys.Tier, bool) {
 //	@Failure		403	{object}	ErrorResponse
 //	@Router			/v1/usage [get]
 func (s *Server) getUsage(c *gin.Context) {
-	p, t, ok := s.personAndTier(c)
+	p, g, ok := s.personAndGrant(c)
 	if !ok {
 		return
 	}
-	u, err := s.keys.Usage(c.Request.Context(), p, t)
+	u, err := s.keys.Usage(c.Request.Context(), p, g)
 	if err != nil {
 		s.upstreamError(c, "usage", err)
 		return
@@ -73,11 +92,11 @@ func (s *Server) getUsage(c *gin.Context) {
 //	@Failure	403	{object}	ErrorResponse
 //	@Router		/v1/keys [get]
 func (s *Server) listKeys(c *gin.Context) {
-	p, t, ok := s.personAndTier(c)
+	p, g, ok := s.personAndGrant(c)
 	if !ok {
 		return
 	}
-	u, err := s.keys.Usage(c.Request.Context(), p, t)
+	u, err := s.keys.Usage(c.Request.Context(), p, g)
 	if err != nil {
 		s.upstreamError(c, "list keys", err)
 		return
@@ -89,7 +108,7 @@ func (s *Server) listKeys(c *gin.Context) {
 //
 //	@ID			createKey
 //	@Summary		Create an API key
-//	@Description	The name is required and unique per person. The secret is returned exactly once.
+//	@Description	The name is required and unique per person. The key spends the LLM tokens of the given project (one of the caller's, see getUsage), of the caller's default project when none is given. The secret is returned exactly once.
 //	@Tags			keys
 //	@Accept			json
 //	@Produce		json
@@ -97,19 +116,22 @@ func (s *Server) listKeys(c *gin.Context) {
 //	@Param			key	body		CreateKeyRequest	true	"Key"
 //	@Success		201	{object}	CreateKeyResponse
 //	@Failure		400	{object}	ErrorResponse
+//	@Failure		403	{object}	ErrorResponse
 //	@Failure		409	{object}	ErrorResponse
 //	@Router			/v1/keys [post]
 func (s *Server) createKey(c *gin.Context) {
-	p, t, ok := s.personAndTier(c)
+	p, g, ok := s.personAndGrant(c)
 	if !ok {
 		return
 	}
 	var req CreateKeyRequest
 	_ = c.ShouldBindJSON(&req)
-	secret, v, err := s.keys.Create(c.Request.Context(), p, t, req.Name)
+	secret, v, err := s.keys.Create(c.Request.Context(), p, g, req.Name, req.Project)
 	switch {
 	case errors.Is(err, keys.ErrNameRequired):
 		abort(c, http.StatusBadRequest, "name_required", "Bitte einen Namen für den API Key angeben, z. B. „laptop“ oder „vscode“.")
+	case errors.Is(err, keys.ErrNotEligible):
+		notEligible(c)
 	case errors.Is(err, keys.ErrTooManyKeys):
 		abort(c, http.StatusConflict, "too_many_keys", "Höchstzahl an API Keys erreicht. Bitte zuerst einen alten löschen.")
 	case errors.Is(err, keys.ErrDuplicate):
@@ -117,7 +139,42 @@ func (s *Server) createKey(c *gin.Context) {
 	case err != nil:
 		s.upstreamError(c, "create key", err)
 	default:
-		c.JSON(http.StatusCreated, CreateKeyResponse{Key: secret, Name: v.Name})
+		c.JSON(http.StatusCreated, CreateKeyResponse{Key: secret, Name: v.Name, Project: v.Project, ProjectName: v.ProjectName})
+	}
+}
+
+// setDefaultProject godoc
+//
+//	@ID			setDefaultProject
+//	@Summary		Set the caller's default project
+//	@Description	The project whose LLM tokens the chat and new API keys use when no project is named; one of the caller's projects with LLM tokens. The chat moves to it right away.
+//	@Tags			keys
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			project	body		DefaultProjectRequest	true	"Project"
+//	@Success		200		{object}	DefaultProjectResponse
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		403		{object}	ErrorResponse
+//	@Router			/v1/keys/default-project [put]
+func (s *Server) setDefaultProject(c *gin.Context) {
+	p, g, ok := s.personAndGrant(c)
+	if !ok {
+		return
+	}
+	var req DefaultProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abort(c, http.StatusBadRequest, "project_required", "Bitte ein Projekt angeben.")
+		return
+	}
+	pool, err := s.keys.SetDefaultProject(c.Request.Context(), p, g, req.Project)
+	switch {
+	case errors.Is(err, keys.ErrNotEligible):
+		notEligible(c)
+	case err != nil:
+		s.upstreamError(c, "set default project", err)
+	default:
+		c.JSON(http.StatusOK, DefaultProjectResponse{Project: pool.Slug, ProjectName: pool.Name})
 	}
 }
 

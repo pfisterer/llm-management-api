@@ -11,7 +11,7 @@ import (
 
 // TreeBudget is a project's share of a budget in the budget tree: an amount per window for the whole project; 0 = no cap.
 type TreeBudget struct {
-	Unit     string  `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours"`
+	Unit     string  `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours,llm_mtokens"`
 	GPUClass string  `json:"gpu_class,omitempty" example:"l4-3q"`
 	Window   string  `json:"window" example:"30d" enums:"24h,7d,30d"`
 	Amount   float64 `json:"amount" example:"500"`
@@ -33,7 +33,7 @@ type TreeUse struct {
 	Used float64 `json:"used"`
 }
 
-// TreeStatus is a tree-managed project as the tree sees it: where it is (slug) and what it used. Used is empty while no usage is booked here (development without the collector): nothing measured, not nothing used.
+// TreeStatus is a tree-managed project as the tree sees it: where it is (slug) and what it used. Used is empty while no usage is booked here (development without the collector): nothing measured, not nothing used. A project with LLM tokens also reports its pool there: unit llm_mtokens, window 30d, amount = its tokens, used = what its members spent of the pool in LiteLLM's current window (0 before the pool's team exists); missing when LiteLLM could not be asked.
 type TreeStatus struct {
 	Node string    `json:"node" example:"p_7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
 	Slug string    `json:"slug" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
@@ -163,11 +163,10 @@ func (s *Service) TreeProjects(ctx context.Context) ([]TreeStatus, error) {
 		return nil, err
 	}
 	out := []TreeStatus{}
+	list = slices.DeleteFunc(list, func(p Project) bool { return !p.Managed() })
+	used, known := s.llmUsed(ctx, list)
 	for _, p := range list {
-		if !p.Managed() {
-			continue
-		}
-		st, err := s.treeStatus(ctx, p)
+		st, err := s.treeStatusWith(ctx, p, used, known)
 		if err != nil {
 			return nil, err
 		}
@@ -177,6 +176,11 @@ func (s *Service) TreeProjects(ctx context.Context) ([]TreeStatus, error) {
 }
 
 func (s *Service) treeStatus(ctx context.Context, p Project) (TreeStatus, error) {
+	used, ok := s.llmUsed(ctx, []Project{p})
+	return s.treeStatusWith(ctx, p, used, ok)
+}
+
+func (s *Service) treeStatusWith(ctx context.Context, p Project, llmUsed map[string]float64, llmKnown bool) (TreeStatus, error) {
 	st := TreeStatus{Node: p.TreeNode, Slug: p.Slug, Used: []TreeUse{}}
 	statuses, err := s.BudgetStatus(ctx, p, "")
 	if err != nil {
@@ -187,7 +191,31 @@ func (s *Service) treeStatus(ctx context.Context, p Project) (TreeStatus, error)
 			st.Used = append(st.Used, TreeUse{TreeBudget: TreeBudget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount}, Used: b.Used})
 		}
 	}
+	if p.LLMMTokens > 0 && llmKnown {
+		st.Used = append(st.Used, TreeUse{TreeBudget: TreeBudget{Unit: "llm_mtokens", Window: LLMWindow, Amount: float64(p.LLMMTokens)}, Used: llmUsed[p.Slug]})
+	}
 	return st, nil
+}
+
+// llmUsed asks for the used LLM tokens of the projects that have any; false when that is not possible (no LiteLLM here, or it did not answer).
+func (s *Service) llmUsed(ctx context.Context, list []Project) (map[string]float64, bool) {
+	var slugs []string
+	for _, p := range list {
+		if p.LLMMTokens > 0 {
+			slugs = append(slugs, p.Slug)
+		}
+	}
+	if s.llm == nil {
+		return nil, false
+	}
+	if len(slugs) == 0 {
+		return map[string]float64{}, true
+	}
+	used, err := s.llm(ctx, slugs)
+	if err != nil {
+		return nil, false
+	}
+	return used, true
 }
 
 // keepTreeFields puts back what the tree owns into a project a person changed: members, end, the tree's budgets, GPUs per class, LLM tokens, name and the node.
@@ -218,17 +246,60 @@ func withinTree(p Project) error {
 	return nil
 }
 
-// LLMMTokensFor is what a person may use of the LLM per 30 days, in millions of tokens: the sum over the active projects they belong to.
-func (s *Service) LLMMTokensFor(ctx context.Context, tokens []string) (int, error) {
+// LLMWindow is the window of a project's LLM tokens; its pool (a LiteLLM team) resets after it.
+const LLMWindow = "30d"
+
+// LLMPool is a project's pool of LLM tokens, shared by its members: the tokens per 30 days it has now, 0 once it ended.
+type LLMPool struct {
+	Slug    string
+	Name    string
+	MTokens int
+}
+
+func (s *Service) poolOf(p Project) LLMPool {
+	n := p.LLMMTokens
+	if n < 0 || !p.Active(s.now()) {
+		n = 0
+	}
+	return LLMPool{Slug: p.Slug, Name: p.Name, MTokens: n}
+}
+
+// LLMPools lists the pool of every project, with 0 tokens for those that ended or have none: what the LiteLLM teams are kept in step with.
+func (s *Service) LLMPools(ctx context.Context) ([]LLMPool, error) {
 	list, err := s.store.List(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	total := 0
+	out := make([]LLMPool, 0, len(list))
 	for _, p := range list {
-		if p.LLMMTokens > 0 && p.Active(s.now()) && p.RoleOf(tokens) != "" {
-			total += p.LLMMTokens
+		out = append(out, s.poolOf(p))
+	}
+	return out, nil
+}
+
+// LLMPoolsFor lists the pools a person may draw from: active projects with LLM tokens they belong to, directly or through a group, sorted by name and then slug.
+func (s *Service) LLMPoolsFor(ctx context.Context, tokens []string) ([]LLMPool, error) {
+	list, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []LLMPool{}
+	for _, p := range list {
+		if pool := s.poolOf(p); pool.MTokens > 0 && p.RoleOf(tokens) != "" {
+			out = append(out, pool)
 		}
 	}
-	return total, nil
+	slices.SortFunc(out, func(a, b LLMPool) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Slug, b.Slug)
+	})
+	return out, nil
 }
+
+// LLMUsed tells how many million LLM tokens each of the given projects used of its pool in the current window; a project whose pool has no team yet is missing (0).
+type LLMUsed func(ctx context.Context, slugs []string) (map[string]float64, error)
+
+// SetLLMUsed lets the tree status report the LLM pools.
+func (s *Service) SetLLMUsed(f LLMUsed) { s.llm = f }

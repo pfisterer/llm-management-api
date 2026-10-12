@@ -211,14 +211,17 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 
 	tiers := map[string]keys.Tier{}
 	for _, t := range cfg.Tiers {
-		tiers[t.Name] = keys.Tier{Name: t.Name, KeyBudget: t.KeyBudget, KeyBudgetDuration: t.KeyBudgetDuration,
-			UserBudget: t.UserBudget, UserBudgetDuration: t.UserBudgetDuration, RPM: t.RPM, TPM: t.TPM, Models: t.Models}
+		tiers[t.Name] = keys.Tier{Name: t.Name, KeyBudget: t.KeyBudget, KeyBudgetDuration: t.KeyBudgetDuration, RPM: t.RPM, TPM: t.TPM, Models: t.Models}
 	}
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser)
+	if wsSvc != nil {
+		// The tree reads what a project used of its LLM tokens from the project's team.
+		wsSvc.SetLLMUsed(keySvc.UsedMTokens)
+	}
 
 	quota := webserver.LLMQuota{Tiers: tiers, DefaultTier: cfg.LLMDefaultTier, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
-	// The budget per person comes from the projects, which exist only with the GPU part.
+	// The LLM pools come from the projects, which exist only with the GPU part.
 	var budgets *webserver.BudgetSync
 	onTree := func() {}
 	if wsSvc != nil {
@@ -341,20 +344,37 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 		return roleprovider.NewHTTP(cfg.RoleProviderURL, cfg.RoleProviderToken, cfg.RoleProviderTimeout, log)
 	case "mock":
 		// Development only (LoadConfig refuses it otherwise): a few groups to
-		// try rules against without a role-provider at hand.
+		// try rules against without a role-provider at hand. The second half are
+		// the people and groups of the budget tree's development seed
+		// (openstack-management-api, internal/dev), so a project shared with a
+		// group there reaches its members here; student2 is one more member of
+		// the course, to try a shared project with.
 		return &roleprovider.Mock{
 			Memberships: map[string][]string{
 				"student@dhbw.de": {"group:wwi23seb", "group:studierende"},
 				"dozent@dhbw.de":  {"group:mitarbeitende", "group:wwi23seb#dozent"},
 				"it@dhbw.de":      {"group:mitarbeitende", "group:it-service"},
+
+				"root.admin@uni.example": {"group:root_uni"},
+				"admin@cs.example":       {"group:dept_cs_admin"},
+				"faculty@cs.example":     {"group:dept_cs_faculty", "group:wwi23seb", "group:wwi23seb#dozent"},
+				"faculty@bio.example":    {"group:dept_bio"},
+				"cs-student@cs.com":      {"group:cs-student", "group:wwi23seb", "group:wwi23seb#studierende"},
+				"student2@cs.com":        {"group:cs-student", "group:wwi23seb", "group:wwi23seb#studierende"},
 			},
 			Groups: []roleprovider.Group{
 				{Token: "group:studierende", Label: "Studierende"},
 				{Token: "group:mitarbeitende", Label: "Mitarbeitende"},
 				{Token: "group:wwi23seb", Description: "Kurs Wirtschaftsinformatik 2023, Software Engineering B"},
 				{Token: "group:it-service", Label: "IT-Service"},
+				{Token: "group:root_uni", Label: "Root admins"},
+				{Token: "group:dept_cs_admin", Label: "CS department admins"},
+				{Token: "group:dept_cs_faculty", Label: "CS faculty"},
+				{Token: "group:dept_bio", Label: "Biology department"},
+				{Token: "group:cs-student", Label: "CS students"},
 			},
-			Users: []string{"student@dhbw.de", "dozent@dhbw.de", "it@dhbw.de"},
+			Users: []string{"student@dhbw.de", "dozent@dhbw.de", "it@dhbw.de",
+				"root.admin@uni.example", "admin@cs.example", "faculty@cs.example", "faculty@bio.example", "cs-student@cs.com", "student2@cs.com"},
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported ROLE_PROVIDER_TYPE %q", cfg.RoleProviderType)

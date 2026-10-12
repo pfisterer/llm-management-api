@@ -20,20 +20,31 @@ func ChatKey(masterKey, userID string) string {
 }
 
 // EnsureChatKey makes sure the person exists in LiteLLM with the tier's quota
-// and has their chat key, and returns it. Quotas follow reconcile's rule: written
-// for a new user or a changed tier only.
-func (s *Service) EnsureChatKey(ctx context.Context, p Person, tier Tier, masterKey string) (string, error) {
+// and has their chat key in the pool of their default project, and returns it.
+// Quotas follow reconcile's rule: written for a new user or a changed tier only.
+// A chat key in another pool (the default changed, or the project ended) is
+// moved, not made anew.
+func (s *Service) EnsureChatKey(ctx context.Context, p Person, g Grant, masterKey string) (string, error) {
 	uid := p.UserID()
 	key := ChatKey(masterKey, uid)
-	_, existing, err := s.reconcile(ctx, p, tier)
+	info, existing, err := s.reconcile(ctx, p, g.Tier)
 	if err != nil {
 		return "", err
 	}
-	ok, err := s.lite.KeyExists(ctx, key)
+	pool, ok := g.defaultPool(info)
+	if !ok {
+		return "", ErrNotEligible
+	}
+	cur, found, err := s.lite.KeyInfo(ctx, key)
 	if err != nil {
 		return "", err
 	}
-	if ok {
+	if found {
+		if cur.Team() != pool.Slug {
+			if err := s.moveKey(ctx, uid, key, pool); err != nil {
+				return "", fmt.Errorf("move chat key: %w", err)
+			}
+		}
 		return key, nil
 	}
 	// Orphaned chat keys (from an earlier master key) would otherwise show up
@@ -49,8 +60,11 @@ func (s *Service) EnsureChatKey(ctx context.Context, p Person, tier Tier, master
 			return "", fmt.Errorf("remove stale chat keys: %w", err)
 		}
 	}
-	meta := map[string]any{"created_by": "llm-management-api", "tier": tier.Name, "purpose": "chat"}
-	if err := s.lite.GenerateKeyWithValue(ctx, uid, ownAlias(uid, chatAlias), key, tier.keyQuota(), meta); err != nil {
+	if _, err := s.ensureTeam(ctx, pool); err != nil {
+		return "", err
+	}
+	meta := map[string]any{"created_by": "llm-management-api", "tier": g.Tier.Name, "purpose": "chat"}
+	if err := s.lite.GenerateKeyWithValue(ctx, uid, pool.Slug, ownAlias(uid, chatAlias), key, g.Tier.keyQuota(), meta); err != nil {
 		return "", err
 	}
 	return key, nil

@@ -16,14 +16,12 @@ import (
 // Tier is one quota class. Only the name matters to the access list; the
 // budget fields are what API keys are created with.
 type Tier struct {
-	Name               string   `json:"name"`
-	KeyBudget          float64  `json:"keyBudget"`
-	KeyBudgetDuration  string   `json:"keyBudgetDuration"`
-	UserBudget         float64  `json:"userBudget"`
-	UserBudgetDuration string   `json:"userBudgetDuration"`
-	RPM                int      `json:"rpm"`
-	TPM                int      `json:"tpm"`
-	Models             []string `json:"models"`
+	Name              string   `json:"name"`
+	KeyBudget         float64  `json:"keyBudget"`
+	KeyBudgetDuration string   `json:"keyBudgetDuration"`
+	RPM               int      `json:"rpm"`
+	TPM               int      `json:"tpm"`
+	Models            []string `json:"models"`
 }
 
 type Config struct {
@@ -75,11 +73,11 @@ type Config struct {
 	GPUHubToken string
 	// Workspaces (docs/bauplan.md, Stufe 4): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
 	WorkspacesJSON string
-	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off), the tier that gives rate limits, models and the short-term key budget to people whose access rule names none or who have no rule (the monthly LLM budget always comes from the tree's projects), and where people get a project.
+	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off), the tier that gives rate limits, models and the short-term key budget to people whose access rule names none or who have no rule (the LLM tokens always come from the tree's projects, one pool per project), and where people get a project.
 	TreeToken      string
 	LLMDefaultTier string
 	SelfServiceURL string
-	// How often every person's monthly budget in LiteLLM is brought in step with the tree (besides right after each change from the tree).
+	// How often LiteLLM's teams (one per project), quotas and keys are brought in step with the tree (besides right after each change from the tree).
 	BudgetSyncInterval time.Duration
 }
 

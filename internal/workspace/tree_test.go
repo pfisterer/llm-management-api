@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -73,7 +74,7 @@ func TestUpsertFromTree(t *testing.T) {
 	}
 }
 
-// The tree reads what a project used of its budgets in the current window; LLM tokens of a person are the sum over their active projects.
+// The tree reads what a project used of its budgets in the current window, the LLM pool included; a person draws from the pools of their active projects with tokens.
 func TestTreeUsageAndLLM(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -97,14 +98,50 @@ func TestTreeUsageAndLLM(t *testing.T) {
 	if _, err := s.UpsertFromTree(ctx, "p_3", TreeProject{Name: "C", Members: []Member{{Token: "group:k"}}, LLMMTokens: 1000, EndsAt: &ended}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.UpsertFromTree(ctx, "p_4", TreeProject{Name: "A", Members: []Member{{Token: "group:other"}}, LLMMTokens: 5}); err != nil {
+		t.Fatal(err)
+	}
 	list, err := s.TreeProjects(ctx)
-	if err != nil || len(list) != 3 {
+	if err != nil || len(list) != 4 {
 		t.Fatalf("tree projects: %v %v", list, err)
 	}
+	// Without LiteLLM nothing is measured of the LLM pools, so nothing is reported.
 	if u := list[0].Used; len(u) != 1 || u[0].Used != 3 {
 		t.Errorf("used in the window = %+v, want 3 (the 100 are older)", u)
 	}
-	if n, _ := s.LLMMTokensFor(ctx, []string{"user:a@dhbw.de", "group:k"}); n != 100 {
-		t.Errorf("LLM tokens = %d, want 80 + 20 (the ended project does not count)", n)
+
+	var asked []string
+	s.SetLLMUsed(func(_ context.Context, slugs []string) (map[string]float64, error) {
+		asked = slugs
+		return map[string]float64{st.Slug: 12.5}, nil
+	})
+	list, _ = s.TreeProjects(ctx)
+	byNode := map[string]TreeStatus{}
+	for _, x := range list {
+		byNode[x.Node] = x
+	}
+	if len(asked) != 4 {
+		t.Errorf("asked for %v, want every project with tokens at once", asked)
+	}
+	if u := byNode["p_1"].Used; len(u) != 2 || u[1] != (TreeUse{TreeBudget: TreeBudget{Unit: "llm_mtokens", Window: "30d", Amount: 80}, Used: 12.5}) {
+		t.Errorf("LLM pool = %+v", u)
+	}
+	if u := byNode["p_2"].Used; len(u) != 1 || u[0].Unit != "llm_mtokens" || u[0].Used != 0 || u[0].Amount != 20 {
+		t.Errorf("LLM pool without a team yet = %+v", u)
+	}
+	s.SetLLMUsed(func(context.Context, []string) (map[string]float64, error) { return nil, errors.New("down") })
+	if st, err := s.UpsertFromTree(ctx, "p_2", TreeProject{Name: "B", Members: []Member{{Token: "user:a@dhbw.de"}}, LLMMTokens: 20}); err != nil || len(st.Used) != 0 {
+		t.Errorf("LiteLLM down: %+v %v", st, err)
+	}
+
+	pools, _ := s.LLMPoolsFor(ctx, []string{"user:a@dhbw.de", "group:k"})
+	if len(pools) != 2 || pools[0].Name != "A" || pools[0].MTokens != 80 || pools[1].Name != "B" {
+		t.Errorf("pools = %+v, want A (80) and B (20); the ended one and the one of others do not count", pools)
+	}
+	all, _ := s.LLMPools(ctx)
+	for _, p := range all {
+		if p.Name == "C" && p.MTokens != 0 {
+			t.Errorf("ended project's pool = %d, want 0", p.MTokens)
+		}
 	}
 }
