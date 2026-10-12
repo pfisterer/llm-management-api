@@ -77,7 +77,7 @@ func (s *Service) profile(slug string) (Profile, bool) {
 	return Profile{}, false
 }
 
-// Bootstrap creates the project "pilot" when there is none, so access keeps working when projects replace the GPU tiers.
+// Bootstrap creates the project "pilot" when there is none, so the bootstrap admins have a project (and with it workspaces) from the start.
 func (s *Service) Bootstrap(ctx context.Context) (bool, error) {
 	list, err := s.store.List(ctx)
 	if err != nil || len(list) > 0 || len(s.cfg.BootstrapMembers) == 0 {

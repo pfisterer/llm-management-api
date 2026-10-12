@@ -2,16 +2,21 @@ package webserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/keys"
+	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
 
@@ -79,15 +84,11 @@ func TestMeAndRoles(t *testing.T) {
 	var created access.Rule
 	_ = json.Unmarshal(body, &created)
 
+	// The rule gives the role; the LLM needs tokens from a project, which this server has none of.
 	code, body = do(t, h, "GET", "/v1/me", "student@dhbw.de", nil)
 	_ = json.Unmarshal(body, &me)
-	if code != 200 || me.Role != access.RoleUser || me.Tier != "student" || me.ChatURL == "" {
+	if code != 200 || me.Role != access.RoleUser || me.MatchedToken != "group:wwi23seb" || me.LLMMTokens != 0 || me.Tier != "" || me.ChatURL != "" {
 		t.Fatalf("student after rule: %d %s", code, body)
-	}
-
-	// Without access, no keys either.
-	if code, _ := do(t, h, "GET", "/v1/keys", "nobody@dhbw.de", nil); code != http.StatusForbidden {
-		t.Fatalf("keys without access: want 403, got %d", code)
 	}
 
 	// A user may not touch the access list.
@@ -172,18 +173,75 @@ func TestPrincipalSearch(t *testing.T) {
 	}
 }
 
-func TestGPUHubAccess(t *testing.T) {
+// llmServer has a bootstrap admin (root), a project with LLM tokens and a GPU for member@dhbw.de, and nobody@dhbw.de without either; no access rule besides root's.
+func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler) {
+	t.Helper()
 	acc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{
-		Tiers: []string{"staff"}, GPUTiers: []string{"standard"}, BootstrapAdmins: []string{"root@dhbw.de"},
-		BootstrapAdminTier: "staff", BootstrapAdminGPUTier: "standard"})
+		Tiers: []string{"student", "staff"}, BootstrapAdmins: []string{"root@dhbw.de"}, BootstrapAdminTier: "staff"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gpu.NewForTest(gpu.Config{Tiers: []gpu.Tier{{Name: "standard", MaxGPUs: 2}}})
+	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{
+		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "pytorch", Name: "PyTorch", GPUClass: "l4-3q"}},
+		GPUClasses: []string{"l4-3q"},
+	}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
+	if _, err := ws.UpsertFromTree(context.Background(), "p_1", workspace.TreeProject{Name: "Kurs", Members: []workspace.Member{{Token: "user:member@dhbw.de"}},
+		GPUsByClass: map[string]int{"l4-3q": 2}, LLMMTokens: 80}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := gpu.NewForTest(gpu.Config{JupyterURL: "https://jupyter"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := GPUHubRouter(GPUHubOptions{Access: acc, GPU: g, Token: "secret", Log: zap.NewNop().Sugar()}, true)
+	tiers := map[string]keys.Tier{"student": {Name: "student", KeyBudget: 1}, "staff": {Name: "staff", KeyBudget: 2}}
+	h := New(Options{DevMode: true, Access: acc, RoleProvider: &roleprovider.Mock{}, Log: zap.NewNop().Sugar(), ChatURL: "https://chat",
+		Keys: keys.NewService(litellm.New(fakeBackend(t).URL, "master", 5*time.Second), 5), Tiers: tiers,
+		Quota: LLMQuota{DefaultTier: "student", Projects: ws, SelfServiceURL: "https://self-service"}, GPU: g, Workspaces: ws}).Router()
+	return acc, ws, h
+}
+
+// No access rule needed for the LLM: the tokens of a project are enough; without them there is none.
+func TestLLMWithoutRule(t *testing.T) {
+	_, _, h := llmServer(t)
+	var me MeResponse
+	code, body := do(t, h, "GET", "/v1/me", "member@dhbw.de", nil)
+	_ = json.Unmarshal(body, &me)
+	if code != 200 || me.Role != access.RoleNone || me.LLMMTokens != 80 || me.Tier != "student" || me.ChatURL != "https://chat" || me.WorkspaceProjects != 1 || me.JupyterURL == "" {
+		t.Fatalf("member: %d %s", code, body)
+	}
+	if code, body := do(t, h, "GET", "/v1/usage", "member@dhbw.de", nil); code != 200 {
+		t.Fatalf("usage of the member: %d %s", code, body)
+	}
+	me = MeResponse{}
+	code, body = do(t, h, "GET", "/v1/me", "nobody@dhbw.de", nil)
+	_ = json.Unmarshal(body, &me)
+	if code != 200 || me.LLMMTokens != 0 || me.Tier != "" || me.ChatURL != "" || me.JupyterURL != "" {
+		t.Fatalf("nobody: %d %s", code, body)
+	}
+	for _, path := range []string{"/v1/usage", "/v1/keys"} {
+		if code, body := do(t, h, "GET", path, "nobody@dhbw.de", nil); code != http.StatusForbidden || !strings.Contains(string(body), "no_quota") {
+			t.Errorf("%s without tokens: %d %s", path, code, body)
+		}
+	}
+	// An admin's rule gives no LLM either.
+	if code, _ := do(t, h, "GET", "/v1/usage", "root@dhbw.de", nil); code != http.StatusForbidden {
+		t.Errorf("admin without tokens: %d", code)
+	}
+}
+
+// Workspaces: members of a project and admins, nobody else.
+func TestRequireWorkspace(t *testing.T) {
+	_, _, h := llmServer(t)
+	for user, want := range map[string]int{"member@dhbw.de": 200, "root@dhbw.de": 200, "nobody@dhbw.de": http.StatusForbidden} {
+		if code, body := do(t, h, "GET", "/v1/gpu/environments", user, nil); code != want {
+			t.Errorf("%s: %d %s, want %d", user, code, body, want)
+		}
+	}
+}
+
+func TestGPUHubAccess(t *testing.T) {
+	acc, ws, _ := llmServer(t)
+	r := GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", SelfServiceURL: "https://self-service", Log: zap.NewNop().Sugar()}, true)
 	for _, tc := range []struct {
 		token, user string
 		status      int
@@ -191,8 +249,9 @@ func TestGPUHubAccess(t *testing.T) {
 	}{
 		{"", "root@dhbw.de", 401, ""},
 		{"wrong", "root@dhbw.de", 401, ""},
-		{"secret", "root@dhbw.de", 200, `"allowed":true,"gpu_tier":"standard","max_gpus":2,"admin":true`},
-		{"secret", "nobody@dhbw.de", 200, `"allowed":false,"max_gpus":0,"admin":false`},
+		{"secret", "root@dhbw.de", 200, `"allowed":true,"max_gpus":0,"admin":true,"projects":[]`},
+		{"secret", "member@dhbw.de", 200, `"allowed":true,"max_gpus":1,"admin":false,"projects":[{"slug":"t-1"`},
+		{"secret", "nobody@dhbw.de", 200, `"allowed":false,"max_gpus":0,"admin":false,"projects":[],"get_project_url":"https://self-service"`},
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/gpu/hub/access?user="+tc.user, nil)
 		if tc.token != "" {

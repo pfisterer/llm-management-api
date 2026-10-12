@@ -10,18 +10,9 @@ import (
 	"strings"
 )
 
-// Tier is one GPU quota class. MaxGPUs is how many GPUs a person may use at
-// the same time (GPU servers and GPU kernels together).
-type Tier struct {
-	Name    string `json:"name"`
-	MaxGPUs int    `json:"maxGPUs"`
-}
-
-// Config of the GPU part. Enabled=false switches it off entirely: no routes,
-// no clients, GPU tiers still accepted in access rules (empty list).
+// Config of the GPU part. Enabled=false switches it off entirely: no routes, no clients.
 type Config struct {
 	Enabled bool
-	Tiers   []Tier
 
 	KubeAPIURL     string // https://10.91.0.1:6443
 	KubeToken      string // ServiceAccount token, namespace BuildNamespace
@@ -56,9 +47,6 @@ func (c Config) Validate() error {
 			missing = append(missing, name)
 		}
 	}
-	if len(c.Tiers) == 0 {
-		missing = append(missing, "GPU_TIERS")
-	}
 	if c.InferenceURL != "" && strings.TrimSpace(c.InferenceAPIKey) == "" {
 		missing = append(missing, "GPU_INFERENCE_API_KEY")
 	}
@@ -66,13 +54,4 @@ func (c Config) Validate() error {
 		return fmt.Errorf("GPU part enabled but missing: %s", strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-// TierNames lists the configured tier names.
-func (c Config) TierNames() []string {
-	out := make([]string, 0, len(c.Tiers))
-	for _, t := range c.Tiers {
-		out = append(out, t.Name)
-	}
-	return out
 }

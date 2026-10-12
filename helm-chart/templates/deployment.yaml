@@ -98,8 +98,7 @@ spec:
             - name: LITELLM_MASTER_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}
             - {name: MAX_KEYS_PER_USER, value: {{ .Values.config.maxKeysPerUser | quote }}}
-            - {name: LLM_BUDGET_SOURCE, value: {{ .Values.config.llmBudgetSource | default "tiers" | quote }}}
-            - {name: LLM_TREE_TIER, value: {{ .Values.config.llmTreeTier | quote }}}
+            - {name: LLM_DEFAULT_TIER, value: {{ required "config.llmDefaultTier is required" .Values.config.llmDefaultTier | quote }}}
             - {name: SELF_SERVICE_URL, value: {{ .Values.config.selfServiceUrl | quote }}}
             - name: TREE_API_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: tree-api-token, optional: true}}
@@ -132,8 +131,6 @@ spec:
             - {name: JUPYTERHUB_URL, value: {{ required "gpu.jupyterhubUrl is required" .Values.gpu.jupyterhubUrl | quote }}}
             - name: JUPYTERHUB_API_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: jupyterhub-api-token}}
-            - {name: GPU_TIERS, value: {{ required "gpu.tiers is required" .Values.gpu.tiers | toJson | quote }}}
-            - {name: BOOTSTRAP_ADMIN_GPU_TIER, value: {{ .Values.gpu.bootstrapAdminGpuTier | quote }}}
             {{- if .Values.gpu.inference.url }}
             - {name: GPU_INFERENCE_URL, value: {{ .Values.gpu.inference.url | quote }}}
             - {name: GPU_INFERENCE_NAMESPACE, value: {{ .Values.gpu.inference.namespace | quote }}}

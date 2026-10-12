@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
@@ -20,7 +19,6 @@ import (
 // GPUHubOptions wires the listener JupyterHub asks for a person's GPU access.
 type GPUHubOptions struct {
 	Access *access.Service
-	GPU    *gpu.Service
 	Token  string
 	// Workspace usage: the daily home sizes arrive here (POST /workspaces/homes). nil = route off.
 	Usage   usage.Store
@@ -41,11 +39,9 @@ type HubProject struct {
 	FreeImages bool              `json:"free_images"`
 }
 
-// GPUHubAccessResponse is the access decision for one person, for JupyterHub:
-// whether they may log in, and how many GPUs they may use at the same time.
+// GPUHubAccessResponse is the access decision for one person, for JupyterHub: whether they may log in (a project, or admin), and how many GPUs they may use at the same time (the most any of their projects allows per person).
 type GPUHubAccessResponse struct {
 	Allowed  bool         `json:"allowed"`
-	GPUTier  string       `json:"gpu_tier,omitempty"`
 	MaxGPUs  int          `json:"max_gpus"`
 	Admin    bool         `json:"admin"`
 	Projects []HubProject `json:"projects"`
@@ -78,10 +74,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			abort(c, http.StatusInternalServerError, "internal", "Zugriff konnte nicht geprüft werden.")
 			return
 		}
-		resp := GPUHubAccessResponse{Allowed: d.GPUTier != "", GPUTier: d.GPUTier, Admin: d.Role.AtLeast(access.RoleAdmin), Projects: []HubProject{}}
-		if resp.Allowed {
-			resp.MaxGPUs = o.GPU.Tier(d.GPUTier).MaxGPUs
-		}
+		resp := GPUHubAccessResponse{Admin: d.Role.AtLeast(access.RoleAdmin), Projects: []HubProject{}}
 		if o.Workspaces != nil {
 			mine, err := o.Workspaces.ForPerson(c.Request.Context(), tokens, "", false)
 			if err != nil {
@@ -93,8 +86,8 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
-			resp.Allowed = resp.Allowed || len(mine) > 0
 		}
+		resp.Allowed = len(resp.Projects) > 0 || resp.Admin
 		if !resp.Allowed {
 			resp.GetProjectURL = o.SelfServiceURL
 		}

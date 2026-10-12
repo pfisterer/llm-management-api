@@ -25,7 +25,7 @@ type ChatOptions struct {
 	Access *access.Service
 	Keys   *keys.Service
 	Tiers  map[string]keys.Tier
-	// Quota decides the tier; zero = from Tiers.
+	// Quota decides the tier and the budget (from the projects); its Tiers default to Tiers.
 	Quota     LLMQuota
 	Gateway   string // LiteLLM inference gateway, e.g. http://litellm-gateway:4000
 	MasterKey string // derives the chat keys (see keys.ChatKey)
@@ -176,9 +176,6 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 		if err != nil {
 			ex.o.Log.Errorw("chat: access decision failed", "email", p.Email, "error", err)
 			return answer{status: http.StatusServiceUnavailable, msg: "Zugriff konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen"}, nil
-		}
-		if d.Role == access.RoleNone {
-			return answer{status: http.StatusForbidden, msg: "Kein Zugang zum LLM-Dienst. Den Zugang vergibt die Administration des Dienstes."}, nil
 		}
 		quota := ex.o.Quota
 		if quota.Tiers == nil {

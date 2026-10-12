@@ -84,18 +84,8 @@ func newService(cfg Config, store Store, b builds, i images, s servers, r refRes
 	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log}
 }
 
-// JupyterURL is shown to people with GPU access.
+// JupyterURL is shown to people with a project.
 func (s *Service) JupyterURL() string { return s.cfg.JupyterURL }
-
-// Tier returns the configured GPU tier (zero value if unknown).
-func (s *Service) Tier(name string) Tier {
-	for _, t := range s.cfg.Tiers {
-		if t.Name == name {
-			return t
-		}
-	}
-	return Tier{}
-}
 
 var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
 
@@ -393,7 +383,7 @@ func (s *Service) StopServer(ctx context.Context, user, name string) error {
 	return s.servers.stopServer(ctx, user, name, name != "")
 }
 
-// NewForTest builds a service without cluster connections (tiers only), for tests of other packages.
+// NewForTest builds a service without cluster connections (memory store only), for tests of other packages.
 func NewForTest(cfg Config) (*Service, error) {
 	return newService(cfg, NewMemoryStore(), nil, nil, nil, nil, nil), nil
 }

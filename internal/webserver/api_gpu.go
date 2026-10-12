@@ -12,9 +12,9 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// requireWorkspace aborts unless the caller may use workspaces: a member of an active project, or (until the GPU tiers are gone) an access rule with a GPU tier.
+// requireWorkspace aborts unless the caller may use workspaces: a member of an active project, or an admin (who manages the projects).
 func (s *Server) requireWorkspace(c *gin.Context) {
-	if caller(c).Decision.GPUTier == "" && len(s.myProjects(c)) == 0 {
+	if !caller(c).Decision.Role.AtLeast(access.RoleAdmin) && len(s.myProjects(c)) == 0 {
 		abort(c, http.StatusForbidden, "forbidden", "Kein Zugang zu Workspaces (kein Projekt).")
 		return
 	}

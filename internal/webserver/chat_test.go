@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
 
@@ -72,9 +74,14 @@ func TestChatExchange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
+	if _, err := ws.UpsertFromTree(context.Background(), "p_1", workspace.TreeProject{Name: "A", Members: []workspace.Member{{Token: "user:admin@dhbw.de"}, {Token: "user:member@dhbw.de"}}, LLMMTokens: 40}); err != nil {
+		t.Fatal(err)
+	}
 	h := ChatRouter(ChatOptions{
 		Access: svc, Keys: keys.NewService(litellm.New(fakeBackend(t).URL, "master", 5*time.Second), 5),
-		Tiers:   map[string]keys.Tier{"staff": {Name: "staff", KeyBudget: 2, UserBudget: 40}},
+		Tiers:   map[string]keys.Tier{"staff": {Name: "staff", KeyBudget: 2}},
+		Quota:   LLMQuota{DefaultTier: "staff", Projects: ws},
 		Gateway: gateway.URL, MasterKey: "master", Log: zap.NewNop().Sugar(),
 	})
 	post := func(sub, email, body string) (int, string) {
@@ -90,8 +97,12 @@ func TestChatExchange(t *testing.T) {
 	if code, _ := post("{{LIBRECHAT_USER_OPENIDID}}", "admin@dhbw.de", plain); code != 401 {
 		t.Errorf("placeholder: %d", code)
 	}
-	if code, body := post("sub-x", "other@dhbw.de", plain); code != 403 || !strings.Contains(body, "Kein Zugang") {
-		t.Errorf("no rule: %d %s", code, body)
+	if code, body := post("sub-x", "other@dhbw.de", plain); code != 403 || !strings.Contains(body, "Kein Projekt mit LLM-Tokens") {
+		t.Errorf("no project: %d %s", code, body)
+	}
+	// No access rule needed: the project's tokens are enough.
+	if code, body := post("sub-m", "member@dhbw.de", plain); code != 200 {
+		t.Errorf("member without rule: %d %s", code, body)
 	}
 	if code, body := post("sub-a", "admin@dhbw.de", plain); code != 200 || !strings.Contains(body, "data:") {
 		t.Fatalf("admin: %d %s", code, body)

@@ -6,9 +6,11 @@ It replaced the portal part of the Node "key broker" of the former llm-aas deplo
 
 ## Access model
 
-Three roles, each including the ones before it: `user` (own API keys, usage, chat), `fleet-admin` (plus the Mac fleet), `admin` (plus the access list and the LiteLLM admin UI).
+Using the LLM and the workspaces needs a budget, not a role: the LLM budget per person is the sum of the LLM tokens of their active projects (projects arrive from the budget tree through `/v1/tree`), and workspaces need a project. No budget, no access.
 
-Who holds which role comes from an access list. Each rule maps a role-provider token to a role and a quota tier:
+Three roles, each including the ones before it: `user`, `fleet-admin` (plus the Mac fleet), `admin` (plus the access list, the LiteLLM admin UI and all projects).
+
+Who holds which role comes from an access list. Each rule maps a role-provider token to a role and a quota tier (rate limits, models and the short-term budget per key; people whose rule names no tier, or who have no rule, get `LLM_DEFAULT_TIER`):
 
 | token | role | tier |
 |---|---|---|
@@ -16,7 +18,7 @@ Who holds which role comes from an access list. Each rule maps a role-provider t
 | `group:wwi23seb` | user | student |
 | `user:a@dhbw.de` | admin | staff |
 
-Per request, the caller's tokens are fetched from the role-provider (cached for `TOKEN_CACHE_SECONDS`) and matched against the list. The highest role wins; among rules of that role, a `user:` rule beats a `group:` rule. Without a matching rule there is no access. If the role-provider is unreachable, only the caller's own `user:` token is used: fewer rights, never more.
+Per request, the caller's tokens are fetched from the role-provider (cached for `TOKEN_CACHE_SECONDS`) and matched against the list. The highest role wins; among rules of that role, a `user:` rule beats a `group:` rule. Without a matching rule there is no role. If the role-provider is unreachable, only the caller's own `user:` token is used: fewer rights, never more.
 
 Admins listed in `BOOTSTRAP_ADMINS` always exist, so the list can never lock everybody out. They are shown in the list but cannot be changed through the API.
 
@@ -29,7 +31,7 @@ The bearer token is the ID token the self-service BFF (oauth2-proxy) forwards: i
 | Method and path | Role |
 |---|---|
 | `GET /v1/me` | any authenticated caller (empty role without access) |
-| `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | user |
+| `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | any authenticated caller; usage and keys need LLM tokens from a project (403 otherwise) |
 | `GET/POST /v1/access-rules`, `PUT/DELETE /v1/access-rules/{id}` | admin |
 | `GET /v1/tiers`, `GET /v1/groups?q=` | admin |
 | `GET /v1/fleet`, `/v1/fleet/inventory.csv`, `/v1/fleet/profile`, `/v1/fleet/package`, `/v1/fleet/readme`, `POST /v1/fleet/{serial}/block\|unblock`, `DELETE /v1/fleet/{serial}` | fleet-admin |
@@ -63,6 +65,8 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `DB_TYPE`, `DB_CONNECTION_STRING` | `postgres` (required in production) or `memory` |
 | `TIERS` | quota tiers as JSON, as in the aiaas-deployment inventory (`llmManagementApi.tiers`) |
 | `BOOTSTRAP_ADMINS`, `BOOTSTRAP_ADMIN_TIER` | always-admins and their tier |
+| `LLM_DEFAULT_TIER` | tier (one of `TIERS`, required) for people whose rule names none or who have no rule |
+| `SELF_SERVICE_URL` | where people without a project get one (in the 403 of the LLM and for JupyterHub) |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
 | `CHAT_BIND` | chat exchange for LibreChat (`/v1/*` with `X-LibreChat-User-*` headers), default `:8089`; NetworkPolicy: LibreChat only |
 | `ADMIN_LOGIN_BIND` | LiteLLM UI autologin (`/`, `/autologin`), default `:8090`; only behind the admin host's forward-auth, role admin |

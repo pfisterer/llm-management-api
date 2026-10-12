@@ -57,9 +57,8 @@ config:
   aliases: {}
   aliasProbes: {}
   maxKeysPerUser: 5
-  # Budget tree (docs/bauplan.md, Stufe 8): "tree" takes a person's LLM budget from the LLM tokens of their projects instead of the tier; llmTreeTier gives rate limits and models to people whose rule names no tier; selfServiceUrl is where people without a project get one.
-  llmBudgetSource: tiers
-  llmTreeTier: ""
+  # Budget tree (docs/bauplan.md, Stufe 8): the LLM budget per person is the sum of the LLM tokens of their projects (no tokens, no LLM); llmDefaultTier (one of tiers, required) gives rate limits, models and the short-term key budget to people whose access rule names no tier or who have no rule; selfServiceUrl is where people without a project get one.
+  llmDefaultTier: ""
   selfServiceUrl: ""
 
 # GPU part: environments from Git repositories (repo2docker builds in the GPU cluster, images in Harbor) and JupyterHub servers. Off by default; tokens under secrets.
@@ -76,9 +75,6 @@ gpu:
   builderSecret: harbor-envs-builder
   gitHosts: [github.com, gitlab.com]
   jupyterhubUrl: ""
-  # GPU quota tiers: [{name, maxGPUs}]; access rules may name them in gpu_tier.
-  tiers: []
-  bootstrapAdminGpuTier: ""
   # vLLM replicas of the inference pool, reported to the discovery job as sites (GET /fleet/sites). Empty url = off. The key is gpu-inference-api-key in the existing secret; the ServiceAccount behind gpu-kube-token needs get/list on pods in the namespace.
   inference:
     url: ""

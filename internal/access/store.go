@@ -108,6 +108,12 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 	if err := db.AutoMigrate(&Rule{}); err != nil {
 		return nil, err
 	}
+	// GPU tiers are gone: who may use workspaces is decided by the projects of the budget tree.
+	if m := db.Migrator(); m.HasColumn(&Rule{}, "gpu_tier") {
+		if err := m.DropColumn(&Rule{}, "gpu_tier"); err != nil {
+			return nil, err
+		}
+	}
 	return &GormStore{db: db}, nil
 }
 
@@ -137,7 +143,7 @@ func (g *GormStore) Create(ctx context.Context, r Rule) (Rule, error) {
 
 func (g *GormStore) Update(ctx context.Context, r Rule) (Rule, error) {
 	res := g.db.WithContext(ctx).Model(&Rule{}).Where("id = ?", r.ID).Updates(map[string]any{
-		"token": r.Token, "role": r.Role, "tier": r.Tier, "gpu_tier": r.GPUTier, "comment": r.Comment,
+		"token": r.Token, "role": r.Role, "tier": r.Tier, "comment": r.Comment,
 		"updated_by": r.UpdatedBy, "updated_at": time.Now().UTC(),
 	})
 	if errors.Is(res.Error, gorm.ErrDuplicatedKey) {

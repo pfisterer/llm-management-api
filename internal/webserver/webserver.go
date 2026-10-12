@@ -101,11 +101,11 @@ func (s *Server) Router() *gin.Engine {
 	v1 := r.Group("/v1", ginweb.DisableCaching(), s.withCaller)
 	v1.GET("/me", s.getMe)
 
-	user := v1.Group("", require(access.RoleUser))
-	user.GET("/usage", s.getUsage)
-	user.GET("/keys", s.listKeys)
-	user.POST("/keys", s.createKey)
-	user.DELETE("/keys/:id", s.deleteKey)
+	// No role needed: the LLM budget from the caller's projects decides (personAndTier).
+	v1.GET("/usage", s.getUsage)
+	v1.GET("/keys", s.listKeys)
+	v1.POST("/keys", s.createKey)
+	v1.DELETE("/keys/:id", s.deleteKey)
 
 	if s.fleet != nil {
 		fa := v1.Group("/fleet", require(access.RoleFleetAdmin))
@@ -161,7 +161,6 @@ func (s *Server) Router() *gin.Engine {
 	admin.PUT("/access-rules/:id", s.updateRule)
 	admin.DELETE("/access-rules/:id", s.deleteRule)
 	admin.GET("/tiers", s.listTiers)
-	admin.GET("/gpu-tiers", s.listGPUTiers)
 	admin.GET("/principals/search", s.searchPrincipals)
 	return r
 }

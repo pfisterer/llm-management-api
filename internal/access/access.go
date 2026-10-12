@@ -1,5 +1,4 @@
-// Package access decides who may use the LLM service, in which role and with
-// which quota tier.
+// Package access decides a person's role (user, fleet-admin, admin) and quota tier. Whether they may use the LLM or workspaces at all is decided by the budgets of their projects, not here.
 //
 // The inputs are the role-provider tokens of a person ("user:a@dhbw.de",
 // "group:wwi23seb", "group:dhbw-ma#dozent") and an access list that maps such
@@ -52,14 +51,12 @@ func ParseRole(s string) (Role, error) {
 	}
 }
 
-// Rule maps one role-provider token to a role and a quota tier, and optionally
-// to a GPU tier (GPU notebooks and environments; empty = no GPU access).
+// Rule maps one role-provider token to a role and a quota tier.
 type Rule struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	Token     string    `json:"token" gorm:"uniqueIndex;not null"`
 	Role      Role      `json:"role" gorm:"not null"`
 	Tier      string    `json:"tier" gorm:"not null"`
-	GPUTier   string    `json:"gpu_tier,omitempty" gorm:"not null;default:''"`
 	Comment   string    `json:"comment"`
 	UpdatedBy string    `json:"updated_by"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -100,10 +97,6 @@ type Decision struct {
 	Tier string `json:"tier"`
 	// The rule that decided, for display and audit. Empty without access.
 	MatchedToken string `json:"matched_token,omitempty"`
-	// GPU tier, empty without GPU access. Decided separately from the role: a
-	// course group may grant GPUs while a personal rule decides the LLM role.
-	GPUTier             string `json:"gpu_tier,omitempty"`
-	GPUTierMatchedToken string `json:"gpu_tier_matched_token,omitempty"`
 }
 
 // Decide picks the rule that applies to a person with the given tokens.
@@ -137,13 +130,5 @@ func Decide(rules []Rule, tokens []string) Decision {
 		return a.Token < b.Token
 	})
 	best := matched[0]
-	d := Decision{Role: best.Role, Tier: best.Tier, MatchedToken: best.Token}
-	// GPU tier: the first matching rule with one, in the same order.
-	for _, r := range matched {
-		if r.GPUTier != "" {
-			d.GPUTier, d.GPUTierMatchedToken = r.GPUTier, r.Token
-			break
-		}
-	}
-	return d
+	return Decision{Role: best.Role, Tier: best.Tier, MatchedToken: best.Token}
 }

@@ -66,8 +66,8 @@ func TestTreeAPI(t *testing.T) {
 	}
 }
 
-// With the budget from the tree, a person's LLM budget is the sum of their projects' tokens, the tier gives the rest; without tokens there is no LLM.
-func TestLLMQuotaFromTree(t *testing.T) {
+// The LLM budget is the sum of the person's projects' tokens, with or without an access rule; the rule's tier (else the default tier) gives the rest; without tokens there is no LLM.
+func TestLLMQuota(t *testing.T) {
 	ctx := context.Background()
 	_, ws := treeServer(t)
 	if _, err := ws.UpsertFromTree(ctx, "p_1", workspace.TreeProject{Name: "A", Members: []workspace.Member{{Token: "group:k"}}, LLMMTokens: 80}); err != nil {
@@ -76,17 +76,30 @@ func TestLLMQuotaFromTree(t *testing.T) {
 	if _, err := ws.UpsertFromTree(ctx, "p_2", workspace.TreeProject{Name: "B", Members: []workspace.Member{{Token: "user:a@dhbw.de"}}, LLMMTokens: 20}); err != nil {
 		t.Fatal(err)
 	}
-	tiers := map[string]keys.Tier{"student": {Name: "student", UserBudget: 8, UserBudgetDuration: "30d", RPM: 60}}
-	q := LLMQuota{Tiers: tiers, FromTree: true, TreeTier: "student", Projects: ws, SelfServiceURL: "https://self-service"}
-	tier, status, _ := q.TierFor(ctx, access.Decision{Role: access.RoleUser}, []string{"user:a@dhbw.de", "group:k"})
-	if status != 0 || tier.UserBudget != 10 || tier.RPM != 60 {
-		t.Errorf("tier = %+v, status %d; want budget 10 (100 M tokens) and the tier's RPM", tier, status)
+	tiers := map[string]keys.Tier{"student": {Name: "student", UserBudget: 8, RPM: 60}, "staff": {Name: "staff", UserBudget: 50, RPM: 600}}
+	q := LLMQuota{Tiers: tiers, DefaultTier: "student", Projects: ws, SelfServiceURL: "https://self-service"}
+	mine := []string{"user:a@dhbw.de", "group:k"}
+	for _, tc := range []struct {
+		name string
+		d    access.Decision
+		rpm  int
+	}{
+		{"no rule", access.Decision{}, 60},
+		{"rule with a tier", access.Decision{Role: access.RoleUser, Tier: "staff"}, 600},
+		{"rule with an unknown tier", access.Decision{Role: access.RoleUser, Tier: "gone"}, 60},
+	} {
+		tier, status, _ := q.TierFor(ctx, tc.d, mine)
+		if status != 0 || tier.UserBudget != 10 || tier.UserBudgetDuration != "30d" || tier.RPM != tc.rpm {
+			t.Errorf("%s: tier = %+v, status %d; want budget 10 (100 M tokens) per 30d and RPM %d", tc.name, tier, status, tc.rpm)
+		}
 	}
-	if _, status, msg := q.TierFor(ctx, access.Decision{Role: access.RoleUser}, []string{"user:b@dhbw.de"}); status != http.StatusForbidden || !strings.Contains(msg, "https://self-service") {
-		t.Errorf("no tokens: %d %q", status, msg)
+	for _, d := range []access.Decision{{}, {Role: access.RoleAdmin, Tier: "staff"}} {
+		if _, status, msg := q.TierFor(ctx, d, []string{"user:b@dhbw.de"}); status != http.StatusForbidden || !strings.Contains(msg, "Kein Projekt mit LLM-Tokens") || !strings.Contains(msg, "https://self-service") {
+			t.Errorf("%+v without tokens: %d %q", d, status, msg)
+		}
 	}
-	q.FromTree = false
-	if tier, status, _ := q.TierFor(ctx, access.Decision{Role: access.RoleUser, Tier: "student"}, nil); status != 0 || tier.UserBudget != 8 {
-		t.Errorf("from tiers: %+v %d", tier, status)
+	q.Projects = nil
+	if _, status, _ := q.TierFor(ctx, access.Decision{}, mine); status != http.StatusServiceUnavailable {
+		t.Errorf("without projects: %d", status)
 	}
 }

@@ -86,17 +86,3 @@ func TestServiceBootstrapAndValidation(t *testing.T) {
 		t.Fatalf("unknown bootstrap tier must fail, got %v", err)
 	}
 }
-
-func TestDecideGPUTierFromAnyRule(t *testing.T) {
-	rules := []Rule{
-		{Token: "user:a@dhbw.de", Role: RoleAdmin, Tier: "staff"},
-		{Token: "group:kurs-ki", Role: RoleUser, Tier: "student", GPUTier: "student-gpu"},
-	}
-	d := Decide(rules, []string{"user:a@dhbw.de", "group:kurs-ki"})
-	if d.Role != RoleAdmin || d.Tier != "staff" || d.GPUTier != "student-gpu" || d.GPUTierMatchedToken != "group:kurs-ki" {
-		t.Fatalf("got %+v", d)
-	}
-	if d := Decide(rules[:1], []string{"user:a@dhbw.de"}); d.GPUTier != "" {
-		t.Fatalf("no GPU rule, got %+v", d)
-	}
-}

@@ -161,9 +161,6 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		BootstrapAdmins:    cfg.BootstrapAdmins,
 		BootstrapAdminTier: cfg.BootstrapAdminTier,
 		TokenCacheTTL:      cfg.TokenCacheTTL,
-		GPUTiers:           cfg.GPU.TierNames(),
-		// Only with the GPU part: a GPU tier for admins would otherwise name a tier that does not exist.
-		BootstrapAdminGPUTier: gpuIf(cfg.GPU.Enabled, cfg.BootstrapAdminGPUTier),
 	})
 	if err != nil {
 		return err
@@ -230,7 +227,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser)
 
-	quota := webserver.LLMQuota{Tiers: tiers, FromTree: cfg.LLMBudgetTree, TreeTier: cfg.LLMTreeTier, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
+	quota := webserver.LLMQuota{Tiers: tiers, DefaultTier: cfg.LLMDefaultTier, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
 		Version:      strings.TrimSpace(generated_docs.Version),
@@ -277,10 +274,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			LiteLLMURL: cfg.LiteLLMURL, Username: cfg.LiteLLMUIUsername, Password: cfg.LiteLLMUIPassword, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 	}
 
-	bookTo := projectOf(accessSvc, log)
+	bookTo := projectOf(accessSvc, wsSvc, log)
 	if gpuSvc != nil && cfg.GPUHubToken != "" {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
-		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc, GPU: gpuSvc,
+		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc,
 			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Workspaces: wsSvc, SelfServiceURL: cfg.SelfServiceURL, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
 	}
 
@@ -363,13 +360,6 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 	}
 }
 
-func gpuIf(enabled bool, v string) string {
-	if enabled {
-		return v
-	}
-	return ""
-}
-
 func workspaceSource(g *gpu.Service) usage.Source {
 	return func(ctx context.Context) ([]usage.Sample, error) {
 		pods, err := g.WorkspacePods(ctx)
@@ -388,8 +378,8 @@ func workspaceSource(g *gpu.Service) usage.Source {
 	}
 }
 
-// projectOf books usage, until projects exist (W2), to the access rule that grants the person compute (the GPU tier's rule, else the deciding rule). Cached for ten minutes: the collector asks every minute and the answer needs the role-provider.
-func projectOf(acc *access.Service, log *zap.SugaredLogger) usage.ProjectOf {
+// projectOf books usage that carries no project of its own (home directories, pods from before projects) to the person's first active project by slug, else to "ohne Projekt". Cached for ten minutes: the collector asks every minute and the answer needs the role-provider.
+func projectOf(acc *access.Service, ws *workspace.Service, log *zap.SugaredLogger) usage.ProjectOf {
 	type entry struct {
 		project string
 		until   time.Time
@@ -403,16 +393,19 @@ func projectOf(acc *access.Service, log *zap.SugaredLogger) usage.ProjectOf {
 		if ok && time.Now().Before(e.until) {
 			return e.project
 		}
-		project := "ohne Regel"
-		if d, _, err := acc.Decide(ctx, strings.ToLower(person)); err != nil {
-			log.Warnw("usage: access decision failed", "person", person, "error", err)
+		project := "ohne Projekt"
+		_, tokens, err := acc.Decide(ctx, strings.ToLower(person))
+		var mine []workspace.Mine
+		if err == nil && ws != nil {
+			mine, err = ws.ForPerson(ctx, tokens, "", false)
+		}
+		if err != nil {
+			log.Warnw("usage: projects of the person not known", "person", person, "error", err)
 			if ok {
 				return e.project
 			}
-		} else if d.GPUTierMatchedToken != "" {
-			project = d.GPUTierMatchedToken
-		} else if d.MatchedToken != "" {
-			project = d.MatchedToken
+		} else if len(mine) > 0 {
+			project = mine[0].Slug
 		}
 		mu.Lock()
 		cache[person] = entry{project, time.Now().Add(10 * time.Minute)}

@@ -12,21 +12,21 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 )
 
-// MeResponse describes the caller. Role is empty without access: the UI then
-// hides the LLM section entirely.
+// MeResponse describes the caller. Role comes from the access rules (empty without one); the LLM section depends on llm_mtokens, the workspaces on workspace_projects.
 type MeResponse struct {
 	Email        string      `json:"email" example:"a@dhbw.de"`
 	Role         access.Role `json:"role" example:"user" enums:"user,fleet-admin,admin"`
-	Tier         string      `json:"tier,omitempty" example:"staff"`
 	MatchedToken string      `json:"matched_token,omitempty" example:"group:mitarbeitende"`
-	ChatURL      string      `json:"chat_url,omitempty" example:"https://chat.llm.services.dhbw.cloud"`
-	APIURL       string      `json:"api_url,omitempty" example:"https://api.llm.services.dhbw.cloud/v1"`
+	// LLM: tokens per 30 days in millions, summed over the caller's projects; tier, chat and API only when that is more than 0.
+	LLMMTokens int    `json:"llm_mtokens" example:"100"`
+	Tier       string `json:"tier,omitempty" example:"staff"`
+	ChatURL    string `json:"chat_url,omitempty" example:"https://chat.llm.services.dhbw.cloud"`
+	APIURL     string `json:"api_url,omitempty" example:"https://api.llm.services.dhbw.cloud/v1"`
 	// Only for admins: autologin link to the LiteLLM admin UI.
 	AdminUIURL string `json:"admin_ui_url,omitempty" example:"https://admin.llm.services.dhbw.cloud/autologin"`
-	// GPU part: tier and JupyterHub, only with GPU access (and the GPU part enabled).
-	GPUTier    string `json:"gpu_tier,omitempty" example:"student-gpu"`
+	// JupyterHub, only with a project (and the GPU part enabled).
 	JupyterURL string `json:"jupyter_url,omitempty" example:"https://jupyter.gpu.services.dhbw.cloud"`
-	// Workspaces: number of active projects the caller belongs to; independent of the LLM role.
+	// Workspaces: number of active projects the caller belongs to.
 	WorkspaceProjects int `json:"workspace_projects" example:"1"`
 }
 
@@ -34,7 +34,7 @@ type MeResponse struct {
 //
 //	@ID			getMe
 //	@Summary		Who am I, and what may I do?
-//	@Description	Always 200 for an authenticated caller. Without access, role is empty.
+//	@Description	Always 200 for an authenticated caller. Without an access rule, role is empty; without LLM tokens from a project, llm_mtokens is 0 and the LLM links are missing.
 //	@Tags			access
 //	@Produce		json
 //	@Security		BearerAuth
@@ -45,17 +45,20 @@ func (s *Server) getMe(c *gin.Context) {
 	cl := caller(c)
 	resp := MeResponse{Email: cl.Email, Role: cl.Decision.Role}
 	if cl.Decision.Role != access.RoleNone {
-		resp.Tier = cl.Decision.Tier
 		resp.MatchedToken = cl.Decision.MatchedToken
-		resp.ChatURL = s.chatURL
-		resp.APIURL = s.apiURL
 		if cl.Decision.Role.AtLeast(access.RoleAdmin) {
 			resp.AdminUIURL = s.adminUI
 		}
-		if s.gpu != nil && cl.Decision.GPUTier != "" {
-			resp.GPUTier = cl.Decision.GPUTier
-			resp.JupyterURL = s.gpu.JupyterURL()
+	}
+	if s.ws != nil {
+		if n, status, _ := s.quota.MTokensFor(c.Request.Context(), cl.Tokens); status == 0 {
+			resp.LLMMTokens = n
 		}
+	}
+	if resp.LLMMTokens > 0 {
+		resp.Tier = s.quota.TierName(cl.Decision)
+		resp.ChatURL = s.chatURL
+		resp.APIURL = s.apiURL
 	}
 	if s.gpu != nil {
 		resp.WorkspaceProjects = len(s.myProjects(c))
@@ -68,12 +71,10 @@ func (s *Server) getMe(c *gin.Context) {
 
 // RuleRequest creates or replaces an access rule.
 type RuleRequest struct {
-	Token string      `json:"token" binding:"required" example:"group:wwi23seb"`
-	Role  access.Role `json:"role" binding:"required" example:"user" enums:"user,fleet-admin,admin"`
-	Tier  string      `json:"tier" binding:"required" example:"student"`
-	// GPU tier (GPU notebooks and environments); empty = no GPU access.
-	GPUTier string `json:"gpu_tier,omitempty" example:"student-gpu"`
-	Comment string `json:"comment" example:"Kurs WWI23SEB"`
+	Token   string      `json:"token" binding:"required" example:"group:wwi23seb"`
+	Role    access.Role `json:"role" binding:"required" example:"user" enums:"user,fleet-admin,admin"`
+	Tier    string      `json:"tier" binding:"required" example:"student"`
+	Comment string      `json:"comment" example:"Kurs WWI23SEB"`
 }
 
 // listRules godoc
@@ -116,7 +117,7 @@ func (s *Server) createRule(c *gin.Context) {
 		return
 	}
 	rule, err := s.access.Create(c.Request.Context(),
-		access.Rule{Token: req.Token, Role: req.Role, Tier: req.Tier, GPUTier: req.GPUTier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
+		access.Rule{Token: req.Token, Role: req.Role, Tier: req.Tier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
 	if s.ruleError(c, err) {
 		return
 	}
@@ -148,7 +149,7 @@ func (s *Server) updateRule(c *gin.Context) {
 		return
 	}
 	rule, err := s.access.Update(c.Request.Context(),
-		access.Rule{ID: id, Token: req.Token, Role: req.Role, Tier: req.Tier, GPUTier: req.GPUTier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
+		access.Rule{ID: id, Token: req.Token, Role: req.Role, Tier: req.Tier, Comment: strings.TrimSpace(req.Comment)}, caller(c).Email)
 	if s.ruleError(c, err) {
 		return
 	}
@@ -187,22 +188,6 @@ func (s *Server) deleteRule(c *gin.Context) {
 //	@Router		/v1/tiers [get]
 func (s *Server) listTiers(c *gin.Context) {
 	tiers := s.access.Tiers()
-	sort.Strings(tiers)
-	c.JSON(http.StatusOK, tiers)
-}
-
-// listGPUTiers godoc
-//
-//	@ID			listGPUTiers
-//	@Summary	GPU tiers a rule may use
-//	@Description	Empty when the GPU part is not enabled.
-//	@Tags		access
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Success	200	{array}	string
-//	@Router		/v1/gpu-tiers [get]
-func (s *Server) listGPUTiers(c *gin.Context) {
-	tiers := s.access.GPUTiers()
 	sort.Strings(tiers)
 	c.JSON(http.StatusOK, tiers)
 }
@@ -282,7 +267,7 @@ func (s *Server) ruleError(c *gin.Context, err error) bool {
 		abort(c, http.StatusConflict, "duplicate", "Für dieses Token gibt es schon eine Regel.")
 	case errors.Is(err, access.ErrBootstrapRule):
 		abort(c, http.StatusConflict, "bootstrap", "Admins aus der Konfiguration lassen sich hier nicht ändern.")
-	case errors.Is(err, access.ErrInvalidToken), errors.Is(err, access.ErrUnknownTier), errors.Is(err, access.ErrUnknownGPUTier):
+	case errors.Is(err, access.ErrInvalidToken), errors.Is(err, access.ErrUnknownTier):
 		abort(c, http.StatusBadRequest, "invalid", err.Error())
 	case strings.Contains(err.Error(), "unknown role"):
 		abort(c, http.StatusBadRequest, "invalid", err.Error())
