@@ -117,8 +117,17 @@ func (f *fakeLiteLLM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, `{"error":{"message":"User=%s is not a member of the team=%s"}}`, k["user_id"], team)
 			return
 		}
-		k["team_id"] = body["team_id"]
-		f.writes = append(f.writes, fmt.Sprintf("key/update:%s:%s", k["token"], team))
+		// Like LiteLLM: only what the request carries changes.
+		for _, field := range []string{"team_id", "max_budget", "budget_duration", "rpm_limit", "tpm_limit", "models"} {
+			if v, ok := body[field]; ok {
+				k[field] = v
+			}
+		}
+		if _, ok := body["team_id"]; ok {
+			f.writes = append(f.writes, fmt.Sprintf("key/update:%s:%s", k["token"], team))
+		} else {
+			f.writes = append(f.writes, fmt.Sprintf("key/quota:%s", k["token"]))
+		}
 	case "/key/delete":
 		for _, t := range body["keys"].([]any) {
 			delete(f.keys, t.(string))
@@ -436,9 +445,9 @@ func TestSyncKeys(t *testing.T) {
 	f.keys["old"] = map[string]any{"token": "old", "user_id": "kc-abc", "key_alias": "old@" + aliasTag("kc-abc")} // from before the pools
 	info, _, _, _ := svc.lite.GetUser(ctx, "kc-abc")
 
-	// Only B is left: A's key and the old one move to B.
+	// Only B is left: A's key and the old one move to B; the old one also gets the tier's key quota it never had.
 	n, err := svc.SyncKeys(ctx, info, grant(student, poolB))
-	if err != nil || n != 2 {
+	if err != nil || n != 3 || f.keys["old"]["max_budget"] != student.KeyBudget {
 		t.Fatalf("move: %d %v %v", n, err, f.writes)
 	}
 	for tok, k := range f.keys {

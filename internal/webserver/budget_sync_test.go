@@ -45,9 +45,9 @@ func TestBudgetSyncPass(t *testing.T) {
 	b := NewBudgetSync(BudgetSync{Lite: client, Keys: keys.NewService(client, 5), Access: acc, Interval: time.Hour, Log: zap.NewNop().Sugar(),
 		Quota: LLMQuota{Tiers: tiers, DefaultTier: "student", Projects: ws}})
 
-	// Teams: t-1 new, t-2 and t-x to 0. Quotas: both people (rpm). Keys: old moved, stale detached.
+	// Teams: t-1 new, t-2 and t-x to 0. Quotas: both people (rpm). Keys: both get the tier's key quota, old moved, stale detached.
 	n, err := b.Pass(ctx)
-	if err != nil || n != 7 {
+	if err != nil || n != 9 {
 		t.Fatalf("pass: %d %v", n, err)
 	}
 	if got := f.teams["t-1"]["max_budget"]; got != 30*keys.DollarsPerMTokens {
@@ -64,6 +64,9 @@ func TestBudgetSyncPass(t *testing.T) {
 	}
 	if f.keys["stale"]["team_id"] != nil {
 		t.Fatalf("key of somebody without project still in %v", f.keys["stale"]["team_id"])
+	}
+	if f.keys["old"]["rpm_limit"] != 60.0 {
+		t.Fatalf("key without the tier's limits: %v", f.keys["old"])
 	}
 	if f.users["service"]["max_budget"] != 5.0 || f.keys["svc"]["team_id"] != nil {
 		t.Fatalf("service user touched: %v %v", f.users["service"], f.keys["svc"])

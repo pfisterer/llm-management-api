@@ -234,6 +234,16 @@ func quotaDiffers(info litellm.UserInfo, t Tier) bool {
 	return len(t.Models) > 0 && !slices.Equal(info.Models, t.Models)
 }
 
+// keyQuotaDiffers: the key's quota is not the tier's (short-term budget, its window, rate limits, models); window tells whether the window itself differs.
+func keyQuotaDiffers(k litellm.Key, t Tier) (differs, window bool) {
+	window = t.KeyBudgetDuration != "" && (k.BudgetDuration == nil || *k.BudgetDuration != t.KeyBudgetDuration)
+	differs = window || k.MaxBudget == nil || math.Abs(*k.MaxBudget-t.KeyBudget) > 1e-9 ||
+		(t.RPM > 0 && (k.RPMLimit == nil || *k.RPMLimit != t.RPM)) ||
+		(t.TPM > 0 && (k.TPMLimit == nil || *k.TPMLimit != t.TPM)) ||
+		(len(t.Models) > 0 && !slices.Equal(k.Models, t.Models))
+	return differs, window
+}
+
 // SyncQuota brings a LiteLLM user's quota in step with the tier (budget 0, see userQuota), so a new tier applies without the person asking for anything and a change made in LiteLLM's UI does not last. Reports whether it wrote.
 func (s *Service) SyncQuota(ctx context.Context, info litellm.UserInfo, tier Tier) (bool, error) {
 	if !quotaDiffers(info, tier) {
@@ -519,7 +529,7 @@ func (s *Service) moveKey(ctx context.Context, userID, token string, p Pool) err
 	return s.lite.SetKeyTeam(ctx, token, p.Slug)
 }
 
-// SyncKeys keeps the keys of a LiteLLM user in their pools: a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. Returns how many keys it moved.
+// SyncKeys keeps the keys of a LiteLLM user in their pools: a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the tier's short-term budget, rate limits and models. Returns how many writes it made.
 func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) (int, error) {
 	_, keys, found, err := s.lite.GetUser(ctx, info.UserID)
 	if err != nil || !found {
@@ -528,6 +538,13 @@ func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) 
 	def, hasPool := g.defaultPool(info)
 	moved := 0
 	for _, k := range keys {
+		// Every key carries the tier's short-term budget, rate limits and models, also one made before the tier changed or one LiteLLM made on its own (without them its short-term budget had no cap).
+		if differs, window := keyQuotaDiffers(k, g.Tier); differs {
+			if err := s.lite.SetKeyQuota(ctx, k.Token, g.Tier.keyQuota(), window); err != nil {
+				return moved, err
+			}
+			moved++
+		}
 		if _, ok := g.pool(k.Team()); ok {
 			continue
 		}

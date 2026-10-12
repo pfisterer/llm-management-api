@@ -97,7 +97,10 @@ type Key struct {
 	BudgetDuration *string  `json:"budget_duration"`
 	BudgetResetAt  *string  `json:"budget_reset_at"`
 	// TeamID is the team whose budget the key spends; nil for a personal key.
-	TeamID *string `json:"team_id"`
+	TeamID   *string  `json:"team_id"`
+	RPMLimit *int     `json:"rpm_limit"`
+	TPMLimit *int     `json:"tpm_limit"`
+	Models   []string `json:"models"`
 }
 
 // Team returns the key's team id, "" for a personal key.
@@ -222,6 +225,16 @@ func (c *Client) SetKeyTeam(ctx context.Context, token, teamID string) error {
 	body := map[string]any{"key": token, "team_id": nil}
 	if teamID != "" {
 		body["team_id"] = teamID
+	}
+	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
+}
+
+// SetKeyQuota writes a key's short-term budget, rate limits and models. The budget's window is only sent when it changes: LiteLLM starts a new window with every write that carries one, which would reset what the key spent so far.
+func (c *Client) SetKeyQuota(ctx context.Context, token string, q Quota, windowChanged bool) error {
+	body := map[string]any{"key": token}
+	mergeQuota(body, q)
+	if !windowChanged {
+		delete(body, "budget_duration")
 	}
 	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
 }

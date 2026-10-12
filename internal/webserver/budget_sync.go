@@ -100,7 +100,7 @@ func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 		if err != nil {
 			b.Log.Warnw("budget sync: keys not in step", "email", email, "error", err)
 		} else if moved > 0 {
-			b.Log.Infow("budget sync: keys moved", "email", email, "keys", moved, "projects", len(g.Pools))
+			b.Log.Infow("budget sync: keys brought in step (project, short-term budget, limits)", "email", email, "writes", moved, "projects", len(g.Pools))
 		}
 	}
 	return written, nil

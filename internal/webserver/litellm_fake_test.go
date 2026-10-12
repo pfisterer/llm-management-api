@@ -100,7 +100,12 @@ func (f *fakeLite) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(403)
 			return
 		}
-		k["team_id"] = body["team_id"]
+		// Like LiteLLM: only what the request carries changes.
+		for _, field := range []string{"team_id", "max_budget", "budget_duration", "rpm_limit", "tpm_limit", "models"} {
+			if v, ok := body[field]; ok {
+				k[field] = v
+			}
+		}
 	case "/team/info":
 		t, ok := f.teams[q.Get("team_id")]
 		if !ok {
