@@ -283,6 +283,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if gpuSvc != nil {
 		// Workspace usage (docs/bauplan.md, Stufe 4 W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
 		go usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+		// GPU use per hour: capacity, workspaces, inference pool, queue (docs/bauplan.md 6.10).
+		if gs, ok := st.usage.(usage.GPUStore); ok {
+			go usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+		}
 		// Budgets (W4): every five minutes, end the servers of people whose budget in the server's project is used up.
 		go func() {
 			t := time.NewTicker(5 * time.Minute)
@@ -372,6 +376,30 @@ func workspaceSource(g *gpu.Service) usage.Source {
 				GPUs: p.GPUs, CPUUsed: p.CPUUsed, RAMUsedGB: p.RAMUsedGB})
 		}
 		return out, nil
+	}
+}
+
+// gpuSource samples the GPUs: capacity per class from the nodes, the workspace pods with or waiting for a GPU, and the inference pool. The pool is best effort (no inference configured = none).
+func gpuSource(g *gpu.Service) usage.GPUSource {
+	return func(ctx context.Context) (usage.GPUSample, error) {
+		capacity, err := g.GPUCapacity(ctx)
+		if err != nil {
+			return usage.GPUSample{}, err
+		}
+		pods, err := g.WorkspacePods(ctx)
+		if err != nil {
+			return usage.GPUSample{}, err
+		}
+		s := usage.GPUSample{Capacity: capacity}
+		for _, p := range pods {
+			if p.GPUs > 0 {
+				s.Pods = append(s.Pods, usage.GPUPod{GPUClass: p.GPUClass, Project: p.Project, Person: p.Person, Profile: p.Profile, GPUs: p.GPUs, Waiting: p.Queued})
+			}
+		}
+		if inf, err := g.InferenceGPUs(ctx); err == nil {
+			s.Inference = inf
+		}
+		return s, nil
 	}
 }
 

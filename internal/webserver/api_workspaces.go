@@ -261,3 +261,63 @@ func (s *Server) getWorkspaceStorage(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, r)
 }
+
+// getGPUHours godoc
+//
+//	@ID				getGPUHours
+//	@Summary		GPU use per hour
+//	@Description	How full the GPUs were in each hour (UTC), sampled every minute: per GPU class the capacity, what workspaces and the inference pool held and how many pods waited (admins only), and per person, project and profile the GPU-hours held and the hours waited. Default period: the last 7 days including today; at most 365 days back (older hours are deleted). Admins see everything or one project; a project's managers see their project's people only.
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			from	query		string	false	"first day (YYYY-MM-DD)"
+//	@Param			to		query		string	false	"last day (YYYY-MM-DD), included"
+//	@Param			project	query		string	false	"only this project (required for managers)"
+//	@Success		200		{object}	usage.GPUReport
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		403		{object}	ErrorResponse
+//	@Router			/v1/workspaces/gpu-hours [get]
+func (s *Server) getGPUHours(c *gin.Context) {
+	gs, ok := s.usage.(usage.GPUStore)
+	if !ok {
+		abort(c, http.StatusServiceUnavailable, "unavailable", "Keine Stundenwerte hier.")
+		return
+	}
+	cl := caller(c)
+	project := c.Query("project")
+	admin := cl.Role.AtLeast(access.RoleAdmin)
+	if !admin {
+		p, err := s.ws.Get(c.Request.Context(), project)
+		if project == "" || err != nil || p.RoleOf(cl.Tokens) != workspace.RoleManager {
+			abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
+			return
+		}
+	}
+	today := usage.Day(time.Now())
+	from, to := today.AddDate(0, 0, -6), today
+	for name, dst := range map[string]*time.Time{"from": &from, "to": &to} {
+		if v := c.Query(name); v != "" {
+			t, err := time.Parse("2006-01-02", v)
+			if err != nil {
+				abort(c, http.StatusBadRequest, "invalid", name+" ist kein Datum (JJJJ-MM-TT).")
+				return
+			}
+			*dst = t
+		}
+	}
+	if to.Before(from) || to.Sub(from) > usage.GPUHourRetention {
+		abort(c, http.StatusBadRequest, "invalid", "Zeitraum ungültig (from nach to oder länger als 365 Tage).")
+		return
+	}
+	var keep func(usage.GPUHourPerson) bool
+	if project != "" {
+		keep = func(p usage.GPUHourPerson) bool { return p.Project == project }
+	}
+	r, err := usage.BuildGPUReport(c.Request.Context(), gs, from, to.AddDate(0, 0, 1), keep, admin && project == "")
+	if err != nil {
+		s.log.Errorw("gpu hours failed", "error", err)
+		abort(c, http.StatusInternalServerError, "internal", "Stundenwerte konnten nicht gelesen werden.")
+		return
+	}
+	c.JSON(http.StatusOK, r)
+}

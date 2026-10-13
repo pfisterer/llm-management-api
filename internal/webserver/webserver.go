@@ -139,6 +139,7 @@ func (s *Server) Router() *gin.Engine {
 		w.PUT("/projects/:slug", s.updateWorkspaceProject)
 		w.DELETE("/projects/:slug", require(access.RoleAdmin), s.deleteWorkspaceProject)
 		w.GET("/storage", require(access.RoleAdmin), s.getWorkspaceStorage)
+		w.GET("/gpu-hours", s.getGPUHours)
 	}
 
 	if s.gpu != nil {

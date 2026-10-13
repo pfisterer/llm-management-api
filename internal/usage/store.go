@@ -29,8 +29,9 @@ func add(dst *Row, r Row) {
 
 // MemoryStore is for development and tests.
 type MemoryStore struct {
-	mu sync.Mutex
-	m  map[key]Row
+	mu  sync.Mutex
+	m   map[key]Row
+	gpu gpuMem
 }
 
 func NewMemoryStore() *MemoryStore { return &MemoryStore{m: map[key]Row{}} }
@@ -81,6 +82,9 @@ type GormStore struct{ db *gorm.DB }
 
 func NewGormStore(db *gorm.DB) (*GormStore, error) {
 	if err := db.AutoMigrate(&Row{}); err != nil {
+		return nil, err
+	}
+	if err := migrateGPUHours(db); err != nil {
 		return nil, err
 	}
 	return &GormStore{db: db}, nil
