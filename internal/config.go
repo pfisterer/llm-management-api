@@ -144,7 +144,7 @@ func LoadConfig() (Config, error) {
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
 	cfg.LLMDefaultRPM = envconf.Int("LLM_DEFAULT_RPM", 60)
 	cfg.LLMDefaultTPM = envconf.Int("LLM_DEFAULT_TPM", 200000)
-	cfg.LLMBaseModels = envconf.StringSlice("LLM_BASE_MODELS", []string{"chat-default", "chat-fast", "embedding"})
+	cfg.LLMBaseModels = envconf.StringSlice("LLM_BASE_MODELS", []string{"chat-default", "chat-fast", "code", "embedding"})
 	cfg.LLMKeyBudgetWindow = envconf.String("LLM_KEY_BUDGET_WINDOW", "4h")
 	share, err := strconv.ParseFloat(envconf.String("LLM_KEY_BUDGET_SHARE", "0.05"), 64)
 	if err != nil {

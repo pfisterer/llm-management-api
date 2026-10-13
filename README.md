@@ -55,7 +55,7 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `DB_TYPE`, `DB_CONNECTION_STRING` | `postgres` (required in production) or `memory` |
 | `ADMIN_TOKENS`, `FLEET_ADMIN_TOKENS` | comma-separated role-provider tokens (`user:<email>`, `group:<id>`) whose holders are admins (fleet-admins too) and fleet-admins |
 | `LLM_DEFAULT_RPM`, `LLM_DEFAULT_TPM` | requests and tokens per minute of a project for which the tree sets none, default 60 and 200000 (0 = no limit) |
-| `LLM_BASE_MODELS` | model groups every project may use, comma-separated, default `chat-default,chat-fast,embedding`; the tree adds more per project |
+| `LLM_BASE_MODELS` | model groups every project may use, comma-separated, default `chat-default,chat-fast,code,embedding` (the stable aliases); the tree adds more per project |
 | `LLM_KEY_BUDGET_SHARE`, `LLM_KEY_BUDGET_WINDOW` | every key's short-term budget: this share of its project's budget per window, default `0.05` per `4h` |
 | `SELF_SERVICE_URL` | where people without a project get one (in the 403 of the LLM and for JupyterHub) |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |

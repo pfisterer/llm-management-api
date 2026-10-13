@@ -104,7 +104,7 @@ func (s *Server) treeChanged() {
 // TreeCatalog is what the tree can grant here: the GPU classes and the profiles that use them, and for the LLM the base models every project has (llm_models adds to them) and the requests and tokens per minute of a project for which the tree sets none (0 = no limit).
 type TreeCatalog struct {
 	workspace.Config
-	LLMBaseModels []string `json:"llm_base_models" example:"chat-default,chat-fast,embedding"`
+	LLMBaseModels []string `json:"llm_base_models" example:"chat-default,chat-fast,code,embedding"`
 	LLMDefaultRPM int      `json:"llm_default_rpm" example:"60"`
 	LLMDefaultTPM int      `json:"llm_default_tpm" example:"200000"`
 }
