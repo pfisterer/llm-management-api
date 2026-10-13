@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Workspace storage: every project with storage has one volume in the hub's namespace, PVC ws-<slug> on JuiceFS (directory ws-<slug> with a quota of the PVC's size). Inside it homes/<person> is a member's home in that project and gemeinsam the folder all members share. The hub creates the volume on the first start and grows it with the project's storage; this service deletes it once the project is gone (PurgeStorage).
+// Workspace storage: every project with storage has one volume in the hub's namespace, PVC ws-<slug> on JuiceFS (directory ws-<slug> with a quota of the PVC's size). Inside it homes/<person> is a member's home in that project and project-shared the folder all members share. The hub creates the volume on the first start and grows it with the project's storage; this service deletes it once the project is gone (PurgeStorage).
 
 // StoragePVCPrefix is the name of a project's volume before its slug.
 const StoragePVCPrefix = "ws-"
