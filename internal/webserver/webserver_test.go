@@ -25,7 +25,11 @@ import (
 )
 
 // accessFor resolves tokens through roles and makes the holders of adminTokens admins and of fleetAdminTokens fleet-admins.
+// testDevUser is who the development auth signs in; an admin, so the tests reach everybody else by acting on their behalf (X-Act-As), as an admin does in production.
+const testDevUser = "admin@dhbw.de"
+
 func accessFor(t *testing.T, roles roleprovider.Provider, adminTokens, fleetAdminTokens []string) *access.Service {
+	adminTokens = append([]string{"user:" + testDevUser}, adminTokens...)
 	t.Helper()
 	r, err := access.NewRoles(adminTokens, fleetAdminTokens)
 	if err != nil {
@@ -53,7 +57,7 @@ func newTestServer(t *testing.T, devMode bool) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(Options{DevMode: devMode, Access: svc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat", AdminUIURL: "https://admin/autologin",
+	return New(Options{DevMode: devMode, DevAuthUser: testDevUser, Access: svc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat", AdminUIURL: "https://admin/autologin",
 		Fleet: fleet.NewService(fc, wg, fleet.NewMemoryStore(), fleet.NewScripts(t.TempDir())), Quota: testQuota}).Router()
 }
 
@@ -66,7 +70,7 @@ func do(t *testing.T, h http.Handler, method, path, user string, body any) (int,
 	}
 	req := httptest.NewRequest(method, path, r)
 	if user != "" {
-		req.Header.Set("X-Dummy-Auth-User", user)
+		req.Header.Set("X-Act-As", user)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -77,14 +81,41 @@ func do(t *testing.T, h http.Handler, method, path, user string, body any) (int,
 }
 
 func TestUnauthenticated(t *testing.T) {
-	h := newTestServer(t, true)
-	if code, _ := do(t, h, "GET", "/v1/me", "", nil); code != http.StatusUnauthorized {
-		t.Fatalf("no identity: want 401, got %d", code)
-	}
-	// Outside development mode the dummy header must be ignored.
+	// Outside development mode there is no dev user: no bearer, no identity — X-Act-As or not.
 	prod := newTestServer(t, false)
-	if code, _ := do(t, prod, "GET", "/v1/me", "admin@dhbw.de", nil); code != http.StatusUnauthorized {
-		t.Fatalf("dummy header in production: want 401, got %d", code)
+	if code, _ := do(t, prod, "GET", "/v1/me", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("no bearer in production: want 401, got %d", code)
+	}
+	if code, _ := do(t, prod, "GET", "/v1/me", "student@dhbw.de", nil); code != http.StatusUnauthorized {
+		t.Fatalf("X-Act-As without a bearer in production: want 401, got %d", code)
+	}
+}
+
+// Acting on behalf of somebody: only an admin may, it is faithful (the person's role, not the admin's), and /me says so.
+func TestActAs(t *testing.T) {
+	h := newTestServer(t, true)
+	var me MeResponse
+	code, body := do(t, h, "GET", "/v1/me", "student@dhbw.de", nil)
+	if _ = json.Unmarshal(body, &me); code != 200 || me.Email != "student@dhbw.de" || me.Role != access.RoleUser || !me.MayActAs || me.ActingAs != "student@dhbw.de" {
+		t.Fatalf("admin acting for the student: %d %s", code, body)
+	}
+	me = MeResponse{}
+	code, body = do(t, h, "GET", "/v1/me", "", nil)
+	if _ = json.Unmarshal(body, &me); code != 200 || me.Email != testDevUser || me.ActingAs != "" || !me.MayActAs {
+		t.Fatalf("admin as themself: %d %s", code, body)
+	}
+	if code, _ := do(t, h, "GET", "/v1/me", "group:it", nil); code != http.StatusBadRequest {
+		t.Fatalf("malformed X-Act-As: want 400, got %d", code)
+	}
+
+	// A non-admin signed in may not act for anybody.
+	roles := &roleprovider.Mock{Memberships: map[string][]string{"student@dhbw.de": {"group:wwi23seb"}}}
+	notAdmin := New(Options{DevMode: true, DevAuthUser: "student@dhbw.de", Access: accessFor(t, roles, nil, nil), Log: zap.NewNop().Sugar(), Quota: testQuota}).Router()
+	if code, _ := do(t, notAdmin, "GET", "/v1/me", "admin@dhbw.de", nil); code != http.StatusForbidden {
+		t.Fatalf("a student acting for somebody: want 403, got %d", code)
+	}
+	if code, _ := do(t, notAdmin, "GET", "/v1/me", "", nil); code != http.StatusOK {
+		t.Fatalf("a student as themself: want 200, got %d", code)
 	}
 }
 
@@ -145,7 +176,7 @@ func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler)
 	}
 	quota := testQuota
 	quota.Projects, quota.SelfServiceURL = ws, "https://self-service"
-	h := New(Options{DevMode: true, Access: acc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat",
+	h := New(Options{DevMode: true, DevAuthUser: testDevUser, Access: acc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat",
 		Keys: testKeys(fakeBackend(t).URL), Quota: quota, GPU: g, Workspaces: ws}).Router()
 	return acc, ws, h
 }
@@ -232,7 +263,7 @@ func TestKeysWithProjects(t *testing.T) {
 	f, srv := newFakeLite(t)
 	quota := testQuota
 	quota.Projects = ws
-	h := New(Options{DevMode: true, Access: acc, Log: zap.NewNop().Sugar(), Keys: testKeys(srv.URL), Quota: quota, Workspaces: ws}).Router()
+	h := New(Options{DevMode: true, DevAuthUser: testDevUser, Access: acc, Log: zap.NewNop().Sugar(), Keys: testKeys(srv.URL), Quota: quota, Workspaces: ws}).Router()
 
 	var created CreateKeyResponse
 	code, body := do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "laptop"})
@@ -305,5 +336,28 @@ func TestKeysWithProjects(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"project_name":"Kurs B"`) {
 		t.Errorf("usage JSON: %s", body)
+	}
+}
+
+// Acting on somebody's behalf, keys go to that person's LiteLLM user, found by the e-mail (an admin does not know the person's Keycloak sub).
+func TestKeysOnBehalfFindTheSubject(t *testing.T) {
+	ctx := context.Background()
+	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
+	if _, err := ws.UpsertFromTree(ctx, "p_1", workspace.TreeProject{Name: "Kurs A", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 80}); err != nil {
+		t.Fatal(err)
+	}
+	f, srv := newFakeLite(t)
+	f.users["kc-sub-of-member"] = map[string]any{"user_id": "kc-sub-of-member", "user_email": "Member@dhbw.de", "metadata": map[string]any{}}
+	quota := testQuota
+	quota.Projects = ws
+	h := New(Options{DevMode: true, DevAuthUser: testDevUser, Access: accessFor(t, &roleprovider.Mock{}, nil, nil), Log: zap.NewNop().Sugar(), Keys: testKeys(srv.URL), Quota: quota, Workspaces: ws}).Router()
+
+	if code, body := do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "ticket"}); code != http.StatusCreated {
+		t.Fatalf("create on behalf: %d %s", code, body)
+	}
+	for _, k := range f.keys {
+		if k["user_id"] != "kc-sub-of-member" {
+			t.Errorf("the key should belong to the member's LiteLLM user, got %v", k["user_id"])
+		}
 	}
 }

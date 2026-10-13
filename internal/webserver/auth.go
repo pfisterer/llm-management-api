@@ -9,6 +9,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/keys"
 )
 
 // Identity is who is calling, after authentication.
@@ -17,10 +18,14 @@ type Identity struct {
 	Subject string
 }
 
-// Caller is the identity plus their role and role-provider tokens.
+// Caller is the identity plus their role and role-provider tokens. While an admin acts on somebody's behalf (X-Act-As), Identity and Person are that somebody's — the admin sees and does what they would — and Actor names the admin.
 type Caller struct {
 	Identity
 	access.Person
+	// Actor is the signed-in admin acting on behalf of Identity; empty when the caller acts as themself.
+	Actor string
+	// MayActAs: the signed-in person may act on behalf of others (an admin by ADMIN_TOKENS).
+	MayActAs bool
 }
 
 const callerKey = "llm.caller"
@@ -29,12 +34,10 @@ const callerKey = "llm.caller"
 //
 // Production: the bearer is the ID token the self-service BFF forwards
 // (audience = its client id), verified against Keycloak's keys.
-// Development: X-Dummy-Auth-User names the caller, nothing is verified.
+// Development: a request without a bearer is the dev user (DEV_AUTH_USER), nothing is verified; other people are reached with X-Act-As, as in production.
 func (s *Server) authenticate(c *gin.Context) (Identity, bool) {
-	if s.devMode {
-		if u := strings.TrimSpace(c.GetHeader("X-Dummy-Auth-User")); u != "" {
-			return Identity{Email: strings.ToLower(u), Subject: "dev-" + strings.ToLower(u)}, true
-		}
+	if s.devMode && c.GetHeader("Authorization") == "" {
+		return Identity{Email: s.devUser, Subject: "dev-" + s.devUser}, true
 	}
 	raw, ok := authn.CutBearerPrefix(c.GetHeader("Authorization"))
 	if !ok || s.verifier == nil {
@@ -59,14 +62,55 @@ func (s *Server) authenticate(c *gin.Context) (Identity, bool) {
 	return Identity{Email: email, Subject: claims.Subject}, true
 }
 
-// withCaller authenticates and resolves the caller's tokens and role. It does NOT require any role beyond being signed in: /me must answer people without projects too.
+// withCaller authenticates and resolves the caller's tokens and role, and the person an admin acts for (X-Act-As). It does NOT require any role beyond being signed in: /me must answer people without projects too.
 func (s *Server) withCaller(c *gin.Context) {
 	id, ok := s.authenticate(c)
 	if !ok {
 		return
 	}
-	c.Set(callerKey, Caller{Identity: id, Person: s.access.Who(c.Request.Context(), id.Email)})
+	self := s.access.Who(c.Request.Context(), id.Email)
+	may := self.Role.AtLeast(access.RoleAdmin)
+	target, err := authn.ActAs(c.GetHeader(authn.ActAsHeader), id.Email, may)
+	switch {
+	case errors.Is(err, authn.ErrActAsInvalid):
+		abort(c, http.StatusBadRequest, "act_as_invalid", "X-Act-As muss eine E-Mail-Adresse sein.")
+		return
+	case err != nil:
+		abort(c, http.StatusForbidden, "act_as_forbidden", "Handeln im Auftrag anderer Personen ist nur für Administratoren möglich.")
+		return
+	}
+	if target == id.Email {
+		c.Set(callerKey, Caller{Identity: id, Person: self, MayActAs: may})
+		c.Next()
+		return
+	}
+	// The sub is looked up only where keys need it (keyPerson): most requests do not.
+	if authn.IsWrite(c.Request.Method) {
+		s.log.Infow("acting on behalf", "actor", id.Email, "as", target, "method", c.Request.Method, "path", c.Request.URL.Path)
+	}
+	c.Set(callerKey, Caller{Identity: Identity{Email: target}, Person: s.access.Who(c.Request.Context(), target), Actor: id.Email, MayActAs: may})
 	c.Next()
+}
+
+// keyPerson is whom the caller's keys belong to. Acting on somebody's behalf, their Keycloak sub comes from LiteLLM; a person who has never used the LLM themself has none yet, and keys cannot be bound to them (development falls back to the dev sub, so the seed's people can be tried out).
+func (s *Server) keyPerson(c *gin.Context) (keys.Person, bool) {
+	cl := caller(c)
+	if cl.Actor == "" {
+		return keys.Person{Subject: cl.Subject, Email: cl.Email}, true
+	}
+	sub, found, err := s.keys.SubjectOf(c.Request.Context(), cl.Email)
+	if err != nil {
+		s.upstreamError(c, "subject lookup", err)
+		return keys.Person{}, false
+	}
+	if !found {
+		if !s.devMode {
+			abort(c, http.StatusConflict, "person_unknown", "Diese Person hat den KI-Dienst noch nie selbst genutzt. In ihrem Auftrag sind Keys erst möglich, nachdem sie sich einmal angemeldet und die LLM-Seite geöffnet hat.")
+			return keys.Person{}, false
+		}
+		sub = "dev-" + cl.Email
+	}
+	return keys.Person{Subject: sub, Email: cl.Email}, true
 }
 
 // require aborts unless the caller holds at least the given role. The UI hides

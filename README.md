@@ -16,7 +16,9 @@ Three roles, each including the ones before it: `user` (everybody), `fleet-admin
 
 ## Authentication
 
-The bearer token is the ID token the self-service BFF (oauth2-proxy) forwards: issuer `OIDC_ISSUER_URL`, audience `OIDC_CLIENT_ID` (the BFF's client, `dhbw-cloud-selfservice`). Verification uses `cloud-self-service-golib/oidcauth`. In development mode (`API_MODE=development`) the header `X-Dummy-Auth-User: <email>` names the caller instead.
+The bearer token is the ID token the self-service BFF (oauth2-proxy) forwards: issuer `OIDC_ISSUER_URL`, audience `OIDC_CLIENT_ID` (the BFF's client, `dhbw-cloud-selfservice`). Verification uses `cloud-self-service-golib/oidcauth`. In development mode (`API_MODE=development`) a request without a bearer is the dev user `DEV_AUTH_USER` (default `root.admin@uni.example`).
+
+An admin (`ADMIN_TOKENS`) may act on behalf of another person, e.g. for a ticket, by sending `X-Act-As: <email>` — the same header the other services of the platform read, each checking it against its own admins. The request then runs with that person's tokens and role, not the admin's; writes are logged with both. Keys are bound to the person's Keycloak sub, which an admin does not know: it is looked up from the person's LiteLLM user, so keys on someone's behalf work only once that person has used the LLM themself (409 `person_unknown` before). Chat and JupyterHub have their own sign-in and always open as the admin. `GET /v1/me` reports `may_act_as` and `acting_as`.
 
 ## API
 
@@ -77,7 +79,8 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 ```
 cp .env.example .env
 make dev            # live reload via air; ROLE_PROVIDER_TYPE=mock with e.g. ADMIN_TOKENS=user:root.admin@uni.example
-curl -H 'X-Dummy-Auth-User: root.admin@uni.example' localhost:8086/v1/me
+curl localhost:8086/v1/me                                  # the dev user
+curl -H 'X-Act-As: student@dhbw.de' localhost:8086/v1/me  # on a student's behalf
 ```
 
 `make all` runs the tests, generates the API description and builds the binary. `make npm-package` builds the TypeScript client into `client-npm/`; `make npm-publish` publishes it (manual, needs `npm login`). `make generate-role-provider-client` regenerates the role-provider client from the release pinned in `RP_VERSION`.

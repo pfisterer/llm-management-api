@@ -21,6 +21,10 @@ type MeResponse struct {
 	JupyterURL string `json:"jupyter_url,omitempty" example:"https://jupyter.gpu.services.dhbw.cloud"`
 	// Workspaces: number of active projects the caller belongs to.
 	WorkspaceProjects int `json:"workspace_projects" example:"1"`
+	// MayActAs: the signed-in person may act on behalf of others with the X-Act-As header (an admin).
+	MayActAs bool `json:"may_act_as"`
+	// ActingAs is the person this request acted for (the e-mail above); empty without X-Act-As.
+	ActingAs string `json:"acting_as,omitempty" example:"student@dhbw.de"`
 }
 
 // getMe godoc
@@ -36,7 +40,10 @@ type MeResponse struct {
 //	@Router			/v1/me [get]
 func (s *Server) getMe(c *gin.Context) {
 	cl := caller(c)
-	resp := MeResponse{Email: cl.Email, Role: cl.Role}
+	resp := MeResponse{Email: cl.Email, Role: cl.Role, MayActAs: cl.MayActAs}
+	if cl.Actor != "" {
+		resp.ActingAs = cl.Email
+	}
 	if cl.Role.AtLeast(access.RoleAdmin) {
 		resp.AdminUIURL = s.adminUI
 	}

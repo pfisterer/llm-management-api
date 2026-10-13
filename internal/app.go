@@ -203,7 +203,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		}
 		verifier = v
 	} else {
-		log.Warn("no OIDC issuer configured: only X-Dummy-Auth-User works (development mode)")
+		log.Warnw("no OIDC issuer configured: requests without a bearer are the dev user (development mode)", "dev_user", cfg.DevAuthUser)
 	}
 
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
@@ -223,6 +223,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	}
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
+		DevAuthUser:  cfg.DevAuthUser,
 		Version:      strings.TrimSpace(generated_docs.Version),
 		SwaggerJSON:  generated_docs.SwaggerJSON,
 		ChatURL:      cfg.ChatURL,

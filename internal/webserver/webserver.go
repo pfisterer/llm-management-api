@@ -4,6 +4,7 @@ package webserver
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,7 +26,9 @@ type TokenVerifier interface {
 
 // Options wires the server's dependencies.
 type Options struct {
-	DevMode     bool
+	DevMode bool
+	// DevAuthUser is who a request without a bearer is in development mode.
+	DevAuthUser string
 	Version     string
 	SwaggerJSON string
 	ChatURL     string
@@ -54,6 +57,7 @@ type Options struct {
 
 type Server struct {
 	devMode  bool
+	devUser  string
 	version  string
 	swagger  string
 	chatURL  string
@@ -75,7 +79,7 @@ type Server struct {
 }
 
 func New(o Options) *Server {
-	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
+	return &Server{devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
 		fleet: o.Fleet, health: o.Health, material: o.Material, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }

@@ -23,7 +23,7 @@ func treeServer(t *testing.T) (http.Handler, *workspace.Service) {
 		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "pytorch", Name: "PyTorch", GPUClass: "l4-3q"}},
 		GPUClasses: []string{"l4-3q"},
 	}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
-	return New(Options{DevMode: true, Workspaces: ws, TreeToken: "tree-secret", Log: zap.NewNop().Sugar()}).Router(), ws
+	return New(Options{DevMode: true, DevAuthUser: testDevUser, Workspaces: ws, TreeToken: "tree-secret", Log: zap.NewNop().Sugar()}).Router(), ws
 }
 
 func treeDo(h http.Handler, method, path, token, body string) (int, string) {
@@ -103,7 +103,7 @@ func TestLLMQuota(t *testing.T) {
 func TestTreeCatalogAndLLMLimits(t *testing.T) {
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{Profiles: []workspace.Profile{{Slug: "cpu", Name: "CPU"}}},
 		func(context.Context) ([]workspace.Running, error) { return nil, nil })
-	h := New(Options{DevMode: true, Workspaces: ws, TreeToken: "tree-secret", Log: zap.NewNop().Sugar(),
+	h := New(Options{DevMode: true, DevAuthUser: testDevUser, Workspaces: ws, TreeToken: "tree-secret", Log: zap.NewNop().Sugar(),
 		Quota: LLMQuota{DefaultRPM: 60, DefaultTPM: 200000, BaseModels: []string{"chat-default", "chat-fast", "embedding"}}}).Router()
 	code, out := treeDo(h, "GET", "/v1/tree/catalog", "tree-secret", "")
 	var cat TreeCatalog

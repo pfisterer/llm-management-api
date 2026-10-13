@@ -43,7 +43,8 @@ func (s *Server) personAndGrant(c *gin.Context) (keys.Person, keys.Grant, bool) 
 		abort(c, status, code, msg)
 		return keys.Person{}, keys.Grant{}, false
 	}
-	return keys.Person{Subject: cl.Subject, Email: cl.Email}, g, true
+	p, ok := s.keyPerson(c)
+	return p, g, ok
 }
 
 // notEligible answers a project the caller may not draw LLM tokens from.
@@ -183,8 +184,11 @@ func (s *Server) setDefaultProject(c *gin.Context) {
 //	@Failure	404	{object}	ErrorResponse
 //	@Router		/v1/keys/{id} [delete]
 func (s *Server) deleteKey(c *gin.Context) {
-	cl := caller(c)
-	err := s.keys.Delete(c.Request.Context(), keys.Person{Subject: cl.Subject, Email: cl.Email}, c.Param("id"))
+	p, ok := s.keyPerson(c)
+	if !ok {
+		return
+	}
+	err := s.keys.Delete(c.Request.Context(), p, c.Param("id"))
 	switch {
 	case errors.Is(err, keys.ErrNotFound):
 		abort(c, http.StatusNotFound, "not_found", "API Key nicht gefunden.")

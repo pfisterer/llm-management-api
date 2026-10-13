@@ -629,3 +629,17 @@ func (s *Service) Delete(ctx context.Context, p Person, id string) error {
 	}
 	return ErrNotFound
 }
+
+// SubjectOf finds the Keycloak sub of a person by their e-mail, from the LiteLLM user this service created for them ("kc-<sub>"). An admin acting on someone's behalf knows only the address, and keys are bound to the sub. found=false when the person has never used the LLM themself — then there is nothing to bind keys to yet.
+func (s *Service) SubjectOf(ctx context.Context, email string) (string, bool, error) {
+	users, err := s.lite.ListUsers(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	for _, u := range users {
+		if sub, ok := strings.CutPrefix(u.UserID, "kc-"); ok && sub != "" && strings.EqualFold(strings.TrimSpace(u.Email), email) {
+			return sub, true, nil
+		}
+	}
+	return "", false, nil
+}

@@ -14,7 +14,9 @@ import (
 
 type Config struct {
 	DevMode bool
-	Bind    string
+	// DevAuthUser is who a request without a bearer is in development mode (DEV_AUTH_USER); other people are reached with X-Act-As.
+	DevAuthUser string
+	Bind        string
 
 	OIDCIssuerURL string
 	OIDCClientID  string
@@ -85,6 +87,7 @@ func LoadConfig() (Config, error) {
 	}
 	cfg := Config{
 		DevMode:             devMode,
+		DevAuthUser:         envconf.String("DEV_AUTH_USER", "root.admin@uni.example"),
 		Bind:                envconf.String("API_BIND", ":8086"),
 		OIDCIssuerURL:       envconf.String("OIDC_ISSUER_URL", ""),
 		OIDCClientID:        envconf.String("OIDC_CLIENT_ID", ""),
