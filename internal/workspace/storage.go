@@ -3,6 +3,7 @@ package workspace
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
@@ -156,18 +157,61 @@ func ParseValkeyInfo(text string) (ValkeyMemory, bool) {
 	return m, found
 }
 
-// SetStorageDirs keeps the directories of the last `juicefs quota list`.
-func (s *Service) SetStorageDirs(dirs []StorageDir) {
+// SetStorageDirs keeps the directories of the last `juicefs quota list`, in memory and, with a database, there too (LoadStorage).
+func (s *Service) SetStorageDirs(ctx context.Context, dirs []StorageDir) error {
+	now := s.now()
 	s.storage.mu.Lock()
-	defer s.storage.mu.Unlock()
-	s.storage.dirs, s.storage.dirsAt = slices.Clone(dirs), s.now()
+	s.storage.dirs, s.storage.dirsAt = slices.Clone(dirs), now
+	s.storage.mu.Unlock()
+	return s.saveReport(ctx, "dirs", dirs, now)
 }
 
-// SetValkeyMemory keeps the last INFO memory of the metadata's Valkey.
-func (s *Service) SetValkeyMemory(m ValkeyMemory) {
+// SetValkeyMemory keeps the last INFO memory of the metadata's Valkey, like SetStorageDirs.
+func (s *Service) SetValkeyMemory(ctx context.Context, m ValkeyMemory) error {
+	now := s.now()
+	s.storage.mu.Lock()
+	s.storage.valkey, s.storage.valkeyAt = &m, now
+	s.storage.mu.Unlock()
+	return s.saveReport(ctx, "valkey", m, now)
+}
+
+func (s *Service) saveReport(ctx context.Context, kind string, v any, at time.Time) error {
+	rs, ok := s.store.(ReportStore)
+	if !ok {
+		return nil
+	}
+	body, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return rs.SaveReport(ctx, kind, string(body), at)
+}
+
+// LoadStorage brings back the last storage reports after a restart; without a database there are none.
+func (s *Service) LoadStorage(ctx context.Context) error {
+	rs, ok := s.store.(ReportStore)
+	if !ok {
+		return nil
+	}
+	reports, err := rs.LoadReports(ctx)
+	if err != nil {
+		return err
+	}
 	s.storage.mu.Lock()
 	defer s.storage.mu.Unlock()
-	s.storage.valkey, s.storage.valkeyAt = &m, s.now()
+	if r, ok := reports["dirs"]; ok {
+		var dirs []StorageDir
+		if json.Unmarshal([]byte(r.Body), &dirs) == nil {
+			s.storage.dirs, s.storage.dirsAt = dirs, r.At
+		}
+	}
+	if r, ok := reports["valkey"]; ok {
+		var m ValkeyMemory
+		if json.Unmarshal([]byte(r.Body), &m) == nil {
+			s.storage.valkey, s.storage.valkeyAt = &m, r.At
+		}
+	}
+	return nil
 }
 
 // storageUsed is the used space of a project's volume in GiB from the last report; false while none is known.

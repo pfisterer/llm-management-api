@@ -79,7 +79,7 @@ func (s *MemoryStore) Delete(_ context.Context, slug string) error {
 type GormStore struct{ db *gorm.DB }
 
 func NewGormStore(db *gorm.DB) (*GormStore, error) {
-	if err := db.AutoMigrate(&Project{}); err != nil {
+	if err := db.AutoMigrate(&Project{}, &storageReport{}); err != nil {
 		return nil, err
 	}
 	if err := migrateProjectGPUs(db); err != nil {
@@ -159,4 +159,35 @@ func (s *GormStore) Delete(ctx context.Context, slug string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// storageReport is the last storage report of one kind ("dirs", "valkey") as JSON, so a restart of the service does not lose what the hourly job measured.
+type storageReport struct {
+	Kind string    `gorm:"primaryKey"`
+	Body string    `gorm:"type:text"`
+	At   time.Time
+}
+
+func (storageReport) TableName() string { return "workspace_storage_reports" }
+
+// ReportStore keeps the last storage reports; the GORM store has it, the memory store does not need it.
+type ReportStore interface {
+	SaveReport(ctx context.Context, kind, body string, at time.Time) error
+	LoadReports(ctx context.Context) (map[string]storageReport, error)
+}
+
+func (s *GormStore) SaveReport(ctx context.Context, kind, body string, at time.Time) error {
+	return s.db.WithContext(ctx).Save(&storageReport{Kind: kind, Body: body, At: at}).Error
+}
+
+func (s *GormStore) LoadReports(ctx context.Context) (map[string]storageReport, error) {
+	var rows []storageReport
+	if err := s.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := map[string]storageReport{}
+	for _, r := range rows {
+		out[r.Kind] = r
+	}
+	return out, nil
 }

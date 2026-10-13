@@ -177,6 +177,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 		}
 		wsSvc = workspace.NewService(st.projects, wsCfg, runningWorkspaces(gpuSvc))
+		// The last storage report of the hourly job, so the admins' view is not empty after a restart.
+		if err := wsSvc.LoadStorage(context.Background()); err != nil {
+			log.Warnw("storage reports not loaded", "error", err)
+		}
 		wsSvc.SetUsage(st.usage)
 		if gpuSvc.InferenceEnabled() {
 			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.

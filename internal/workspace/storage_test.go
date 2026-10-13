@@ -25,11 +25,11 @@ func TestStorageReport(t *testing.T) {
 	if !ok || len(dirs) != 2 {
 		t.Fatalf("parsed %+v", dirs)
 	}
-	s.SetStorageDirs(dirs)
+	_ = s.SetStorageDirs(ctx, dirs)
 	if m, ok := ParseValkeyInfo("# Memory\r\nused_memory:1048576\r\nused_memory_human:1.00M\r\nused_memory_peak:2097152\r\nmaxmemory:0\r\ntotal_system_memory:16000000000\r\n"); !ok || m.UsedBytes != 1<<20 || m.PeakBytes != 2<<20 || m.SystemBytes != 16e9 {
 		t.Fatalf("valkey %+v", m)
 	} else {
-		s.SetValkeyMemory(m)
+		_ = s.SetValkeyMemory(ctx, m)
 	}
 	r, err := s.StorageReport(ctx)
 	if err != nil || len(r.Dirs) != 2 || r.Dirs[0].Project != st.Slug || r.Dirs[0].Name != "Kurs" || r.Dirs[0].QuotaGiB != 50 || r.Dirs[0].Inodes != 9000 || math.Abs(r.UsedGiB-3) > 1e-9 || r.Valkey == nil || r.DirsAt == nil {

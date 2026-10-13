@@ -144,7 +144,9 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			if o.Workspaces != nil {
 				if dirs, ok := workspace.ParseQuotaTable(string(raw)); ok {
-					o.Workspaces.SetStorageDirs(dirs)
+					if err := o.Workspaces.SetStorageDirs(c.Request.Context(), dirs); err != nil {
+						o.Log.Warnw("storage report not saved", "error", err)
+					}
 				}
 			}
 			rows, err := usage.HomeRows(c.Request.Context(), o.Usage, used, o.Project, time.Now())
@@ -228,7 +230,9 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				abort(c, http.StatusBadRequest, "invalid", "Keine Ausgabe von INFO memory.")
 				return
 			}
-			o.Workspaces.SetValkeyMemory(m)
+			if err := o.Workspaces.SetValkeyMemory(c.Request.Context(), m); err != nil {
+				o.Log.Warnw("valkey report not saved", "error", err)
+			}
 			c.JSON(http.StatusOK, gin.H{"used_bytes": m.UsedBytes})
 		})
 	}
