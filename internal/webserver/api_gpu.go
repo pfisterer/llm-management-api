@@ -304,15 +304,19 @@ func (s *Server) listServers(c *gin.Context) {
 //
 //	@ID			stopGPUServer
 //	@Summary	Stop one of my servers
-//	@Description	Named servers are removed after stopping; the home stays.
+//	@Description	Named servers are removed after stopping; the home stays. The default server has no name and is addressed as "-".
 //	@Tags		gpu
 //	@Security	BearerAuth
-//	@Param		name	path	string	true	"Server name"
+//	@Param		name	path	string	true	"Server name, \"-\" for the default server"
 //	@Success	204
 //	@Failure	404	{object}	ErrorResponse
 //	@Router		/v1/gpu/servers/{name} [delete]
 func (s *Server) stopServer(c *gin.Context) {
 	name := strings.TrimSpace(c.Param("name"))
+	// The default server's name is empty, which a path cannot carry: "-" stands for it.
+	if name == "-" {
+		name = ""
+	}
 	if err := s.gpu.StopServer(c.Request.Context(), caller(c).Email, name); err != nil {
 		s.gpuError(c, "stop server", err)
 		return
