@@ -1,16 +1,12 @@
-// Package access decides a person's role (user, fleet-admin, admin) and quota tier. Whether they may use the LLM or workspaces at all is decided by the budgets of their projects, not here.
-//
-// The inputs are the role-provider tokens of a person ("user:a@dhbw.de",
-// "group:wwi23seb", "group:dhbw-ma#dozent") and an access list that maps such
-// tokens to a role and a tier. Nothing here talks to the network: callers pass
-// the tokens in, which keeps the decision a pure function and testable.
+// Package access tells who a person is to this service: their role-provider tokens ("user:a@dhbw.de", "group:wwi23seb", "group:dhbw-ma#dozent") and the role those tokens give them (user, fleet-admin, admin). The service keeps no rights of its own: the roles come from the configuration (ADMIN_TOKENS, FLEET_ADMIN_TOKENS), and whether somebody may use the LLM or workspaces at all, and with which limits, comes from the projects of the budget tree.
 package access
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,61 +14,28 @@ import (
 type Role string
 
 const (
-	RoleNone       Role = ""
 	RoleUser       Role = "user"
 	RoleFleetAdmin Role = "fleet-admin"
 	RoleAdmin      Role = "admin"
 )
 
-// rank orders the roles. A person matching several rules gets the highest.
 func (r Role) rank() int {
 	switch r {
-	case RoleUser:
-		return 1
 	case RoleFleetAdmin:
 		return 2
 	case RoleAdmin:
 		return 3
 	default:
-		return 0
+		return 1
 	}
 }
 
 // AtLeast reports whether r includes the rights of min.
-func (r Role) AtLeast(min Role) bool { return r.rank() >= min.rank() && r != RoleNone }
-
-// ParseRole accepts exactly the three role names.
-func ParseRole(s string) (Role, error) {
-	switch r := Role(strings.TrimSpace(s)); r {
-	case RoleUser, RoleFleetAdmin, RoleAdmin:
-		return r, nil
-	default:
-		return RoleNone, fmt.Errorf("unknown role %q (want user, fleet-admin or admin)", s)
-	}
-}
-
-// Rule maps one role-provider token to a role and a quota tier.
-type Rule struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Token     string    `json:"token" gorm:"uniqueIndex;not null"`
-	Role      Role      `json:"role" gorm:"not null"`
-	Tier      string    `json:"tier" gorm:"not null"`
-	Comment   string    `json:"comment"`
-	UpdatedBy string    `json:"updated_by"`
-	UpdatedAt time.Time `json:"updated_at"`
-	// Bootstrap rules come from the configuration, not from the database. They
-	// guarantee that someone can always administer the list, and they cannot be
-	// edited or deleted through the API.
-	Bootstrap bool `json:"bootstrap" gorm:"-"`
-}
-
-// TableName pins the table name so a rename of the type cannot move the data.
-func (Rule) TableName() string { return "access_rules" }
+func (r Role) AtLeast(min Role) bool { return r.rank() >= min.rank() }
 
 var ErrInvalidToken = errors.New("token must look like user:<email> or group:<id>")
 
-// NormaliseToken trims and lowercases a token and checks its shape. Group ids
-// and e-mail addresses are case-insensitive in the role-provider as well.
+// NormaliseToken trims and lowercases a token and checks its shape. Group ids and e-mail addresses are case-insensitive in the role-provider as well.
 func NormaliseToken(raw string) (string, error) {
 	t := strings.ToLower(strings.TrimSpace(raw))
 	kind, rest, ok := strings.Cut(t, ":")
@@ -91,44 +54,108 @@ func NormaliseToken(raw string) (string, error) {
 	return t, nil
 }
 
-// Decision is the outcome for one person.
-type Decision struct {
-	Role Role   `json:"role"`
-	Tier string `json:"tier"`
-	// The rule that decided, for display and audit. Empty without access.
-	MatchedToken string `json:"matched_token,omitempty"`
+// Roles maps role-provider tokens to the two roles above user. Admin includes fleet-admin; everybody else is a plain user.
+type Roles struct {
+	admin, fleetAdmin map[string]struct{}
 }
 
-// Decide picks the rule that applies to a person with the given tokens.
-//
-// Highest role wins. Among rules of that role, a user: rule beats a group: rule
-// (it was written for this person specifically), and remaining ties are broken
-// by the token itself so the outcome never depends on database order.
-func Decide(rules []Rule, tokens []string) Decision {
-	held := make(map[string]struct{}, len(tokens))
-	for _, t := range tokens {
-		held[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+// NewRoles checks and normalises the configured tokens.
+func NewRoles(adminTokens, fleetAdminTokens []string) (Roles, error) {
+	set := func(name string, raw []string) (map[string]struct{}, error) {
+		out := map[string]struct{}{}
+		for _, r := range raw {
+			if strings.TrimSpace(r) == "" {
+				continue
+			}
+			t, err := NormaliseToken(r)
+			if err != nil {
+				return nil, fmt.Errorf("%s %q: %w", name, r, err)
+			}
+			out[t] = struct{}{}
+		}
+		return out, nil
 	}
-	var matched []Rule
-	for _, r := range rules {
-		if _, ok := held[r.Token]; ok {
-			matched = append(matched, r)
+	admin, err := set("ADMIN_TOKENS", adminTokens)
+	if err != nil {
+		return Roles{}, err
+	}
+	fleet, err := set("FLEET_ADMIN_TOKENS", fleetAdminTokens)
+	if err != nil {
+		return Roles{}, err
+	}
+	return Roles{admin: admin, fleetAdmin: fleet}, nil
+}
+
+// RoleOf is the highest role any of the tokens gives.
+func (r Roles) RoleOf(tokens []string) Role {
+	role := RoleUser
+	for _, raw := range tokens {
+		t := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := r.admin[t]; ok {
+			return RoleAdmin
+		}
+		if _, ok := r.fleetAdmin[t]; ok {
+			role = RoleFleetAdmin
 		}
 	}
-	if len(matched) == 0 {
-		return Decision{}
+	return role
+}
+
+// TokenResolver returns the role-provider tokens of a person. Implementations must always include "user:<email>", even when the role-provider is down, so that what is written for a person keeps working (degraded, never wider).
+type TokenResolver interface {
+	UserTokens(ctx context.Context, email string) []string
+}
+
+// Person is who somebody is to this service.
+type Person struct {
+	Role   Role
+	Tokens []string
+}
+
+// Service resolves a person's tokens (cached briefly) and their role.
+type Service struct {
+	resolver TokenResolver
+	roles    Roles
+
+	cacheTTL time.Duration
+	mu       sync.Mutex
+	cache    map[string]cachedTokens
+}
+
+type cachedTokens struct {
+	tokens  []string
+	expires time.Time
+}
+
+// NewService resolves tokens through resolver and reuses them for cacheTTL (short: a membership change should take effect within a minute, not at the next restart; 0 = no cache).
+func NewService(resolver TokenResolver, roles Roles, cacheTTL time.Duration) *Service {
+	return &Service{resolver: resolver, roles: roles, cacheTTL: cacheTTL, cache: map[string]cachedTokens{}}
+}
+
+// Who resolves the person's tokens and their role.
+func (s *Service) Who(ctx context.Context, email string) Person {
+	tokens := s.tokens(ctx, email)
+	return Person{Role: s.roles.RoleOf(tokens), Tokens: tokens}
+}
+
+func (s *Service) tokens(ctx context.Context, email string) []string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil
 	}
-	sort.SliceStable(matched, func(i, j int) bool {
-		a, b := matched[i], matched[j]
-		if a.Role.rank() != b.Role.rank() {
-			return a.Role.rank() > b.Role.rank()
-		}
-		au, bu := strings.HasPrefix(a.Token, "user:"), strings.HasPrefix(b.Token, "user:")
-		if au != bu {
-			return au
-		}
-		return a.Token < b.Token
-	})
-	best := matched[0]
-	return Decision{Role: best.Role, Tier: best.Tier, MatchedToken: best.Token}
+	now := time.Now()
+	s.mu.Lock()
+	if c, ok := s.cache[email]; ok && now.Before(c.expires) {
+		s.mu.Unlock()
+		return c.tokens
+	}
+	s.mu.Unlock()
+
+	tokens := s.resolver.UserTokens(ctx, email)
+	if s.cacheTTL > 0 {
+		s.mu.Lock()
+		s.cache[email] = cachedTokens{tokens: tokens, expires: now.Add(s.cacheTTL)}
+		s.mu.Unlock()
+	}
+	return tokens
 }

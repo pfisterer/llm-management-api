@@ -2,7 +2,6 @@ package webserver
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 )
 
-// BudgetSync keeps LiteLLM in step with the budget tree and the tiers: one team per project with the project's LLM tokens as its budget (0 once it ended or is gone), every person's quota (the tier's, budget 0), and every person's keys in pools they may draw from. Without it this only happens when the person asks this service for something (keys, usage, chat): somebody who left a project would go on spending its pool with the keys they made. Runs every Interval and right after the tree changed a project (Nudge).
+// BudgetSync keeps LiteLLM in step with the budget tree: one team per project with the project's LLM tokens as its budget (0 once it ended or is gone) and its rate limits and models, every person's quota (budget 0, see keys.SyncQuota), and every person's keys in pools they may draw from, with their pool's short-term budget. Without it this only happens when the person asks this service for something (keys, usage, chat): somebody who left a project would go on spending its pool with the keys they made. Runs every Interval and right after the tree changed a project (Nudge).
 type BudgetSync struct {
 	Lite     *litellm.Client
 	Keys     *keys.Service
@@ -46,7 +45,7 @@ func (b *BudgetSync) Run(ctx context.Context) {
 		if n, err := b.Pass(ctx); err != nil {
 			b.Log.Warnw("budget sync: pass failed", "error", err)
 		} else if n > 0 {
-			b.Log.Infow("budget sync: LiteLLM brought in step with tiers and tree", "writes", n)
+			b.Log.Infow("budget sync: LiteLLM brought in step with the tree", "writes", n)
 		}
 		select {
 		case <-ctx.Done():
@@ -57,7 +56,7 @@ func (b *BudgetSync) Run(ctx context.Context) {
 	}
 }
 
-// Pass first brings every project's team in step, then goes through every LiteLLM user that is a person (has an email): writes their tier (budget 0) and moves their keys into pools they may draw from (keys.SyncKeys). A person whose access or projects cannot be read right now is skipped, never stopped. Returns how many writes it made (teams, quotas, keys).
+// Pass first brings every project's team in step, then goes through every LiteLLM user that is a person (has an email): writes their quota (budget 0) and moves their keys into pools they may draw from (keys.SyncKeys). A person whose access or projects cannot be read right now is skipped, never stopped. Returns how many writes it made (teams, quotas, keys).
 func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 	if b.Quota.Projects == nil {
 		return 0, nil
@@ -66,7 +65,7 @@ func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	written, err := b.Keys.SyncTeams(ctx, toPools(pools))
+	written, err := b.Keys.SyncTeams(ctx, b.Quota.toPools(pools))
 	if err != nil {
 		// A team that could not be written does not keep the people's quotas and keys from being right.
 		b.Log.Warnw("budget sync: teams not all in step", "error", err)
@@ -86,13 +85,13 @@ func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 		if !ok {
 			continue
 		}
-		wrote, err := b.Keys.SyncQuota(ctx, u, g.Tier)
+		wrote, err := b.Keys.SyncQuota(ctx, u, g)
 		if err != nil {
 			b.Log.Warnw("budget sync: write failed", "email", email, "error", err)
 			continue
 		}
 		if wrote {
-			b.Log.Infow("budget sync: quota set", "email", email, "tier", g.Tier.Name)
+			b.Log.Infow("budget sync: quota set", "email", email, "projects", len(g.Pools))
 			written++
 		}
 		moved, err := b.Keys.SyncKeys(ctx, u, g)
@@ -106,25 +105,12 @@ func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 	return written, nil
 }
 
-// grantFor is the person's tier with their pools, or with none for somebody without LLM tokens; false when it cannot be decided now.
+// grantFor is the person's pools, none for somebody without LLM tokens; false when it cannot be decided now.
 func (b *BudgetSync) grantFor(ctx context.Context, email string) (keys.Grant, bool) {
-	d, tokens, err := b.Access.Decide(ctx, email)
-	if err != nil {
-		b.Log.Warnw("budget sync: access decision failed", "email", email, "error", err)
+	pools, status, msg := b.Quota.PoolsFor(ctx, b.Access.Who(ctx, email).Tokens)
+	if status != 0 {
+		b.Log.Warnw("budget sync: pools not decided", "email", email, "reason", msg)
 		return keys.Grant{}, false
 	}
-	g, status, msg := b.Quota.GrantFor(ctx, d, tokens)
-	switch status {
-	case 0:
-		return g, true
-	case http.StatusForbidden:
-		t, ok := b.Quota.Tiers[b.Quota.TierName(d)]
-		if !ok {
-			return keys.Grant{}, false
-		}
-		return keys.Grant{Tier: t}, true
-	default:
-		b.Log.Warnw("budget sync: tier not decided", "email", email, "reason", msg)
-		return keys.Grant{}, false
-	}
+	return keys.Grant{Pools: pools}, true
 }

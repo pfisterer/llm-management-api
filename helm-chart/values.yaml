@@ -37,11 +37,9 @@ config:
   roleProviderUrl: ""
   roleProviderTimeoutSeconds: 5
   tokenCacheSeconds: 60
-  # Admins regardless of the stored access list (cannot be removed via the API).
-  bootstrapAdmins: []
-  bootstrapAdminTier: staff
-  # Quota tiers as in the aiaas-deployment inventory (llmManagementApi.tiers).
-  tiers: []
+  # Role-provider tokens (user:<email> or group:<id>, groups resolved by the role-provider) whose holders are admins (fleet-admins too) or fleet-admins; everybody else is a plain user. The service keeps no rights of its own.
+  adminTokens: []
+  fleetAdminTokens: []
   chatUrl: ""
   # Public OpenAI-compatible base URL (…/v1), shown to users.
   apiUrl: ""
@@ -57,8 +55,12 @@ config:
   aliases: {}
   aliasProbes: {}
   maxKeysPerUser: 5
-  # Budget tree (docs/bauplan.md, Stufe 8): the LLM budget per person is the sum of the LLM tokens of their projects (no tokens, no LLM); llmDefaultTier (one of tiers, required) gives rate limits, models and the short-term key budget to people whose access rule names no tier or who have no rule; selfServiceUrl is where people without a project get one.
-  llmDefaultTier: ""
+  # Budget tree (docs/bauplan.md, Stufe 8): the LLM tokens of a project are a pool its members share (no project with tokens, no LLM), a LiteLLM team that also carries the project's requests and tokens per minute and models, all from the tree. llmDefaultRpm/llmDefaultTpm apply to a project for which the tree sets none (0 = no limit); llmBaseModels are the model groups every project may use (the tree adds more per project); every key gets llmKeyBudgetShare of its project's budget per llmKeyBudgetWindow as a short-term safety budget, and no limits of its own. selfServiceUrl is where people without a project get one.
+  llmDefaultRpm: 60
+  llmDefaultTpm: 200000
+  llmBaseModels: [chat-default, chat-fast, embedding]
+  llmKeyBudgetShare: "0.05"
+  llmKeyBudgetWindow: 4h
   selfServiceUrl: ""
 
 # GPU part: environments from Git repositories (repo2docker builds in the GPU cluster, images in Harbor) and JupyterHub servers. Off by default; tokens under secrets.

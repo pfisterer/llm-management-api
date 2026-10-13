@@ -150,37 +150,53 @@ func (c *Client) ListUsers(ctx context.Context) ([]UserInfo, error) {
 	}
 }
 
-// Quota is what a tier writes onto a user or key.
-type Quota struct {
-	MaxBudget      float64  `json:"max_budget"`
-	BudgetDuration string   `json:"budget_duration,omitempty"`
-	TPMLimit       int      `json:"tpm_limit,omitempty"`
-	RPMLimit       int      `json:"rpm_limit,omitempty"`
-	Models         []string `json:"models,omitempty"`
+// Budget is a spending limit per window, in LiteLLM's dollars.
+type Budget struct {
+	MaxBudget      float64
+	BudgetDuration string
 }
 
-// NewUser creates a user with quota and metadata.
-func (c *Client) NewUser(ctx context.Context, userID, email string, q Quota, metadata map[string]any) error {
+// UserQuota is what this service writes onto a user: the budget, and rate limits only where they are > 0. LiteLLM 1.94's /user/update drops null and empty values (_update_internal_user_params), so a user's rate limits and models cannot be cleared through the API, only set.
+type UserQuota struct {
+	Budget
+	RPMLimit int
+	TPMLimit int
+}
+
+func (q UserQuota) merge(body map[string]any) {
+	body["max_budget"] = q.MaxBudget
+	if q.BudgetDuration != "" {
+		body["budget_duration"] = q.BudgetDuration
+	}
+	if q.RPMLimit > 0 {
+		body["rpm_limit"] = q.RPMLimit
+	}
+	if q.TPMLimit > 0 {
+		body["tpm_limit"] = q.TPMLimit
+	}
+}
+
+// NewUser creates a user with quota and metadata, without rate limits or models of the user's own unless q names limits.
+func (c *Client) NewUser(ctx context.Context, userID, email string, q UserQuota, metadata map[string]any) error {
 	// Without auto_create_key LiteLLM makes a nameless key for every new user, whose secret nobody keeps and which counts as one of the person's keys.
 	body := map[string]any{"user_id": userID, "user_email": email, "user_role": "internal_user", "metadata": metadata, "auto_create_key": false}
-	mergeQuota(body, q)
+	q.merge(body)
 	return c.do(ctx, http.MethodPost, "/user/new", body, nil)
 }
 
-// UpdateUser sets email and metadata, and the quota when q is not nil. Spend
-// is never touched.
-func (c *Client) UpdateUser(ctx context.Context, userID, email string, q *Quota, metadata map[string]any) error {
+// UpdateUser sets email and metadata, and the quota when q is not nil. Spend is never touched.
+func (c *Client) UpdateUser(ctx context.Context, userID, email string, q *UserQuota, metadata map[string]any) error {
 	body := map[string]any{"user_id": userID, "user_email": email, "metadata": metadata}
 	if q != nil {
-		mergeQuota(body, *q)
+		q.merge(body)
 	}
 	return c.do(ctx, http.MethodPost, "/user/update", body, nil)
 }
 
-// GenerateKey creates a key in a team and returns its secret value (shown exactly once).
-func (c *Client) GenerateKey(ctx context.Context, userID, teamID, alias string, q Quota, metadata map[string]any) (string, error) {
+// GenerateKey creates a key in a team with a short-term budget and returns its secret value (shown exactly once). The key gets no rate limits and no models of its own: the team's apply (a key's empty model list means every model its team allows).
+func (c *Client) GenerateKey(ctx context.Context, userID, teamID, alias string, b Budget, metadata map[string]any) (string, error) {
 	body := map[string]any{"user_id": userID, "team_id": teamID, "key_alias": alias, "metadata": metadata}
-	mergeQuota(body, q)
+	mergeBudget(body, b)
 	var r struct {
 		Key string `json:"key"`
 	}
@@ -195,9 +211,9 @@ func (c *Client) GenerateKey(ctx context.Context, userID, teamID, alias string, 
 
 // GenerateKeyWithValue creates a key whose secret the caller chose. Used for the
 // chat key, which is derived from the person's id and never stored.
-func (c *Client) GenerateKeyWithValue(ctx context.Context, userID, teamID, alias, key string, q Quota, metadata map[string]any) error {
+func (c *Client) GenerateKeyWithValue(ctx context.Context, userID, teamID, alias, key string, b Budget, metadata map[string]any) error {
 	body := map[string]any{"user_id": userID, "team_id": teamID, "key_alias": alias, "key": key, "metadata": metadata}
-	mergeQuota(body, q)
+	mergeBudget(body, b)
 	return c.do(ctx, http.MethodPost, "/key/generate", body, nil)
 }
 
@@ -229,10 +245,10 @@ func (c *Client) SetKeyTeam(ctx context.Context, token, teamID string) error {
 	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
 }
 
-// SetKeyQuota writes a key's short-term budget, rate limits and models. The budget's window is only sent when it changes: LiteLLM starts a new window with every write that carries one, which would reset what the key spent so far.
-func (c *Client) SetKeyQuota(ctx context.Context, token string, q Quota, windowChanged bool) error {
-	body := map[string]any{"key": token}
-	mergeQuota(body, q)
+// SetKeyBudget writes a key's short-term budget and clears rate limits and models of the key's own, so only its team's apply. LiteLLM 1.94 dumps UpdateKeyRequest with exclude_unset (prepare_key_update_data), so an explicit null clears rpm_limit and tpm_limit, and models [] means every model the team allows (_check_model_access_helper). The budget's window is only sent when it changes: LiteLLM starts a new window with every write that carries one, which would reset what the key spent so far.
+func (c *Client) SetKeyBudget(ctx context.Context, token string, b Budget, windowChanged bool) error {
+	body := map[string]any{"key": token, "rpm_limit": nil, "tpm_limit": nil, "models": []string{}}
+	mergeBudget(body, b)
 	if !windowChanged {
 		delete(body, "budget_duration")
 	}
@@ -252,6 +268,9 @@ type Team struct {
 	MaxBudget      *float64       `json:"max_budget"`
 	BudgetDuration *string        `json:"budget_duration"`
 	BudgetResetAt  *string        `json:"budget_reset_at"`
+	RPMLimit       *int           `json:"rpm_limit"`
+	TPMLimit       *int           `json:"tpm_limit"`
+	Models         []string       `json:"models"`
 	Metadata       map[string]any `json:"metadata"`
 	Members        []TeamMember   `json:"members_with_roles"`
 }
@@ -309,29 +328,42 @@ func (c *Client) ListTeams(ctx context.Context) ([]Team, error) {
 	return *wrapped.Teams, nil
 }
 
-// TeamSpec is what this service sets on a team. BudgetDuration "" leaves the team's window (and its reset date) alone on an update: LiteLLM restarts the window whenever budget_duration is sent.
+// TeamSpec is what this service sets on a team: the project's budget, rate limits and models, which every key in the team is held to. BudgetDuration "" leaves the team's window (and its reset date) alone on an update: LiteLLM restarts the window whenever budget_duration is sent. RPMLimit or TPMLimit 0 is sent as null (no limit; /team/update dumps with exclude_unset, so null clears).
 type TeamSpec struct {
 	TeamID         string
 	Alias          string
 	MaxBudget      float64
 	BudgetDuration string
+	RPMLimit       int
+	TPMLimit       int
+	Models         []string
 	Metadata       map[string]any
 }
 
 func (t TeamSpec) body() map[string]any {
-	body := map[string]any{"team_id": t.TeamID, "team_alias": t.Alias, "max_budget": t.MaxBudget, "metadata": t.Metadata}
+	body := map[string]any{"team_id": t.TeamID, "team_alias": t.Alias, "max_budget": t.MaxBudget, "metadata": t.Metadata,
+		"rpm_limit": nil, "tpm_limit": nil, "models": t.Models}
+	if t.Models == nil {
+		body["models"] = []string{}
+	}
+	if t.RPMLimit > 0 {
+		body["rpm_limit"] = t.RPMLimit
+	}
+	if t.TPMLimit > 0 {
+		body["tpm_limit"] = t.TPMLimit
+	}
 	if t.BudgetDuration != "" {
 		body["budget_duration"] = t.BudgetDuration
 	}
 	return body
 }
 
-// NewTeam creates a team without members and without a model list (all models; the keys carry the models).
+// NewTeam creates a team without members.
 func (c *Client) NewTeam(ctx context.Context, t TeamSpec) error {
 	return c.do(ctx, http.MethodPost, "/team/new", t.body(), nil)
 }
 
-// UpdateTeam sets alias, budget and metadata of a team (and its window when BudgetDuration is set). Spend is never touched.
+// UpdateTeam sets alias, budget, rate limits, models and metadata of a team (and its window when BudgetDuration is set). Spend is never touched.
 func (c *Client) UpdateTeam(ctx context.Context, t TeamSpec) error {
 	return c.do(ctx, http.MethodPost, "/team/update", t.body(), nil)
 }
@@ -346,19 +378,10 @@ func (c *Client) AddTeamMember(ctx context.Context, teamID, userID string) error
 	return err
 }
 
-func mergeQuota(body map[string]any, q Quota) {
-	body["max_budget"] = q.MaxBudget
-	if q.BudgetDuration != "" {
-		body["budget_duration"] = q.BudgetDuration
-	}
-	if q.TPMLimit > 0 {
-		body["tpm_limit"] = q.TPMLimit
-	}
-	if q.RPMLimit > 0 {
-		body["rpm_limit"] = q.RPMLimit
-	}
-	if len(q.Models) > 0 {
-		body["models"] = q.Models
+func mergeBudget(body map[string]any, b Budget) {
+	body["max_budget"] = b.MaxBudget
+	if b.BudgetDuration != "" {
+		body["budget_duration"] = b.BudgetDuration
 	}
 }
 

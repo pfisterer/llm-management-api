@@ -24,17 +24,14 @@ import (
 type ChatOptions struct {
 	Access *access.Service
 	Keys   *keys.Service
-	Tiers  map[string]keys.Tier
-	// Quota decides the tier and the pools (from the projects); its Tiers default to Tiers.
+	// Quota decides the pools (from the projects).
 	Quota     LLMQuota
 	Gateway   string // LiteLLM inference gateway, e.g. http://litellm-gateway:4000
 	MasterKey string // derives the chat keys (see keys.ChatKey)
 	Log       *zap.SugaredLogger
 }
 
-// chatKeyTTL is how long a person's access and key count as checked. Every
-// expiry asks the access rules again — not only when the key is created, or
-// whoever lost their rule would keep chatting as long as the key exists.
+// chatKeyTTL is how long a person's access and key count as checked. Every expiry asks the projects again — not only when the key is created, or whoever left their project would keep chatting as long as the key exists.
 const chatKeyTTL = 10 * time.Minute
 
 // Up to 64 MiB: a document travels base64-encoded, a third larger than the file.
@@ -45,8 +42,7 @@ const chatBodyLimit = 64 << 20
 // use a personal key if something on this path swaps it in: LibreChat sends the
 // identity as headers ({{LIBRECHAT_USER_OPENIDID}} = Keycloak sub,
 // {{LIBRECHAT_USER_EMAIL}}), and this exchange answers with the person's key.
-// Tier and limits therefore apply exactly as for their own API keys, and spend
-// lands in the pool of the person's default project.
+// The project's limits therefore apply exactly as for the person's own API keys in it, and spend lands in the project's pool.
 //
 // Trust in those headers rests on the NetworkPolicy alone: only the LibreChat
 // pod reaches this listener. That is why it is a listener of its own.
@@ -172,20 +168,8 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 	v, _, _ := ex.group.Do(uid, func() (any, error) {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		d, tokens, err := ex.o.Access.Decide(cctx, p.Email)
-		if err != nil {
-			ex.o.Log.Errorw("chat: access decision failed", "email", p.Email, "error", err)
-			return answer{status: http.StatusServiceUnavailable, msg: "Zugriff konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen"}, nil
-		}
-		quota := ex.o.Quota
-		if quota.Tiers == nil {
-			quota.Tiers = ex.o.Tiers
-		}
-		g, status, msg := quota.GrantFor(cctx, d, tokens)
+		g, status, msg := ex.o.Quota.GrantFor(cctx, ex.o.Access.Who(cctx, p.Email).Tokens)
 		if status != 0 {
-			if status == http.StatusInternalServerError {
-				ex.o.Log.Errorw("chat: no tier", "tier", d.Tier, "email", p.Email, "reason", msg)
-			}
 			return answer{status: status, msg: msg}, nil
 		}
 		key, err := ex.o.Keys.EnsureChatKey(cctx, p, g, ex.o.MasterKey)

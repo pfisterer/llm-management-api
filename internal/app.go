@@ -66,7 +66,6 @@ func RunApplication() {
 }
 
 type allStores struct {
-	access   access.Store
 	fleet    fleet.Store
 	classify classify.Store
 	gpu      gpu.Store
@@ -74,10 +73,10 @@ type allStores struct {
 	projects workspace.Store
 }
 
-// stores opens the access, fleet, classification and GPU stores on one connection.
+// stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{access.NewMemoryStore(), fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -90,9 +89,11 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, fmt.Errorf("postgres: %w", err)
 	}
-	as, err := access.NewGormStore(db)
-	if err != nil {
-		return allStores{}, err
+	// The access rules are gone (roles come from ADMIN_TOKENS and FLEET_ADMIN_TOKENS, LLM limits from the projects of the budget tree): their table goes too.
+	if m := db.Migrator(); m.HasTable("access_rules") {
+		if err := m.DropTable("access_rules"); err != nil {
+			return allStores{}, fmt.Errorf("drop access_rules: %w", err)
+		}
 	}
 	fs, err := fleet.NewGormStore(db)
 	if err != nil {
@@ -114,7 +115,7 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{as, fs, cs, gs, us, ws}, nil
+	return allStores{fs, cs, gs, us, ws}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -147,7 +148,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if err != nil {
 		return err
 	}
-	store, fleetStore, classifyStore := st.access, st.fleet, st.classify
+	fleetStore, classifyStore := st.fleet, st.classify
 	fleetSvc, err := fleetService(cfg, fleetStore)
 	if err != nil {
 		return err
@@ -156,15 +157,11 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if err != nil {
 		return err
 	}
-	accessSvc, err := access.NewService(store, roles, access.Config{
-		Tiers:              cfg.TierNames(),
-		BootstrapAdmins:    cfg.BootstrapAdmins,
-		BootstrapAdminTier: cfg.BootstrapAdminTier,
-		TokenCacheTTL:      cfg.TokenCacheTTL,
-	})
+	roleTokens, err := access.NewRoles(cfg.AdminTokens, cfg.FleetAdminTokens)
 	if err != nil {
 		return err
 	}
+	accessSvc := access.NewService(roles, roleTokens, cfg.TokenCacheTTL)
 	var gpuSvc *gpu.Service
 	var wsSvc *workspace.Service
 	if cfg.GPU.Enabled {
@@ -209,18 +206,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		log.Warn("no OIDC issuer configured: only X-Dummy-Auth-User works (development mode)")
 	}
 
-	tiers := map[string]keys.Tier{}
-	for _, t := range cfg.Tiers {
-		tiers[t.Name] = keys.Tier{Name: t.Name, KeyBudget: t.KeyBudget, KeyBudgetDuration: t.KeyBudgetDuration, RPM: t.RPM, TPM: t.TPM, Models: t.Models}
-	}
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
-	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser)
+	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser, keys.KeyBudget{Share: cfg.LLMKeyBudgetShare, Window: cfg.LLMKeyBudgetWindow})
 	if wsSvc != nil {
 		// The tree reads what a project used of its LLM tokens from the project's team.
 		wsSvc.SetLLMUsed(keySvc.UsedMTokens)
 	}
 
-	quota := webserver.LLMQuota{Tiers: tiers, DefaultTier: cfg.LLMDefaultTier, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
+	quota := webserver.LLMQuota{DefaultRPM: cfg.LLMDefaultRPM, DefaultTPM: cfg.LLMDefaultTPM, BaseModels: cfg.LLMBaseModels, Projects: wsSvc, SelfServiceURL: cfg.SelfServiceURL}
 	// The LLM pools come from the projects, which exist only with the GPU part.
 	var budgets *webserver.BudgetSync
 	onTree := func() {}
@@ -238,14 +231,12 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Verifier:     verifier,
 		Access:       accessSvc,
 		Keys:         keySvc,
-		Tiers:        tiers,
 		Quota:        quota,
 		TreeToken:    cfg.TreeToken,
 		OnTreeChange: onTree,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
-		RoleProvider: roles,
 		GPU:          gpuSvc,
 		Usage:        st.usage,
 		Workspaces:   wsSvc,
@@ -268,7 +259,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// Chat exchange for LibreChat: trusts identity headers, so NetworkPolicy
 		// admits LibreChat only. No write timeout — a streamed answer of a large
 		// model can take minutes.
-		{Addr: cfg.ChatBind, Handler: webserver.ChatRouter(webserver.ChatOptions{Access: accessSvc, Keys: keySvc, Tiers: tiers, Quota: quota,
+		{Addr: cfg.ChatBind, Handler: webserver.ChatRouter(webserver.ChatOptions{Access: accessSvc, Keys: keySvc, Quota: quota,
 			Gateway: cfg.LiteLLMGatewayURL, MasterKey: cfg.LiteLLMMasterKey, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 		// LiteLLM UI autologin, behind the admin host's forward-auth.
 		{Addr: cfg.AdminLoginBind, Handler: webserver.AdminLoginRouter(webserver.AdminLoginOptions{Access: accessSvc,
@@ -343,12 +334,7 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 	case "http":
 		return roleprovider.NewHTTP(cfg.RoleProviderURL, cfg.RoleProviderToken, cfg.RoleProviderTimeout, log)
 	case "mock":
-		// Development only (LoadConfig refuses it otherwise): a few groups to
-		// try rules against without a role-provider at hand. The second half are
-		// the people and groups of the budget tree's development seed
-		// (openstack-management-api, internal/dev), so a project shared with a
-		// group there reaches its members here; student2 is one more member of
-		// the course, to try a shared project with.
+		// Development only (LoadConfig refuses it otherwise): a few people and groups without a role-provider at hand, e.g. for ADMIN_TOKENS=user:root.admin@uni.example or group:root_uni. The second half are the people and groups of the budget tree's development seed (openstack-management-api, internal/dev), so a project shared with a group there reaches its members here; student2 is one more member of the course, to try a shared project with.
 		return &roleprovider.Mock{
 			Memberships: map[string][]string{
 				"student@dhbw.de": {"group:wwi23seb", "group:studierende"},
@@ -362,19 +348,6 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 				"cs-student@cs.com":      {"group:cs-student", "group:wwi23seb", "group:wwi23seb#studierende"},
 				"student2@cs.com":        {"group:cs-student", "group:wwi23seb", "group:wwi23seb#studierende"},
 			},
-			Groups: []roleprovider.Group{
-				{Token: "group:studierende", Label: "Studierende"},
-				{Token: "group:mitarbeitende", Label: "Mitarbeitende"},
-				{Token: "group:wwi23seb", Description: "Kurs Wirtschaftsinformatik 2023, Software Engineering B"},
-				{Token: "group:it-service", Label: "IT-Service"},
-				{Token: "group:root_uni", Label: "Root admins"},
-				{Token: "group:dept_cs_admin", Label: "CS department admins"},
-				{Token: "group:dept_cs_faculty", Label: "CS faculty"},
-				{Token: "group:dept_bio", Label: "Biology department"},
-				{Token: "group:cs-student", Label: "CS students"},
-			},
-			Users: []string{"student@dhbw.de", "dozent@dhbw.de", "it@dhbw.de",
-				"root.admin@uni.example", "admin@cs.example", "faculty@cs.example", "faculty@bio.example", "cs-student@cs.com", "student2@cs.com"},
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported ROLE_PROVIDER_TYPE %q", cfg.RoleProviderType)
@@ -415,10 +388,10 @@ func projectOf(acc *access.Service, ws *workspace.Service, log *zap.SugaredLogge
 			return e.project
 		}
 		project := "ohne Projekt"
-		_, tokens, err := acc.Decide(ctx, strings.ToLower(person))
 		var mine []workspace.Mine
-		if err == nil && ws != nil {
-			mine, err = ws.ForPerson(ctx, tokens, "", false)
+		var err error
+		if ws != nil {
+			mine, err = ws.ForPerson(ctx, acc.Who(ctx, strings.ToLower(person)).Tokens, "", false)
 		}
 		if err != nil {
 			log.Warnw("usage: projects of the person not known", "person", person, "error", err)

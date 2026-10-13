@@ -14,7 +14,7 @@ const (
 	RoleManager = "manager" // edits members, images and the description; sees the project's usage
 )
 
-// Member is a person or a group, as a role-provider token (user:a@dhbw.de, group:wwi23seb), like the access rules.
+// Member is a person or a group, as a role-provider token (user:a@dhbw.de, group:wwi23seb).
 type Member struct {
 	Token string `json:"token" example:"group:wwi23seb"`
 	Role  string `json:"role" example:"member" enums:"member,manager"`
@@ -60,13 +60,18 @@ type Project struct {
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
 	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
 	// LLMMTokens is the project's LLM tokens per 30 days in millions, from the budget tree: one pool (a LiteLLM team) that all members draw from together, not an amount per member.
-	LLMMTokens int        `json:"llm_mtokens" gorm:"column:llm_mtokens"`
-	EndsAt     *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
-	TreeNode   string     `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and LLM tokens
-	CreatedBy  string     `json:"created_by,omitempty"`
-	UpdatedBy  string     `json:"updated_by,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	LLMMTokens int `json:"llm_mtokens" gorm:"column:llm_mtokens"`
+	// LLMRPM and LLMTPM are the project's requests and tokens per minute for all members together, from the budget tree; 0 = the configured default.
+	LLMRPM int `json:"llm_rpm" gorm:"column:llm_rpm"`
+	LLMTPM int `json:"llm_tpm" gorm:"column:llm_tpm"`
+	// LLMModels are model groups the tree granted the project on top of the base models.
+	LLMModels []string   `json:"llm_models" gorm:"column:llm_models;serializer:json"`
+	EndsAt    *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
+	TreeNode  string     `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
+	CreatedBy string     `json:"created_by,omitempty"`
+	UpdatedBy string     `json:"updated_by,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 func (Project) TableName() string { return "workspace_projects" }

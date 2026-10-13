@@ -34,18 +34,12 @@ type DefaultProjectResponse struct {
 	ProjectName string `json:"project_name" example:"Machine Learning WWI23SEB"`
 }
 
-// person and grant (tier and pools) of the caller; false (and an answer) when they may not use the LLM or the tier is not configured, which would be a configuration error.
+// person and grant (pools) of the caller; false (and an answer) when they may not use the LLM.
 func (s *Server) personAndGrant(c *gin.Context) (keys.Person, keys.Grant, bool) {
 	cl := caller(c)
-	g, status, msg := s.quota.GrantFor(c.Request.Context(), cl.Decision, cl.Tokens)
+	g, status, msg := s.quota.GrantFor(c.Request.Context(), cl.Tokens)
 	if status != 0 {
-		if status == http.StatusInternalServerError {
-			s.log.Errorw("no tier for the caller", "tier", cl.Decision.Tier, "email", cl.Email, "reason", msg)
-		}
 		code := map[int]string{http.StatusForbidden: "no_quota", http.StatusServiceUnavailable: "unavailable"}[status]
-		if code == "" {
-			code = "internal"
-		}
 		abort(c, status, code, msg)
 		return keys.Person{}, keys.Grant{}, false
 	}
@@ -61,7 +55,7 @@ func notEligible(c *gin.Context) {
 //
 //	@ID			getUsage
 //	@Summary		Quota, limits and keys of the caller
-//	@Description	The projects whose LLM tokens the caller may use — each one pool shared by all its members, with its spend, budget and window from LiteLLM, and which one is the caller's default —, the per-key short-term budgets, rate limits and allowed models.
+//	@Description	The projects whose LLM tokens the caller may use — each one pool shared by all its members, with its spend, budget and window from LiteLLM, which one is the caller's default, its requests and tokens per minute and models for all its members together, and the short-term budget of each key in it —, and the caller's keys.
 //	@Tags			keys
 //	@Produce		json
 //	@Security		BearerAuth

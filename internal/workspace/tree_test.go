@@ -18,7 +18,7 @@ func TestUpsertFromTree(t *testing.T) {
 	node := "p_7841d99e-68a2-47b7-88a5-1ab55180f4f5"
 	tp := TreeProject{Name: "Kurs", Members: []Member{{Token: "user:o@dhbw.de", Role: RoleManager}, {Token: "group:k", Role: RoleMember}},
 		Budgets:     []TreeBudget{{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "30d", Amount: 500}, {Unit: "vcpu_hours", Window: "30d", Amount: 1000}},
-		GPUsByClass: map[string]int{"l4-3q": 4}, LLMMTokens: 200}
+		GPUsByClass: map[string]int{"l4-3q": 4}, LLMMTokens: 200, LLMRPM: 120, LLMTPM: 400000, LLMModels: []string{" code", "all-proxy-models", "code", ""}}
 	st, err := s.UpsertFromTree(ctx, node, tp)
 	if err != nil {
 		t.Fatal(err)
@@ -27,19 +27,28 @@ func TestUpsertFromTree(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 	p, _ := s.Get(ctx, st.Slug)
-	if !p.Managed() || !slices.Contains(p.Profiles, "pytorch") || !slices.Contains(p.Profiles, "cpu") || p.Limits.GPUsPerPerson != 1 || p.GPUsByClass["l4-3q"] != 4 || len(p.Budgets) != 2 {
+	if !p.Managed() || !slices.Contains(p.Profiles, "pytorch") || !slices.Contains(p.Profiles, "cpu") || p.Limits.GPUsPerPerson != 1 || p.GPUsByClass["l4-3q"] != 4 || len(p.Budgets) != 2 || p.LLMRPM != 120 || p.LLMTPM != 400000 || !slices.Equal(p.LLMModels, []string{"all-proxy-models", "code"}) {
 		t.Fatalf("created project = %+v", p)
 	}
+	if pools, _ := s.LLMPoolsFor(ctx, []string{"group:k"}); len(pools) != 1 || pools[0].RPM != 120 || pools[0].TPM != 400000 || !slices.Equal(pools[0].Models, []string{"all-proxy-models", "code"}) {
+		t.Fatalf("pool = %+v, want the project's limits and models", pools)
+	}
 
-	// A manager narrows: a share per person, fewer profiles; members stay the tree's.
+	// A manager narrows: a share per person, fewer profiles; members and the LLM limits stay the tree's, also for an admin.
 	p.Budgets = append(p.Budgets, Budget{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "7d", Amount: 10, PerPerson: true})
 	p.Profiles = []string{"cpu"}
 	p.Members = []Member{{Token: "user:x@dhbw.de"}}
+	p.LLMRPM, p.LLMModels = 9999, []string{"everything"}
 	if _, err := s.Update(ctx, p, "o@dhbw.de", false); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = s.Get(ctx, st.Slug)
-	if len(p.Members) != 2 || len(p.Budgets) != 3 || !slices.Equal(p.Profiles, []string{"cpu"}) {
+	p.LLMTPM = 1
+	if _, err := s.Update(ctx, p, "root@dhbw.de", true); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = s.Get(ctx, st.Slug)
+	if len(p.Members) != 2 || len(p.Budgets) != 3 || !slices.Equal(p.Profiles, []string{"cpu"}) || p.LLMRPM != 120 || p.LLMTPM != 400000 || len(p.LLMModels) != 2 {
 		t.Errorf("after the manager: %+v", p)
 	}
 	// Not beyond what the tree gives.
@@ -48,12 +57,16 @@ func TestUpsertFromTree(t *testing.T) {
 		t.Errorf("a budget above the tree's: %v", err)
 	}
 
-	// The tree shrinks: its budgets are replaced, the manager's share stays.
+	// The tree shrinks: its budgets are replaced, the manager's share stays; the LLM limits and models are dropped (the defaults then).
 	tp.Budgets = []TreeBudget{{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "30d", Amount: 100}}
+	tp.LLMRPM, tp.LLMTPM, tp.LLMModels = 0, 0, nil
 	if _, err := s.UpsertFromTree(ctx, node, tp); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = s.Get(ctx, st.Slug)
+	if p.LLMRPM != 0 || p.LLMTPM != 0 || len(p.LLMModels) != 0 {
+		t.Errorf("LLM limits after the tree dropped them = %d %d %v", p.LLMRPM, p.LLMTPM, p.LLMModels)
+	}
 	var tree, own int
 	for _, b := range p.Budgets {
 		if b.Tree {

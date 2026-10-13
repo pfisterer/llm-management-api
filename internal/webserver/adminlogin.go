@@ -34,8 +34,7 @@ type AdminLoginOptions struct {
 // Trust in X-Auth-Request-Email: this listener is reachable only through the
 // admin ingress (NetworkPolicy: Traefik only), where the forward-auth
 // middleware sets exactly this header from oauth2-proxy's answer for EVERY path
-// and overwrites one sent by the client. The access rules are checked on top:
-// only the role admin gets in.
+// and overwrites one sent by the client. The role is checked on top: only admins (ADMIN_TOKENS) get in.
 //
 // Actions in the UI still run under the shared account and cannot be traced to
 // a person.
@@ -50,8 +49,7 @@ func AdminLoginRouter(o AdminLoginOptions) http.Handler {
 		email := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Auth-Request-Email")))
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
-		d, _, err := o.Access.Decide(ctx, email)
-		if email == "" || err != nil || !d.Role.AtLeast(access.RoleAdmin) {
+		if email == "" || !o.Access.Who(ctx, email).Role.AtLeast(access.RoleAdmin) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = io.WriteString(w, "<!doctype html><meta charset=utf-8><title>DHBW LLMaaS</title>"+

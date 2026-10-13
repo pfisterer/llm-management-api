@@ -60,7 +60,7 @@ func usagePeriod(c *gin.Context) (time.Time, time.Time, bool) {
 func (s *Server) getWorkspaceUsage(c *gin.Context) {
 	cl := caller(c)
 	project := c.Query("project")
-	if cl.Decision.Role.AtLeast(access.RoleAdmin) {
+	if cl.Role.AtLeast(access.RoleAdmin) {
 		if project == "" {
 			s.workspaceUsage(c, nil)
 			return
@@ -149,7 +149,7 @@ func (s *Server) getWorkspaceCatalog(c *gin.Context) { c.JSON(http.StatusOK, s.w
 //	@Router			/v1/workspaces/projects [get]
 func (s *Server) listWorkspaceProjects(c *gin.Context) {
 	cl := caller(c)
-	if c.Query("all") == "true" && cl.Decision.Role.AtLeast(access.RoleAdmin) {
+	if c.Query("all") == "true" && cl.Role.AtLeast(access.RoleAdmin) {
 		list, err := s.ws.ForPerson(c.Request.Context(), cl.Tokens, cl.Email, true)
 		if err != nil {
 			s.internalError(c, "workspace projects", err)
@@ -189,7 +189,7 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 		return
 	}
 	p.Slug = c.Param("slug")
-	admin := cl.Decision.Role.AtLeast(access.RoleAdmin)
+	admin := cl.Role.AtLeast(access.RoleAdmin)
 	if !admin {
 		cur, err := s.ws.Get(c.Request.Context(), p.Slug)
 		if s.workspaceError(c, err) {

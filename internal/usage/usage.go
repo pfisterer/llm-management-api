@@ -8,7 +8,7 @@ import (
 
 // Column names are explicit: the upsert in GormStore.Add names them, and gorm's own naming of VCPUHours or RAMGBHours is not that.
 //
-// Row is one UTC day of one person in one project, profile and GPU class. No foreign keys: rows outlive projects and access rules, like project_usage_daily in openstack-management-api.
+// Row is one UTC day of one person in one project, profile and GPU class. No foreign keys: rows outlive projects, like project_usage_daily in openstack-management-api.
 type Row struct {
 	Day      time.Time `json:"day" gorm:"primaryKey;type:date"`
 	Project  string    `json:"project" gorm:"primaryKey"` // until projects exist (W2): the access rule that grants compute, e.g. group:wwi23seb

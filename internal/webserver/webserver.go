@@ -13,7 +13,6 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
@@ -35,8 +34,7 @@ type Options struct {
 	Verifier    TokenVerifier // nil only in development mode
 	Access      *access.Service
 	Keys        *keys.Service
-	Tiers       map[string]keys.Tier
-	// Quota decides a person's LLM tier (from the access rule, or with the budget from the tree); zero = from Tiers.
+	// Quota decides a person's LLM pools and their limits, from the tree's projects and the configured defaults.
 	Quota LLMQuota
 	// TreeToken lets the budget tree (resource-management-api) manage its projects under /v1/tree; empty = off.
 	TreeToken string
@@ -45,7 +43,6 @@ type Options struct {
 	Fleet        *fleet.Service
 	Health       fleet.HealthSource
 	Material     fleet.Material
-	RoleProvider roleprovider.Provider
 	// GPU part; nil when disabled (no /v1/gpu routes).
 	GPU *gpu.Service
 	// Workspace usage (docs/bauplan.md, Stufe 4); nil without the GPU part.
@@ -65,14 +62,12 @@ type Server struct {
 	verifier TokenVerifier
 	access   *access.Service
 	keys     *keys.Service
-	tiers    map[string]keys.Tier
 	quota    LLMQuota
 	treeTok  string
 	onTree   func()
 	fleet    *fleet.Service
 	health   fleet.HealthSource
 	material fleet.Material
-	roles    roleprovider.Provider
 	gpu      *gpu.Service
 	usage    usage.Store
 	ws       *workspace.Service
@@ -80,13 +75,9 @@ type Server struct {
 }
 
 func New(o Options) *Server {
-	srv := &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
-		verifier: o.Verifier, access: o.Access, keys: o.Keys, tiers: o.Tiers, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
-		fleet: o.Fleet, health: o.Health, material: o.Material, roles: o.RoleProvider, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
-	if srv.quota.Tiers == nil {
-		srv.quota.Tiers = o.Tiers
-	}
-	return srv
+	return &Server{devMode: o.DevMode, version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
+		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
+		fleet: o.Fleet, health: o.Health, material: o.Material, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }
 
 // Router builds the gin engine with all routes.
@@ -157,14 +148,6 @@ func (s *Server) Router() *gin.Engine {
 		g.GET("/servers", s.listServers)
 		g.DELETE("/servers/:name", s.stopServer)
 	}
-
-	admin := v1.Group("", require(access.RoleAdmin))
-	admin.GET("/access-rules", s.listRules)
-	admin.POST("/access-rules", s.createRule)
-	admin.PUT("/access-rules/:id", s.updateRule)
-	admin.DELETE("/access-rules/:id", s.deleteRule)
-	admin.GET("/tiers", s.listTiers)
-	admin.GET("/principals/search", s.searchPrincipals)
 	return r
 }
 

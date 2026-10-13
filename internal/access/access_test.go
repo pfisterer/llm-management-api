@@ -2,34 +2,36 @@ package access
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
-func TestDecide(t *testing.T) {
-	rules := []Rule{
-		{Token: "group:mitarbeitende", Role: RoleUser, Tier: "staff"},
-		{Token: "group:wwi23seb", Role: RoleUser, Tier: "student"},
-		{Token: "group:it", Role: RoleFleetAdmin, Tier: "staff"},
-		{Token: "user:a@dhbw.de", Role: RoleUser, Tier: "special"},
-		{Token: "user:root@dhbw.de", Role: RoleAdmin, Tier: "staff"},
+func TestRoleOf(t *testing.T) {
+	roles, err := NewRoles([]string{"user:Root@DHBW.de", "group:it-leitung"}, []string{"group:it", " "})
+	if err != nil {
+		t.Fatal(err)
 	}
 	cases := []struct {
 		name   string
 		tokens []string
-		want   Decision
+		want   Role
 	}{
-		{"no match", []string{"user:x@dhbw.de", "group:other"}, Decision{}},
-		{"group", []string{"user:x@dhbw.de", "group:wwi23seb"}, Decision{Role: RoleUser, Tier: "student", MatchedToken: "group:wwi23seb"}},
-		{"higher role wins", []string{"group:wwi23seb", "group:it"}, Decision{Role: RoleFleetAdmin, Tier: "staff", MatchedToken: "group:it"}},
-		{"user rule beats group rule of same role", []string{"user:a@dhbw.de", "group:mitarbeitende"}, Decision{Role: RoleUser, Tier: "special", MatchedToken: "user:a@dhbw.de"}},
-		{"ties broken by token, not order", []string{"group:wwi23seb", "group:mitarbeitende"}, Decision{Role: RoleUser, Tier: "staff", MatchedToken: "group:mitarbeitende"}},
-		{"case-insensitive tokens", []string{"USER:Root@DHBW.de"}, Decision{Role: RoleAdmin, Tier: "staff", MatchedToken: "user:root@dhbw.de"}},
+		{"nothing configured for them", []string{"user:x@dhbw.de", "group:other"}, RoleUser},
+		{"no tokens at all", nil, RoleUser},
+		{"admin by user token, case-insensitive", []string{"USER:root@dhbw.de"}, RoleAdmin},
+		{"admin by group token", []string{"user:x@dhbw.de", "group:it-leitung"}, RoleAdmin},
+		{"fleet-admin by group token", []string{"user:x@dhbw.de", "group:it"}, RoleFleetAdmin},
+		{"admin wins over fleet-admin", []string{"group:it", "group:it-leitung"}, RoleAdmin},
 	}
 	for _, c := range cases {
-		if got := Decide(rules, c.tokens); got != c.want {
-			t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+		if got := roles.RoleOf(c.tokens); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+	if _, err := NewRoles([]string{"root@dhbw.de"}, nil); err == nil {
+		t.Error("a token without kind must be refused")
+	}
+	if _, err := NewRoles(nil, []string{"role:x"}); err == nil {
+		t.Error("an unknown kind must be refused")
 	}
 }
 
@@ -48,41 +50,27 @@ func TestNormaliseToken(t *testing.T) {
 }
 
 func TestRoleAtLeast(t *testing.T) {
-	if !RoleAdmin.AtLeast(RoleFleetAdmin) || RoleUser.AtLeast(RoleFleetAdmin) || RoleNone.AtLeast(RoleNone) {
+	if !RoleAdmin.AtLeast(RoleFleetAdmin) || RoleUser.AtLeast(RoleFleetAdmin) || !RoleFleetAdmin.AtLeast(RoleUser) || RoleFleetAdmin.AtLeast(RoleAdmin) {
 		t.Fatal("role ordering broken")
 	}
 }
 
-type fixedTokens []string
+type groupResolver map[string][]string
 
-func (f fixedTokens) UserTokens(context.Context, string) []string { return f }
+func (g groupResolver) UserTokens(_ context.Context, email string) []string {
+	return append([]string{"user:" + email}, g[email]...)
+}
 
-func TestServiceBootstrapAndValidation(t *testing.T) {
-	ctx := context.Background()
-	svc, err := NewService(NewMemoryStore(), fixedTokens{"user:boss@dhbw.de"}, Config{
-		Tiers: []string{"student", "staff"}, BootstrapAdmins: []string{"Boss@dhbw.de"}, BootstrapAdminTier: "staff",
-	})
+// The role comes from the person's groups as the role provider resolves them.
+func TestServiceWho(t *testing.T) {
+	roles, err := NewRoles([]string{"group:root_uni"}, []string{"group:it"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, _, err := svc.Decide(ctx, "boss@dhbw.de")
-	if err != nil || d.Role != RoleAdmin {
-		t.Fatalf("bootstrap admin: %+v %v", d, err)
-	}
-	if _, err := svc.Create(ctx, Rule{Token: "user:boss@dhbw.de", Role: RoleUser, Tier: "staff"}, "x"); !errors.Is(err, ErrBootstrapRule) {
-		t.Fatalf("overriding a bootstrap rule must fail, got %v", err)
-	}
-	if _, err := svc.Create(ctx, Rule{Token: "group:x", Role: RoleUser, Tier: "gold"}, "x"); !errors.Is(err, ErrUnknownTier) {
-		t.Fatalf("unknown tier must fail, got %v", err)
-	}
-	r, err := svc.Create(ctx, Rule{Token: "Group:X", Role: RoleUser, Tier: "student"}, "boss@dhbw.de")
-	if err != nil || r.Token != "group:x" || r.UpdatedBy != "boss@dhbw.de" {
-		t.Fatalf("create: %+v %v", r, err)
-	}
-	if _, err := svc.Create(ctx, Rule{Token: "group:x", Role: RoleAdmin, Tier: "staff"}, "x"); !errors.Is(err, ErrDuplicate) {
-		t.Fatalf("duplicate must fail, got %v", err)
-	}
-	if _, err := NewService(NewMemoryStore(), fixedTokens{}, Config{Tiers: []string{"staff"}, BootstrapAdmins: []string{"a@b.de"}, BootstrapAdminTier: "nope"}); !errors.Is(err, ErrUnknownTier) {
-		t.Fatalf("unknown bootstrap tier must fail, got %v", err)
+	svc := NewService(groupResolver{"boss@dhbw.de": {"group:root_uni"}, "it@dhbw.de": {"group:it"}}, roles, 0)
+	for email, want := range map[string]Role{"boss@dhbw.de": RoleAdmin, "it@dhbw.de": RoleFleetAdmin, "a@dhbw.de": RoleUser} {
+		if p := svc.Who(context.Background(), email); p.Role != want || p.Tokens[0] != "user:"+email {
+			t.Errorf("%s: %+v, want %q", email, p, want)
+		}
 	}
 }

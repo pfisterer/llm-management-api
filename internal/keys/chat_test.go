@@ -20,17 +20,17 @@ func TestEnsureChatKey(t *testing.T) {
 	p := Person{Subject: "abc", Email: "a@dhbw.de"}
 	want := ChatKey("master", p.UserID())
 
-	got, err := svc.EnsureChatKey(ctx, p, grant(student, poolA), "master")
+	got, err := svc.EnsureChatKey(ctx, p, grant(poolA), "master")
 	if err != nil || got != want {
 		t.Fatalf("first: %q %v", got, err)
 	}
 	// Second time: the key exists, nothing new is created.
 	n := len(f.keys)
-	if got, err = svc.EnsureChatKey(ctx, p, grant(student, poolA), "master"); err != nil || got != want || len(f.keys) != n {
+	if got, err = svc.EnsureChatKey(ctx, p, grant(poolA), "master"); err != nil || got != want || len(f.keys) != n {
 		t.Fatalf("second: %q %v keys=%d", got, err, len(f.keys))
 	}
 	// A new master key: new chat key, and the stale one is gone.
-	if _, err = svc.EnsureChatKey(ctx, p, grant(student, poolA), "rotated"); err != nil {
+	if _, err = svc.EnsureChatKey(ctx, p, grant(poolA), "rotated"); err != nil {
 		t.Fatal(err)
 	}
 	chat := 0
@@ -46,17 +46,17 @@ func TestEnsureChatKey(t *testing.T) {
 		t.Fatalf("chat keys: %d", chat)
 	}
 	// The project ended: the chat key moves to the other one.
-	if _, err = svc.EnsureChatKey(ctx, p, grant(student, poolB), "rotated"); err != nil {
+	if _, err = svc.EnsureChatKey(ctx, p, grant(poolB), "rotated"); err != nil {
 		t.Fatal(err)
 	}
 	if k := f.keyBy(ChatKey("rotated", p.UserID())); k["team_id"] != "t-b" {
 		t.Fatalf("chat key in %v, want t-b", k["team_id"])
 	}
-	if _, err := svc.EnsureChatKey(ctx, p, grant(student), "rotated"); !errors.Is(err, ErrNotEligible) {
+	if _, err := svc.EnsureChatKey(ctx, p, grant(), "rotated"); !errors.Is(err, ErrNotEligible) {
 		t.Fatalf("without a pool: %v", err)
 	}
 	// It does not count against the person's own keys.
-	if _, _, err := svc.Create(ctx, p, grant(student, poolA), "vscode", ""); err != nil {
+	if _, _, err := svc.Create(ctx, p, grant(poolA), "vscode", ""); err != nil {
 		t.Fatalf("own key after chat key: %v", err)
 	}
 }

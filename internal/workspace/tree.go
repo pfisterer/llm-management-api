@@ -25,6 +25,11 @@ type TreeProject struct {
 	Budgets     []TreeBudget   `json:"budgets"`
 	GPUsByClass map[string]int `json:"gpus_by_class"`
 	LLMMTokens  int            `json:"llm_mtokens"`
+	// LLMRPM and LLMTPM are the project's requests and tokens per minute, for all its members together; 0 = not set (the configured default then).
+	LLMRPM int `json:"llm_rpm" example:"120"`
+	LLMTPM int `json:"llm_tpm" example:"400000"`
+	// LLMModels are model groups the project was granted on top of the base models every project has.
+	LLMModels []string `json:"llm_models" example:"code,all-proxy-models"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -124,6 +129,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	}
 	p.Name, p.Members, p.EndsAt = tp.Name, slices.Clone(tp.Members), tp.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = classes, maps.Clone(tp.GPUsByClass), tp.LLMMTokens
+	p.LLMRPM, p.LLMTPM, p.LLMModels = tp.LLMRPM, tp.LLMTPM, cleanModels(tp.LLMModels)
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
@@ -218,10 +224,23 @@ func (s *Service) llmUsed(ctx context.Context, list []Project) (map[string]float
 	return used, true
 }
 
-// keepTreeFields puts back what the tree owns into a project a person changed: members, end, the tree's budgets, GPUs per class, LLM tokens, name and the node.
+// cleanModels trims, drops empty entries, sorts and de-duplicates model names.
+func cleanModels(in []string) []string {
+	out := []string{}
+	for _, m := range in {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, m)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// keepTreeFields puts back what the tree owns into a project a person changed: members, end, the tree's budgets, GPUs per class, the LLM tokens, rate limits and models, name and the node.
 func keepTreeFields(p *Project, cur Project) {
 	p.TreeNode, p.Name, p.Members, p.EndsAt = cur.TreeNode, cur.Name, cur.Members, cur.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = cur.GPUClasses, cur.GPUsByClass, cur.LLMMTokens
+	p.LLMRPM, p.LLMTPM, p.LLMModels = cur.LLMRPM, cur.LLMTPM, cur.LLMModels
 	own := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range cur.Budgets {
 		if b.Tree {
@@ -249,11 +268,14 @@ func withinTree(p Project) error {
 // LLMWindow is the window of a project's LLM tokens; its pool (a LiteLLM team) resets after it.
 const LLMWindow = "30d"
 
-// LLMPool is a project's pool of LLM tokens, shared by its members: the tokens per 30 days it has now, 0 once it ended.
+// LLMPool is a project's pool of LLM tokens, shared by its members: the tokens per 30 days it has now, 0 once it ended, and the project's own rate limits (0 = not set) and extra models, as the tree sent them.
 type LLMPool struct {
 	Slug    string
 	Name    string
 	MTokens int
+	RPM     int
+	TPM     int
+	Models  []string
 }
 
 func (s *Service) poolOf(p Project) LLMPool {
@@ -261,7 +283,7 @@ func (s *Service) poolOf(p Project) LLMPool {
 	if n < 0 || !p.Active(s.now()) {
 		n = 0
 	}
-	return LLMPool{Slug: p.Slug, Name: p.Name, MTokens: n}
+	return LLMPool{Slug: p.Slug, Name: p.Name, MTokens: n, RPM: p.LLMRPM, TPM: p.LLMTPM, Models: slices.Clone(p.LLMModels)}
 }
 
 // LLMPools lists the pool of every project, with 0 tokens for those that ended or have none: what the LiteLLM teams are kept in step with.

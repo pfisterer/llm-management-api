@@ -1,10 +1,9 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,17 +11,6 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/envconf"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
 )
-
-// Tier is one quota class. Only the name matters to the access list; the
-// budget fields are what API keys are created with.
-type Tier struct {
-	Name              string   `json:"name"`
-	KeyBudget         float64  `json:"keyBudget"`
-	KeyBudgetDuration string   `json:"keyBudgetDuration"`
-	RPM               int      `json:"rpm"`
-	TPM               int      `json:"tpm"`
-	Models            []string `json:"models"`
-}
 
 type Config struct {
 	DevMode bool
@@ -40,10 +28,10 @@ type Config struct {
 	DBType             string // memory | postgres
 	DBConnectionString string
 
-	Tiers              []Tier
-	BootstrapAdmins    []string
-	BootstrapAdminTier string
-	TokenCacheTTL      time.Duration
+	// Role-provider tokens (user:<email>, group:<id>) whose holders are admins (who are fleet-admins too) and fleet-admins; everybody else is a plain user.
+	AdminTokens      []string
+	FleetAdminTokens []string
+	TokenCacheTTL    time.Duration
 
 	ChatURL string
 	// Public OpenAI-compatible base URL (…/v1), shown to users.
@@ -73,10 +61,16 @@ type Config struct {
 	GPUHubToken string
 	// Workspaces (docs/bauplan.md, Stufe 4): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
 	WorkspacesJSON string
-	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off), the tier that gives rate limits, models and the short-term key budget to people whose access rule names none or who have no rule (the LLM tokens always come from the tree's projects, one pool per project), and where people get a project.
+	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off) and where people get a project. The LLM tokens, rate limits and extra models come from the tree's projects, one pool (a LiteLLM team) per project.
 	TreeToken      string
-	LLMDefaultTier string
 	SelfServiceURL string
+	// Requests and tokens per minute of a project for which the tree sets none, and the model groups every project may use.
+	LLMDefaultRPM int
+	LLMDefaultTPM int
+	LLMBaseModels []string
+	// Every key's short-term safety budget: this share of its project's budget per window.
+	LLMKeyBudgetShare  float64
+	LLMKeyBudgetWindow string
 	// How often LiteLLM's teams (one per project), quotas and keys are brought in step with the tree (besides right after each change from the tree).
 	BudgetSyncInterval time.Duration
 }
@@ -101,8 +95,8 @@ func LoadConfig() (Config, error) {
 		RoleProviderTimeout: time.Duration(envconf.Int("ROLE_PROVIDER_TIMEOUT_SECONDS", 5)) * time.Second,
 		DBType:              strings.ToLower(envconf.String("DB_TYPE", "memory")),
 		DBConnectionString:  envconf.String("DB_CONNECTION_STRING", ""),
-		BootstrapAdmins:     envconf.StringSlice("BOOTSTRAP_ADMINS", nil, strings.ToLower),
-		BootstrapAdminTier:  envconf.String("BOOTSTRAP_ADMIN_TIER", ""),
+		AdminTokens:         envconf.StringSlice("ADMIN_TOKENS", nil, strings.ToLower),
+		FleetAdminTokens:    envconf.StringSlice("FLEET_ADMIN_TOKENS", nil, strings.ToLower),
 		TokenCacheTTL:       time.Duration(envconf.Int("TOKEN_CACHE_SECONDS", 60)) * time.Second,
 		ChatURL:             envconf.String("CHAT_URL", ""),
 		APIURL:              envconf.String("API_URL", ""),
@@ -148,14 +142,17 @@ func LoadConfig() (Config, error) {
 	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
-	cfg.LLMDefaultTier = envconf.String("LLM_DEFAULT_TIER", "")
+	cfg.LLMDefaultRPM = envconf.Int("LLM_DEFAULT_RPM", 60)
+	cfg.LLMDefaultTPM = envconf.Int("LLM_DEFAULT_TPM", 200000)
+	cfg.LLMBaseModels = envconf.StringSlice("LLM_BASE_MODELS", []string{"chat-default", "chat-fast", "embedding"})
+	cfg.LLMKeyBudgetWindow = envconf.String("LLM_KEY_BUDGET_WINDOW", "4h")
+	share, err := strconv.ParseFloat(envconf.String("LLM_KEY_BUDGET_SHARE", "0.05"), 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("LLM_KEY_BUDGET_SHARE is not a number: %w", err)
+	}
+	cfg.LLMKeyBudgetShare = share
 	cfg.SelfServiceURL = envconf.String("SELF_SERVICE_URL", "")
 	cfg.BudgetSyncInterval = time.Duration(envconf.Int("BUDGET_SYNC_SECONDS", 600)) * time.Second
-	if raw := envconf.String("TIERS", ""); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &cfg.Tiers); err != nil {
-			return Config{}, fmt.Errorf("TIERS is not valid JSON: %w", err)
-		}
-	}
 	return cfg, cfg.validate()
 }
 
@@ -184,25 +181,17 @@ func (c Config) validate() error {
 	if c.LiteLLMURL == "" || c.LiteLLMMasterKey == "" {
 		missing = append(missing, "LITELLM_URL/LITELLM_MASTER_KEY")
 	}
-	if len(c.Tiers) == 0 {
-		missing = append(missing, "TIERS")
-	}
-	if c.LLMDefaultTier == "" {
-		missing = append(missing, "LLM_DEFAULT_TIER")
+	if c.LLMKeyBudgetWindow == "" {
+		missing = append(missing, "LLM_KEY_BUDGET_WINDOW")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing configuration: %s", strings.Join(missing, ", "))
 	}
-	if !slices.Contains(c.TierNames(), c.LLMDefaultTier) {
-		return fmt.Errorf("LLM_DEFAULT_TIER %q is not one of TIERS", c.LLMDefaultTier)
+	if c.LLMKeyBudgetShare <= 0 || c.LLMKeyBudgetShare > 1 {
+		return fmt.Errorf("LLM_KEY_BUDGET_SHARE must be more than 0 and at most 1 (got %v)", c.LLMKeyBudgetShare)
+	}
+	if c.LLMDefaultRPM < 0 || c.LLMDefaultTPM < 0 {
+		return fmt.Errorf("LLM_DEFAULT_RPM and LLM_DEFAULT_TPM must not be negative")
 	}
 	return c.GPU.Validate()
-}
-
-func (c Config) TierNames() []string {
-	out := make([]string, 0, len(c.Tiers))
-	for _, t := range c.Tiers {
-		out = append(out, t.Name)
-	}
-	return out
 }

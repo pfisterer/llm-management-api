@@ -2,12 +2,13 @@ package webserver
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
@@ -20,15 +21,12 @@ func TestBudgetSyncPass(t *testing.T) {
 	f.users["kc-member"] = map[string]any{"user_id": "kc-member", "user_email": "member@dhbw.de", "max_budget": 8.0, "budget_duration": "30d"}
 	f.users["kc-gone"] = map[string]any{"user_id": "kc-gone", "user_email": "gone@dhbw.de", "max_budget": 0.0, "budget_duration": "30d"}
 	f.users["service"] = map[string]any{"user_id": "service", "max_budget": 5.0}
-	f.keys["old"] = map[string]any{"token": "old", "user_id": "kc-member"}                     // from before the pools
+	f.keys["old"] = map[string]any{"token": "old", "user_id": "kc-member", "rpm_limit": 60.0}  // from before the pools, with a limit of its own
 	f.keys["stale"] = map[string]any{"token": "stale", "user_id": "kc-gone", "team_id": "t-x"} // in a project that is gone
 	f.keys["svc"] = map[string]any{"token": "svc", "user_id": "service"}
 	f.teams["t-x"] = map[string]any{"team_id": "t-x", "team_alias": "Alt", "max_budget": 3.0, "budget_duration": "30d", "spend": 1.0, "metadata": map[string]any{"source": "llm-management-api"}}
 
-	acc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{Tiers: []string{"student"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	acc := accessFor(t, &roleprovider.Mock{}, nil, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{Profiles: []workspace.Profile{{Slug: "cpu", Name: "CPU"}}},
 		func(context.Context) ([]workspace.Running, error) { return nil, nil })
 	ctx := context.Background()
@@ -41,17 +39,16 @@ func TestBudgetSyncPass(t *testing.T) {
 	}
 	f.teams["t-2"] = map[string]any{"team_id": "t-2", "team_alias": "Vorbei", "max_budget": 5.0, "budget_duration": "30d", "spend": 4.0, "metadata": map[string]any{"source": "llm-management-api"}}
 	client := litellm.New(srv.URL, "master", 5*time.Second)
-	tiers := map[string]keys.Tier{"student": {Name: "student", RPM: 60}}
-	b := NewBudgetSync(BudgetSync{Lite: client, Keys: keys.NewService(client, 5), Access: acc, Interval: time.Hour, Log: zap.NewNop().Sugar(),
-		Quota: LLMQuota{Tiers: tiers, DefaultTier: "student", Projects: ws}})
+	b := NewBudgetSync(BudgetSync{Lite: client, Keys: keys.NewService(client, 5, keys.KeyBudget{Share: 0.05, Window: "4h"}), Access: acc, Interval: time.Hour, Log: zap.NewNop().Sugar(),
+		Quota: LLMQuota{DefaultRPM: 60, DefaultTPM: 200000, BaseModels: []string{"chat-default"}, Projects: ws}})
 
-	// Teams: t-1 new, t-2 and t-x to 0. Quotas: both people (rpm). Keys: both get the tier's key quota, old moved, stale detached.
+	// Teams: t-1 new, t-2 and t-x to 0 (t-2 also gets its limits). Quotas: the member's budget back to 0. Keys: old moved and given its budget (its own limit cleared), stale detached and given a budget of 0.
 	n, err := b.Pass(ctx)
-	if err != nil || n != 9 {
+	if err != nil || n != 8 {
 		t.Fatalf("pass: %d %v", n, err)
 	}
-	if got := f.teams["t-1"]["max_budget"]; got != 30*keys.DollarsPerMTokens {
-		t.Fatalf("project team budget: %v", got)
+	if tm := f.teams["t-1"]; tm["max_budget"] != 30*keys.DollarsPerMTokens || tm["rpm_limit"] != 60.0 || tm["tpm_limit"] != 200000.0 || fmt.Sprint(tm["models"]) != "[chat-default]" {
+		t.Fatalf("project team: %v", tm)
 	}
 	if f.teams["t-2"]["max_budget"] != 0.0 || f.teams["t-x"]["max_budget"] != 0.0 || f.teams["t-2"]["spend"] != 4.0 {
 		t.Fatalf("ended/gone teams: %v %v", f.teams["t-2"], f.teams["t-x"])
@@ -65,8 +62,8 @@ func TestBudgetSyncPass(t *testing.T) {
 	if f.keys["stale"]["team_id"] != nil {
 		t.Fatalf("key of somebody without project still in %v", f.keys["stale"]["team_id"])
 	}
-	if f.keys["old"]["rpm_limit"] != 60.0 {
-		t.Fatalf("key without the tier's limits: %v", f.keys["old"])
+	if old := f.keys["old"]; old["rpm_limit"] != nil || math.Abs(old["max_budget"].(float64)-3*0.05) > 1e-9 || old["budget_duration"] != "4h" {
+		t.Fatalf("key not given its pool's budget: %v", old)
 	}
 	if f.users["service"]["max_budget"] != 5.0 || f.keys["svc"]["team_id"] != nil {
 		t.Fatalf("service user touched: %v %v", f.users["service"], f.keys["svc"])

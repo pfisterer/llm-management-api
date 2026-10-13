@@ -149,7 +149,7 @@ func (s *Service) validate(p *Project) error {
 		}
 	}
 	l := p.Limits
-	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || p.LLMMTokens < 0 {
+	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || p.LLMMTokens < 0 || p.LLMRPM < 0 || p.LLMTPM < 0 {
 		return refuse("Grenzen dürfen nicht negativ sein.")
 	}
 	for c, n := range p.GPUsByClass {

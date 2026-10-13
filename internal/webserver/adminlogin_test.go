@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"go.uber.org/zap"
 )
@@ -20,12 +19,7 @@ func TestAdminLogin(t *testing.T) {
 		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 	}))
 	defer lite.Close()
-	svc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{
-		Tiers: []string{"staff"}, BootstrapAdmins: []string{"admin@dhbw.de"}, BootstrapAdminTier: "staff",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := accessFor(t, &roleprovider.Mock{Memberships: map[string][]string{"it@dhbw.de": {"group:it"}}}, []string{"user:admin@dhbw.de"}, []string{"group:it"})
 	h := AdminLoginRouter(AdminLoginOptions{Access: svc, LiteLLMURL: lite.URL, Username: "u", Password: "p", Log: zap.NewNop().Sugar()})
 	get := func(path, email string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", path, nil)
@@ -43,7 +37,7 @@ func TestAdminLogin(t *testing.T) {
 	if c := rec.Result().Cookies(); len(c) != 1 || c[0].Value != "jwt-123" {
 		t.Fatalf("cookie: %v", c)
 	}
-	for _, email := range []string{"", "other@dhbw.de"} {
+	for _, email := range []string{"", "other@dhbw.de", "it@dhbw.de"} {
 		if rec := get("/", email); rec.Code != 403 {
 			t.Errorf("%q: %d", email, rec.Code)
 		}

@@ -3,13 +3,13 @@ package webserver
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
@@ -31,21 +31,15 @@ func TestChatExchange(t *testing.T) {
 	}))
 	defer gateway.Close()
 
-	roles := &roleprovider.Mock{}
-	svc, err := access.NewService(access.NewMemoryStore(), roles, access.Config{
-		Tiers: []string{"staff"}, BootstrapAdmins: []string{"admin@dhbw.de"}, BootstrapAdminTier: "staff",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := accessFor(t, &roleprovider.Mock{Memberships: map[string][]string{"g@dhbw.de": {"group:kurs"}}}, []string{"user:admin@dhbw.de"}, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
-	if _, err := ws.UpsertFromTree(context.Background(), "p_1", workspace.TreeProject{Name: "A", Members: []workspace.Member{{Token: "user:admin@dhbw.de"}, {Token: "user:member@dhbw.de"}}, LLMMTokens: 40}); err != nil {
+	if _, err := ws.UpsertFromTree(context.Background(), "p_1", workspace.TreeProject{Name: "A", Members: []workspace.Member{{Token: "user:admin@dhbw.de"}, {Token: "user:member@dhbw.de"}, {Token: "group:kurs"}}, LLMMTokens: 40, LLMRPM: 30}); err != nil {
 		t.Fatal(err)
 	}
+	f, srv := newFakeLite(t)
 	h := ChatRouter(ChatOptions{
-		Access: svc, Keys: keys.NewService(litellm.New(fakeBackend(t).URL, "master", 5*time.Second), 5),
-		Tiers:   map[string]keys.Tier{"staff": {Name: "staff", KeyBudget: 2}},
-		Quota:   LLMQuota{DefaultTier: "staff", Projects: ws},
+		Access: svc, Keys: keys.NewService(litellm.New(srv.URL, "master", 5*time.Second), 5, keys.KeyBudget{Share: 0.05, Window: "4h"}),
+		Quota:   LLMQuota{DefaultRPM: 60, DefaultTPM: 200000, BaseModels: []string{"chat-default"}, Projects: ws},
 		Gateway: gateway.URL, MasterKey: "master", Log: zap.NewNop().Sugar(),
 	})
 	post := func(sub, email, body string) (int, string) {
@@ -64,9 +58,15 @@ func TestChatExchange(t *testing.T) {
 	if code, body := post("sub-x", "other@dhbw.de", plain); code != 403 || !strings.Contains(body, "Kein Projekt mit LLM-Tokens") {
 		t.Errorf("no project: %d %s", code, body)
 	}
-	// No access rule needed: the project's tokens are enough.
+	// The project's tokens are enough, also through a group; the chat key is in the project's team (with its limits) and has the project's key budget.
 	if code, body := post("sub-m", "member@dhbw.de", plain); code != 200 {
-		t.Errorf("member without rule: %d %s", code, body)
+		t.Errorf("member: %d %s", code, body)
+	}
+	if code, body := post("sub-g", "g@dhbw.de", plain); code != 200 {
+		t.Errorf("member through a group: %d %s", code, body)
+	}
+	if k := f.keyBy(keys.ChatKey("master", "kc-sub-m")); k == nil || math.Abs(k["max_budget"].(float64)-0.2) > 1e-9 || k["rpm_limit"] != nil || k["team_id"] != "t-1" || f.teams["t-1"]["rpm_limit"] != 30.0 {
+		t.Errorf("chat key: %v", k)
 	}
 	if code, body := post("sub-a", "admin@dhbw.de", plain); code != 200 || !strings.Contains(body, "data:") {
 		t.Fatalf("admin: %d %s", code, body)

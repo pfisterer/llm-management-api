@@ -44,7 +44,7 @@ func (s *Server) listTreeProjects(c *gin.Context) {
 //
 //	@ID				putTreeProject
 //	@Summary		Create or update a project of the budget tree
-//	@Description	Sets what the tree owns of the node's project — name, members, end, the project's budgets per window, GPUs per class, LLM tokens — and creates the project when there is none. What its managers set (shares per person, shorter windows, profiles, images) stays.
+//	@Description	Sets what the tree owns of the node's project — name, members, end, the project's budgets per window, GPUs per class, LLM tokens, rate limits and models — and creates the project when there is none. What its managers set (shares per person, shorter windows, profiles, images) stays.
 //	@Tags			tree
 //	@Accept			json
 //	@Produce		json
@@ -94,23 +94,36 @@ func (s *Server) deleteTreeProject(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// getTreeCatalog godoc
-//
-//	@ID				getTreeCatalog
-//	@Summary		GPU classes and profiles, for the budget tree
-//	@Description	What the tree can grant here: the GPU classes, and the profiles that use them.
-//	@Tags			tree
-//	@Produce		json
-//	@Security		BearerAuth
-//	@Success		200	{object}	workspace.Config
-//	@Failure		401	{object}	ErrorResponse
-//	@Router			/v1/tree/catalog [get]
-//
-// treeChanged tells whoever listens (the budget sync) that members or LLM tokens may have changed.
+// treeChanged tells whoever listens (the budget sync) that members or LLM tokens, limits or models may have changed.
 func (s *Server) treeChanged() {
 	if s.onTree != nil {
 		s.onTree()
 	}
 }
 
-func (s *Server) getTreeCatalog(c *gin.Context) { c.JSON(http.StatusOK, s.ws.Catalog()) }
+// TreeCatalog is what the tree can grant here: the GPU classes and the profiles that use them, and for the LLM the base models every project has (llm_models adds to them) and the requests and tokens per minute of a project for which the tree sets none (0 = no limit).
+type TreeCatalog struct {
+	workspace.Config
+	LLMBaseModels []string `json:"llm_base_models" example:"chat-default,chat-fast,embedding"`
+	LLMDefaultRPM int      `json:"llm_default_rpm" example:"60"`
+	LLMDefaultTPM int      `json:"llm_default_tpm" example:"200000"`
+}
+
+// getTreeCatalog godoc
+//
+//	@ID				getTreeCatalog
+//	@Summary		GPU classes, profiles and LLM defaults, for the budget tree
+//	@Description	What the tree can grant here: the GPU classes, the profiles that use them, the LLM base models and the default requests and tokens per minute of a project.
+//	@Tags			tree
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Success		200	{object}	TreeCatalog
+//	@Failure		401	{object}	ErrorResponse
+//	@Router			/v1/tree/catalog [get]
+func (s *Server) getTreeCatalog(c *gin.Context) {
+	base := s.quota.BaseModels
+	if base == nil {
+		base = []string{}
+	}
+	c.JSON(http.StatusOK, TreeCatalog{Config: s.ws.Catalog(), LLMBaseModels: base, LLMDefaultRPM: s.quota.DefaultRPM, LLMDefaultTPM: s.quota.DefaultTPM})
+}

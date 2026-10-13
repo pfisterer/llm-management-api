@@ -17,11 +17,10 @@ type Identity struct {
 	Subject string
 }
 
-// Caller is the identity plus the access decision.
+// Caller is the identity plus their role and role-provider tokens.
 type Caller struct {
 	Identity
-	Decision access.Decision
-	Tokens   []string
+	access.Person
 }
 
 const callerKey = "llm.caller"
@@ -60,20 +59,13 @@ func (s *Server) authenticate(c *gin.Context) (Identity, bool) {
 	return Identity{Email: email, Subject: claims.Subject}, true
 }
 
-// withCaller authenticates and resolves the access decision. It does NOT
-// require any role: /me must answer people without access too.
+// withCaller authenticates and resolves the caller's tokens and role. It does NOT require any role beyond being signed in: /me must answer people without projects too.
 func (s *Server) withCaller(c *gin.Context) {
 	id, ok := s.authenticate(c)
 	if !ok {
 		return
 	}
-	decision, tokens, err := s.access.Decide(c.Request.Context(), id.Email)
-	if err != nil {
-		s.log.Errorw("access decision failed", "email", id.Email, "error", err)
-		abort(c, http.StatusInternalServerError, "internal", "Zugriff konnte nicht geprüft werden.")
-		return
-	}
-	c.Set(callerKey, Caller{Identity: id, Decision: decision, Tokens: tokens})
+	c.Set(callerKey, Caller{Identity: id, Person: s.access.Who(c.Request.Context(), id.Email)})
 	c.Next()
 }
 
@@ -81,7 +73,7 @@ func (s *Server) withCaller(c *gin.Context) {
 // what a role may not use; this is what actually enforces it.
 func require(min access.Role) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !caller(c).Decision.Role.AtLeast(min) {
+		if !caller(c).Role.AtLeast(min) {
 			abort(c, http.StatusForbidden, "forbidden", "Keine Berechtigung für diese Funktion.")
 			return
 		}

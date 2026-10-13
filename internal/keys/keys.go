@@ -3,7 +3,7 @@
 // LLM tokens belong to projects, not to people: every project with tokens is one pool, a LiteLLM team (team id = the project's slug) whose budget all its members share. Every key is in the pool of one project the person may draw from; the person's own LiteLLM budget is 0, so a key outside every pool cannot spend anything. Who may draw from which pool is decided here (project membership, including groups), not by LiteLLM's team members.
 //
 // Carried over from the Node key broker, including the lessons learned there:
-//   - A person's quota in LiteLLM is the tier's (rate limits, models, budget 0), the teams' budgets are the projects': kept in step on every request and by SyncQuota/SyncTeams/SyncKeys, so a change made in the LiteLLM admin UI does not last — limits are set in the tiers and the tree. Spend is never touched.
+//   - Limits are the project's, set on its team: the budget (its LLM tokens), requests and tokens per minute and the models, all from the tree (with defaults from the configuration). Keys carry only a short-term safety budget, a share of their pool's budget per window, and no rate limits or models of their own; the person's own LiteLLM budget is 0 and their user-level limits never stop a key below its project's (see userQuota). All kept in step on every request and by SyncQuota/SyncTeams/SyncKeys, so a change made in the LiteLLM admin UI does not last. Spend is never touched.
 //   - Key aliases are unique across ALL users in LiteLLM, so every alias gets a
 //     short, stable tag of its owner ("laptop@3f9a12c4"); it is shown without.
 //   - The chat key ("librechat@…") is created by the chat exchange, not by the
@@ -25,35 +25,27 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 )
 
-// Tier is the quota class a person's access rule assigns: rate limits, models and the short-term budget per key. The monthly budget is not the tier's but the pools' (Pool).
-type Tier struct {
-	Name              string
-	KeyBudget         float64
-	KeyBudgetDuration string
-	RPM               int
-	TPM               int
-	Models            []string
-}
-
 // DollarsPerMTokens is what a million tokens cost in LiteLLM's budgets here: every model is priced at 1e-7 per token, so a budget in "dollars" is a token budget.
 const DollarsPerMTokens = 0.1
 
 // PoolWindow is the window of a pool's budget; the team's spend resets after it.
 const PoolWindow = "30d"
 
-// Pool is a project's LLM tokens, shared by all its members: a LiteLLM team whose id is the project's slug.
+// Pool is a project's LLM tokens, shared by all its members: a LiteLLM team whose id is the project's slug, with the project's limits for all its members together — requests and tokens per minute (0 = no limit) and the models it may use (sorted; none = every model).
 type Pool struct {
 	Slug    string
 	Name    string
 	MTokens int // per PoolWindow; 0 = the project ended or has no tokens
+	RPM     int
+	TPM     int
+	Models  []string
 }
 
 // Budget is the pool's team budget in LiteLLM's dollars.
 func (p Pool) Budget() float64 { return float64(p.MTokens) * DollarsPerMTokens }
 
-// Grant is what a person may use of the LLM: the tier's limits and the pools they may draw from, sorted (see workspace.LLMPoolsFor); empty pools = no LLM.
+// Grant is what a person may use of the LLM: the pools they may draw from, sorted (see workspace.LLMPoolsFor); empty = no LLM.
 type Grant struct {
-	Tier  Tier
 	Pools []Pool
 }
 
@@ -135,76 +127,106 @@ type KeyView struct {
 	ResetAt        *string  `json:"reset_at"`
 }
 
-// ProjectUsage is one pool the person may draw from, as LiteLLM's team reports it: Spend and Budget in LiteLLM's dollars (DollarsPerMTokens), shared by all members of the project.
+// ProjectUsage is one pool the person may draw from, as LiteLLM's team reports it: Spend and Budget in LiteLLM's dollars (DollarsPerMTokens), shared by all members of the project. RPM, TPM and Models are the project's limits for all its members together (RPM and TPM 0 = no limit, no models = every model); KeyBudget is the short-term budget of each key in the project per KeyBudgetDuration, in LiteLLM's dollars.
 type ProjectUsage struct {
-	Slug           string  `json:"slug" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
-	Name           string  `json:"name" example:"Machine Learning WWI23SEB"`
-	MTokens        int     `json:"mtokens" example:"100"`
-	Spend          float64 `json:"spend" example:"1.25"`
-	Budget         float64 `json:"budget" example:"10"`
-	BudgetDuration string  `json:"budget_duration" example:"30d"`
-	ResetAt        *string `json:"reset_at"`
-	Default        bool    `json:"default"`
+	Slug              string   `json:"slug" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
+	Name              string   `json:"name" example:"Machine Learning WWI23SEB"`
+	MTokens           int      `json:"mtokens" example:"100"`
+	Spend             float64  `json:"spend" example:"1.25"`
+	Budget            float64  `json:"budget" example:"10"`
+	BudgetDuration    string   `json:"budget_duration" example:"30d"`
+	ResetAt           *string  `json:"reset_at"`
+	Default           bool     `json:"default"`
+	RPM               int      `json:"rpm" example:"60"`
+	TPM               int      `json:"tpm" example:"200000"`
+	Models            []string `json:"models" example:"chat-default,chat-fast,embedding"`
+	KeyBudget         float64  `json:"key_budget" example:"0.5"`
+	KeyBudgetDuration string   `json:"key_budget_duration" example:"4h"`
 }
 
-// Usage is the person's quota state: the pools they draw from, the tier's limits and their keys.
+// Usage is the person's quota state: the pools they draw from with their limits, and their keys.
 type Usage struct {
 	Projects []ProjectUsage `json:"projects"`
-	RPM      *int           `json:"rpm"`
-	TPM      *int           `json:"tpm"`
-	Models   []string       `json:"models"`
 	Keys     []KeyView      `json:"keys"`
 	MaxKeys  int            `json:"max_keys"`
 	OwnKeys  int            `json:"own_keys"`
+}
+
+// KeyBudget is every key's short-term safety budget: Share of its pool's budget per Window (e.g. 0.05 per "4h"), so one leaked or runaway key cannot empty the project's pool at once.
+type KeyBudget struct {
+	Share  float64
+	Window string
 }
 
 // Service implements the key operations on top of LiteLLM.
 type Service struct {
 	lite    *litellm.Client
 	maxKeys int
+	keyBud  KeyBudget
 }
 
-func NewService(lite *litellm.Client, maxKeys int) *Service {
-	return &Service{lite: lite, maxKeys: maxKeys}
+func NewService(lite *litellm.Client, maxKeys int, kb KeyBudget) *Service {
+	return &Service{lite: lite, maxKeys: maxKeys, keyBud: kb}
 }
 
-// userQuota is the tier's with a budget of 0: a person's own LiteLLM budget is always 0, so a key outside every pool (a personal key) cannot spend anything; keys in a pool spend the pool's team budget (LiteLLM needs general_settings.skip_user_budget_on_team_key for that, or the user's 0 would stop them too).
-func (t Tier) userQuota() litellm.Quota {
-	return litellm.Quota{MaxBudget: 0, BudgetDuration: PoolWindow, TPMLimit: t.TPM, RPMLimit: t.RPM, Models: t.Models}
+// keyBudget is the short-term budget of a key in the pool; a key outside every pool (zero Pool) gets 0, its user's budget of 0 stops it anyway.
+func (s *Service) keyBudget(p Pool) litellm.Budget {
+	return litellm.Budget{MaxBudget: p.Budget() * s.keyBud.Share, BudgetDuration: s.keyBud.Window}
 }
 
-func (t Tier) keyQuota() litellm.Quota {
-	return litellm.Quota{MaxBudget: t.KeyBudget, BudgetDuration: t.KeyBudgetDuration, TPMLimit: t.TPM, RPMLimit: t.RPM, Models: t.Models}
+// userQuota is the person's own quota in LiteLLM. Its budget is always 0, so a key outside every pool (a personal key) cannot spend anything; keys in a pool spend the pool's team budget (LiteLLM needs general_settings.skip_user_budget_on_team_key for that, or the user's 0 would stop them too). The limits that count are the teams'; LiteLLM applies a user's own rpm_limit and tpm_limit to all their requests on top, and its /user/update cannot clear them (null and empty values are dropped). So a user limit is never written for a new user, and an existing one (from before, or set in the admin UI) is raised to the sum of the person's pools' limits, which their use across all pools can never exceed: then it never stops a key below its project's limits. The user's models only matter for personal keys, which cannot spend, so they are left alone.
+func (g Grant) userQuota(info *litellm.UserInfo) litellm.UserQuota {
+	q := litellm.UserQuota{Budget: litellm.Budget{MaxBudget: 0, BudgetDuration: PoolWindow}}
+	if info == nil {
+		return q
+	}
+	rpm, tpm := 0, 0
+	for _, p := range g.Pools {
+		rpm, tpm = rpm+p.RPM, tpm+p.TPM
+	}
+	if info.RPMLimit != nil && *info.RPMLimit < rpm {
+		q.RPMLimit = rpm
+	}
+	if info.TPMLimit != nil && *info.TPMLimit < tpm {
+		q.TPMLimit = tpm
+	}
+	return q
 }
 
-// reconcile creates the LiteLLM user or brings their quota to the tier — the
-// latter only when the tier changed or no budget is set yet.
-func (s *Service) reconcile(ctx context.Context, p Person, tier Tier) (litellm.UserInfo, []litellm.Key, error) {
+// userMeta is the user's metadata as this service writes it, without the "tier" that person-level access rules once put there.
+func userMeta(info litellm.UserInfo) map[string]any {
+	meta := map[string]any{}
+	maps.Copy(meta, info.Metadata)
+	delete(meta, "tier")
+	meta["source"] = "llm-management-api"
+	return meta
+}
+
+// reconcile creates the LiteLLM user or brings their quota in step with the grant (userQuota) — the latter only when it differs.
+func (s *Service) reconcile(ctx context.Context, p Person, g Grant) (litellm.UserInfo, []litellm.Key, error) {
 	uid := p.UserID()
 	info, keys, found, err := s.lite.GetUser(ctx, uid)
 	if err != nil {
 		return litellm.UserInfo{}, nil, err
 	}
+	want := g.userQuota(nil)
 	if !found {
-		meta := map[string]any{"tier": tier.Name, "source": "llm-management-api"}
-		if err := s.lite.NewUser(ctx, uid, p.Email, tier.userQuota(), meta); err != nil {
+		meta := map[string]any{"source": "llm-management-api"}
+		if err := s.lite.NewUser(ctx, uid, p.Email, want, meta); err != nil {
 			return litellm.UserInfo{}, nil, err
 		}
 		info, keys, _, err = s.lite.GetUser(ctx, uid)
 		return info, keys, err
 	}
-	meta := map[string]any{}
-	maps.Copy(meta, info.Metadata)
-	previous, _ := meta["tier"].(string)
-	changed := previous != tier.Name || quotaDiffers(info, tier)
-	meta["tier"], meta["source"] = tier.Name, "llm-management-api"
+	want = g.userQuota(&info)
+	changed := quotaDiffers(info, want)
 	if !changed && strings.EqualFold(info.Email, p.Email) {
 		return info, keys, nil // nothing to write
 	}
-	var q *litellm.Quota
+	meta := userMeta(info)
+	var q *litellm.UserQuota
 	if changed {
-		uq := tier.userQuota()
-		q = &uq
+		q = &want
 	}
 	if err := s.lite.UpdateUser(ctx, uid, p.Email, q, meta); err != nil {
 		return litellm.UserInfo{}, nil, err
@@ -216,44 +238,31 @@ func (s *Service) reconcile(ctx context.Context, p Person, tier Tier) (litellm.U
 	return info, keys, err
 }
 
-// quotaDiffers: the user's quota in LiteLLM is not the tier's (with a budget of 0): budget, its window, rate limits or models.
-func quotaDiffers(info litellm.UserInfo, t Tier) bool {
-	q := t.userQuota()
+// quotaDiffers: the user's quota in LiteLLM is not q (see userQuota): budget, its window, or a rate limit to raise.
+func quotaDiffers(info litellm.UserInfo, q litellm.UserQuota) bool {
 	if info.MaxBudget == nil || math.Abs(*info.MaxBudget-q.MaxBudget) > 1e-9 {
 		return true
 	}
 	if info.BudgetDuration == nil || *info.BudgetDuration != q.BudgetDuration {
 		return true
 	}
-	if t.RPM > 0 && (info.RPMLimit == nil || *info.RPMLimit != t.RPM) {
-		return true
-	}
-	if t.TPM > 0 && (info.TPMLimit == nil || *info.TPMLimit != t.TPM) {
-		return true
-	}
-	return len(t.Models) > 0 && !slices.Equal(info.Models, t.Models)
+	return q.RPMLimit > 0 || q.TPMLimit > 0
 }
 
-// keyQuotaDiffers: the key's quota is not the tier's (short-term budget, its window, rate limits, models); window tells whether the window itself differs.
-func keyQuotaDiffers(k litellm.Key, t Tier) (differs, window bool) {
-	window = t.KeyBudgetDuration != "" && (k.BudgetDuration == nil || *k.BudgetDuration != t.KeyBudgetDuration)
-	differs = window || k.MaxBudget == nil || math.Abs(*k.MaxBudget-t.KeyBudget) > 1e-9 ||
-		(t.RPM > 0 && (k.RPMLimit == nil || *k.RPMLimit != t.RPM)) ||
-		(t.TPM > 0 && (k.TPMLimit == nil || *k.TPMLimit != t.TPM)) ||
-		(len(t.Models) > 0 && !slices.Equal(k.Models, t.Models))
+// keyDiffers: the key is not as it should be — another short-term budget or window, or rate limits or models of its own; window tells whether the window itself differs.
+func keyDiffers(k litellm.Key, b litellm.Budget) (differs, window bool) {
+	window = b.BudgetDuration != "" && (k.BudgetDuration == nil || *k.BudgetDuration != b.BudgetDuration)
+	differs = window || k.MaxBudget == nil || math.Abs(*k.MaxBudget-b.MaxBudget) > 1e-9 || k.RPMLimit != nil || k.TPMLimit != nil || len(k.Models) > 0
 	return differs, window
 }
 
-// SyncQuota brings a LiteLLM user's quota in step with the tier (budget 0, see userQuota), so a new tier applies without the person asking for anything and a change made in LiteLLM's UI does not last. Reports whether it wrote.
-func (s *Service) SyncQuota(ctx context.Context, info litellm.UserInfo, tier Tier) (bool, error) {
-	if !quotaDiffers(info, tier) {
+// SyncQuota brings a LiteLLM user's quota in step with the grant (budget 0, see userQuota), so a change made in LiteLLM's UI does not last. Reports whether it wrote.
+func (s *Service) SyncQuota(ctx context.Context, info litellm.UserInfo, g Grant) (bool, error) {
+	q := g.userQuota(&info)
+	if !quotaDiffers(info, q) {
 		return false, nil
 	}
-	q := tier.userQuota()
-	meta := map[string]any{}
-	maps.Copy(meta, info.Metadata)
-	meta["tier"], meta["source"] = tier.Name, "llm-management-api"
-	return true, s.lite.UpdateUser(ctx, info.UserID, info.Email, &q, meta)
+	return true, s.lite.UpdateUser(ctx, info.UserID, info.Email, &q, userMeta(info))
 }
 
 func view(keys []litellm.Key, pools []Pool) ([]KeyView, int) {
@@ -280,16 +289,21 @@ func view(keys []litellm.Key, pools []Pool) ([]KeyView, int) {
 	return out, own
 }
 
-// Usage returns the pools, limits and keys.
+// Usage returns the pools with their limits, and the keys.
 func (s *Service) Usage(ctx context.Context, p Person, g Grant) (Usage, error) {
-	info, keys, err := s.reconcile(ctx, p, g.Tier)
+	info, keys, err := s.reconcile(ctx, p, g)
 	if err != nil {
 		return Usage{}, err
 	}
 	def, _ := g.defaultPool(info)
 	projects := make([]ProjectUsage, 0, len(g.Pools))
 	for _, pool := range g.Pools {
-		pu := ProjectUsage{Slug: pool.Slug, Name: pool.Name, MTokens: pool.MTokens, Budget: pool.Budget(), BudgetDuration: PoolWindow, Default: pool.Slug == def.Slug}
+		kb := s.keyBudget(pool)
+		pu := ProjectUsage{Slug: pool.Slug, Name: pool.Name, MTokens: pool.MTokens, Budget: pool.Budget(), BudgetDuration: PoolWindow, Default: pool.Slug == def.Slug,
+			RPM: pool.RPM, TPM: pool.TPM, Models: slices.Clone(pool.Models), KeyBudget: kb.MaxBudget, KeyBudgetDuration: kb.BudgetDuration}
+		if pu.Models == nil {
+			pu.Models = []string{}
+		}
 		team, found, err := s.lite.GetTeam(ctx, pool.Slug)
 		if err != nil {
 			return Usage{}, err
@@ -306,7 +320,7 @@ func (s *Service) Usage(ctx context.Context, p Person, g Grant) (Usage, error) {
 		projects = append(projects, pu)
 	}
 	kv, own := view(keys, g.Pools)
-	return Usage{Projects: projects, RPM: info.RPMLimit, TPM: info.TPMLimit, Models: info.Models, Keys: kv, MaxKeys: s.maxKeys, OwnKeys: own}, nil
+	return Usage{Projects: projects, Keys: kv, MaxKeys: s.maxKeys, OwnKeys: own}, nil
 }
 
 // poolFor is the pool a key goes to: the named project when the person may draw from it, the default project when none is named.
@@ -323,7 +337,7 @@ func (g Grant) poolFor(info litellm.UserInfo, slug string) (Pool, error) {
 	return Pool{}, ErrNotEligible
 }
 
-// Create makes a new key in a project's pool (the default project's when project is empty) and returns its secret (shown exactly once) and the key.
+// Create makes a new key in a project's pool (the default project's when project is empty), with its short-term budget, and returns its secret (shown exactly once) and the key.
 func (s *Service) Create(ctx context.Context, p Person, g Grant, name, project string) (string, KeyView, error) {
 	name = strings.TrimSpace(name)
 	if len([]rune(name)) > 40 {
@@ -333,7 +347,7 @@ func (s *Service) Create(ctx context.Context, p Person, g Grant, name, project s
 	if safe == "" || !regexp.MustCompile(`[A-Za-z0-9]`).MatchString(safe) {
 		return "", KeyView{}, ErrNameRequired
 	}
-	info, keys, err := s.reconcile(ctx, p, g.Tier)
+	info, keys, err := s.reconcile(ctx, p, g)
 	if err != nil {
 		return "", KeyView{}, err
 	}
@@ -354,8 +368,7 @@ func (s *Service) Create(ctx context.Context, p Person, g Grant, name, project s
 		return "", KeyView{}, err
 	}
 	alias := ownAlias(p.UserID(), safe)
-	secret, err := s.lite.GenerateKey(ctx, p.UserID(), pool.Slug, alias, g.Tier.keyQuota(),
-		map[string]any{"created_by": "llm-management-api", "tier": g.Tier.Name})
+	secret, err := s.lite.GenerateKey(ctx, p.UserID(), pool.Slug, alias, s.keyBudget(pool), map[string]any{"created_by": "llm-management-api"})
 	if litellm.IsStatus(err, 400) && strings.Contains(err.Error(), "already exists") {
 		return "", KeyView{}, ErrDuplicate
 	}
@@ -365,13 +378,13 @@ func (s *Service) Create(ctx context.Context, p Person, g Grant, name, project s
 	return secret, KeyView{Name: safe, Project: pool.Slug, ProjectName: pool.Name}, nil
 }
 
-// SetDefaultProject stores the project whose pool the person's chat and new keys use by default, and moves the chat key there right away.
+// SetDefaultProject stores the project whose pool the person's chat and new keys use by default, and moves the chat key there right away, with that project's key budget.
 func (s *Service) SetDefaultProject(ctx context.Context, p Person, g Grant, project string) (Pool, error) {
 	pool, ok := g.pool(strings.TrimSpace(project))
 	if !ok {
 		return Pool{}, ErrNotEligible
 	}
-	info, keys, err := s.reconcile(ctx, p, g.Tier)
+	info, keys, err := s.reconcile(ctx, p, g)
 	if err != nil {
 		return Pool{}, err
 	}
@@ -388,6 +401,9 @@ func (s *Service) SetDefaultProject(ctx context.Context, p Person, g Grant, proj
 			if err := s.moveKey(ctx, p.UserID(), k.Token, pool); err != nil {
 				return Pool{}, err
 			}
+			if _, err := s.applyKeyBudget(ctx, k, pool); err != nil {
+				return Pool{}, err
+			}
 		}
 	}
 	return pool, nil
@@ -395,8 +411,21 @@ func (s *Service) SetDefaultProject(ctx context.Context, p Person, g Grant, proj
 
 // teamSpec is the team a pool should be.
 func teamSpec(p Pool) litellm.TeamSpec {
-	return litellm.TeamSpec{TeamID: p.Slug, Alias: p.Name, MaxBudget: p.Budget(), BudgetDuration: PoolWindow,
+	return litellm.TeamSpec{TeamID: p.Slug, Alias: p.Name, MaxBudget: p.Budget(), BudgetDuration: PoolWindow, RPMLimit: p.RPM, TPMLimit: p.TPM, Models: p.Models,
 		Metadata: map[string]any{"source": "llm-management-api", "project": p.Slug}}
+}
+
+// limitsEqual: the team's rate limits and models are the pool's (models compared as sets).
+func limitsEqual(t litellm.Team, p Pool) bool {
+	eq := func(have *int, want int) bool {
+		if want <= 0 {
+			return have == nil
+		}
+		return have != nil && *have == want
+	}
+	have := slices.Sorted(slices.Values(t.Models))
+	want := slices.Sorted(slices.Values(p.Models))
+	return eq(t.RPMLimit, p.RPM) && eq(t.TPMLimit, p.TPM) && slices.Equal(slices.Compact(have), slices.Compact(want))
 }
 
 // syncTeam brings an existing team in step with the pool; reports whether it wrote. The window is sent only when it differs, as LiteLLM restarts it with every write.
@@ -407,7 +436,7 @@ func (s *Service) syncTeam(ctx context.Context, t litellm.Team, p Pool) (bool, e
 		alias = *t.Alias
 	}
 	durationOK := t.BudgetDuration != nil && *t.BudgetDuration == want.BudgetDuration
-	if alias == want.Alias && durationOK && t.MaxBudget != nil && math.Abs(*t.MaxBudget-want.MaxBudget) < 1e-9 {
+	if alias == want.Alias && durationOK && t.MaxBudget != nil && math.Abs(*t.MaxBudget-want.MaxBudget) < 1e-9 && limitsEqual(t, p) {
 		return false, nil
 	}
 	if durationOK {
@@ -436,7 +465,7 @@ func (s *Service) ensureTeam(ctx context.Context, p Pool) (litellm.Team, error) 
 	return t, err
 }
 
-// SyncTeams keeps a team per pool: created for a pool with tokens, its budget and name kept in step; a pool without tokens (ended) keeps its team with a budget of 0, and so does a team of this service whose project is gone. Teams are never deleted, so their spend stays. Returns how many teams were written.
+// SyncTeams keeps a team per pool: created for a pool with tokens, its budget, limits, models and name kept in step; a pool without tokens (ended) keeps its team with a budget of 0, and so does a team of this service whose project is gone (its limits and models stay as they are). Teams are never deleted, so their spend stays. Returns how many teams were written.
 func (s *Service) SyncTeams(ctx context.Context, pools []Pool) (int, error) {
 	teams, err := s.lite.ListTeams(ctx)
 	if err != nil {
@@ -474,7 +503,14 @@ func (s *Service) SyncTeams(ctx context.Context, pools []Pool) (int, error) {
 		if t.Alias != nil {
 			alias = *t.Alias
 		}
-		wrote, err := s.syncTeam(ctx, t, Pool{Slug: t.TeamID, Name: alias})
+		gone := Pool{Slug: t.TeamID, Name: alias, Models: t.Models}
+		if t.RPMLimit != nil {
+			gone.RPM = *t.RPMLimit
+		}
+		if t.TPMLimit != nil {
+			gone.TPM = *t.TPMLimit
+		}
+		wrote, err := s.syncTeam(ctx, t, gone)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("team %s: %w", t.TeamID, err))
 		} else if wrote {
@@ -529,39 +565,52 @@ func (s *Service) moveKey(ctx context.Context, userID, token string, p Pool) err
 	return s.lite.SetKeyTeam(ctx, token, p.Slug)
 }
 
-// SyncKeys keeps the keys of a LiteLLM user in their pools: a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the tier's short-term budget, rate limits and models. Returns how many writes it made.
+// applyKeyBudget gives a key its pool's short-term budget and clears rate limits and models of its own, when it is not like that already; reports whether it wrote.
+func (s *Service) applyKeyBudget(ctx context.Context, k litellm.Key, p Pool) (bool, error) {
+	b := s.keyBudget(p)
+	differs, window := keyDiffers(k, b)
+	if !differs {
+		return false, nil
+	}
+	return true, s.lite.SetKeyBudget(ctx, k.Token, b, window)
+}
+
+// SyncKeys keeps the keys of a LiteLLM user in their pools: a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the short-term budget of its pool — of the pool it is in or is moved to; a key left outside every pool gets 0 — and clears rate limits and models of the key's own (from before, or set in LiteLLM's UI), so only the team's apply. Returns how many writes it made (a move and its budget count as one each).
 func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) (int, error) {
 	_, keys, found, err := s.lite.GetUser(ctx, info.UserID)
 	if err != nil || !found {
 		return 0, err
 	}
 	def, hasPool := g.defaultPool(info)
-	moved := 0
+	writes := 0
 	for _, k := range keys {
-		// Every key carries the tier's short-term budget, rate limits and models, also one made before the tier changed or one LiteLLM made on its own (without them its short-term budget had no cap).
-		if differs, window := keyQuotaDiffers(k, g.Tier); differs {
-			if err := s.lite.SetKeyQuota(ctx, k.Token, g.Tier.keyQuota(), window); err != nil {
-				return moved, err
-			}
-			moved++
-		}
-		if _, ok := g.pool(k.Team()); ok {
-			continue
-		}
+		pool, inPool := g.pool(k.Team())
 		switch {
-		case hasPool:
-			err = s.moveKey(ctx, info.UserID, k.Token, def)
-		case k.Team() != "":
-			err = s.lite.SetKeyTeam(ctx, k.Token, "")
-		default:
-			continue // already outside every team
+		case !inPool && hasPool:
+			pool, inPool = def, true
+			if err := s.moveKey(ctx, info.UserID, k.Token, def); err != nil {
+				return writes, err
+			}
+			writes++
+		case !inPool && k.Team() != "":
+			if err := s.lite.SetKeyTeam(ctx, k.Token, ""); err != nil {
+				return writes, err
+			}
+			writes++
 		}
+		if !inPool {
+			pool = Pool{}
+		}
+		// Every key carries its pool's short-term budget, also one made before or one LiteLLM made on its own (without it its short-term budget had no cap).
+		wrote, err := s.applyKeyBudget(ctx, k, pool)
 		if err != nil {
-			return moved, err
+			return writes, err
 		}
-		moved++
+		if wrote {
+			writes++
+		}
 	}
-	return moved, nil
+	return writes, nil
 }
 
 // Delete removes one of the person's keys; another person's id is "not found".

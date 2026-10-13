@@ -68,15 +68,10 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			abort(c, http.StatusBadRequest, "invalid", "user fehlt.")
 			return
 		}
-		d, tokens, err := o.Access.Decide(c.Request.Context(), email)
-		if err != nil {
-			o.Log.Errorw("gpu hub access decision failed", "email", email, "error", err)
-			abort(c, http.StatusInternalServerError, "internal", "Zugriff konnte nicht geprüft werden.")
-			return
-		}
-		resp := GPUHubAccessResponse{Admin: d.Role.AtLeast(access.RoleAdmin), Projects: []HubProject{}}
+		who := o.Access.Who(c.Request.Context(), email)
+		resp := GPUHubAccessResponse{Admin: who.Role.AtLeast(access.RoleAdmin), Projects: []HubProject{}}
 		if o.Workspaces != nil {
-			mine, err := o.Workspaces.ForPerson(c.Request.Context(), tokens, "", false)
+			mine, err := o.Workspaces.ForPerson(c.Request.Context(), who.Tokens, "", false)
 			if err != nil {
 				o.Log.Errorw("gpu hub projects failed", "email", email, "error", err)
 				abort(c, http.StatusInternalServerError, "internal", "Projekte konnten nicht gelesen werden.")
@@ -105,10 +100,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			req.Person = strings.ToLower(strings.TrimSpace(req.Person))
-			_, tokens, err := o.Access.Decide(c.Request.Context(), req.Person)
-			if err == nil {
-				err = o.Workspaces.CheckStart(c.Request.Context(), tokens, req)
-			}
+			err := o.Workspaces.CheckStart(c.Request.Context(), o.Access.Who(c.Request.Context(), req.Person).Tokens, req)
 			var refusal *workspace.Refusal
 			switch {
 			case err == nil:

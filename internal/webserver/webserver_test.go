@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
@@ -20,18 +24,37 @@ import (
 	"go.uber.org/zap"
 )
 
+// accessFor resolves tokens through roles and makes the holders of adminTokens admins and of fleetAdminTokens fleet-admins.
+func accessFor(t *testing.T, roles roleprovider.Provider, adminTokens, fleetAdminTokens []string) *access.Service {
+	t.Helper()
+	r, err := access.NewRoles(adminTokens, fleetAdminTokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return access.NewService(roles, r, 0)
+}
+
+var testQuota = LLMQuota{DefaultRPM: 60, DefaultTPM: 200000, BaseModels: []string{"chat-default", "chat-fast", "embedding"}}
+
+func testKeys(url string) *keys.Service {
+	return keys.NewService(litellm.New(url, "master", 5*time.Second), 5, keys.KeyBudget{Share: 0.05, Window: "4h"})
+}
+
+// newTestServer has admin@dhbw.de and the group it-leitung as admins, the group it as fleet-admins, and no projects.
 func newTestServer(t *testing.T, devMode bool) http.Handler {
 	t.Helper()
 	roles := &roleprovider.Mock{Memberships: map[string][]string{
 		"student@dhbw.de": {"group:wwi23seb"},
+		"it@dhbw.de":      {"group:it"},
+		"chef@dhbw.de":    {"group:it", "group:it-leitung"},
 	}}
-	svc, err := access.NewService(access.NewMemoryStore(), roles, access.Config{
-		Tiers: []string{"student", "staff"}, BootstrapAdmins: []string{"admin@dhbw.de"}, BootstrapAdminTier: "staff",
-	})
+	svc := accessFor(t, roles, []string{"user:admin@dhbw.de", "group:it-leitung"}, []string{"group:it"})
+	fc, wg, err := fleet.ParseConfig(`{"enabled":true,"enrollToken":"e","adminToken":"a"}`, `{"hubPublicKey":"HUB="}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(Options{DevMode: devMode, Access: svc, RoleProvider: roles, Log: zap.NewNop().Sugar(), ChatURL: "https://chat"}).Router()
+	return New(Options{DevMode: devMode, Access: svc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat", AdminUIURL: "https://admin/autologin",
+		Fleet: fleet.NewService(fc, wg, fleet.NewMemoryStore(), fleet.NewScripts(t.TempDir())), Quota: testQuota}).Router()
 }
 
 func do(t *testing.T, h http.Handler, method, path, user string, body any) (int, []byte) {
@@ -65,67 +88,33 @@ func TestUnauthenticated(t *testing.T) {
 	}
 }
 
+// The role comes from the configured tokens, through the person's groups too; everybody else is a user, and the access rules are gone.
 func TestMeAndRoles(t *testing.T) {
 	h := newTestServer(t, true)
-
-	code, body := do(t, h, "GET", "/v1/me", "nobody@dhbw.de", nil)
-	var me MeResponse
-	_ = json.Unmarshal(body, &me)
-	if code != 200 || me.Role != access.RoleNone || me.ChatURL != "" {
-		t.Fatalf("no access: %d %s", code, body)
+	for email, want := range map[string]access.Role{"nobody@dhbw.de": access.RoleUser, "student@dhbw.de": access.RoleUser, "it@dhbw.de": access.RoleFleetAdmin,
+		"chef@dhbw.de": access.RoleAdmin, "Admin@dhbw.de": access.RoleAdmin} {
+		var me MeResponse
+		code, body := do(t, h, "GET", "/v1/me", email, nil)
+		if _ = json.Unmarshal(body, &me); code != 200 || me.Role != want || me.LLMMTokens != 0 || me.ChatURL != "" || (me.AdminUIURL != "") != (want == access.RoleAdmin) {
+			t.Errorf("%s: %d %s, want role %s", email, code, body, want)
+		}
+		if strings.Contains(string(body), "tier") || strings.Contains(string(body), "matched_token") {
+			t.Errorf("%s: gone fields in %s", email, body)
+		}
 	}
-
-	// The admin grants the student's course access.
-	code, body = do(t, h, "POST", "/v1/access-rules", "admin@dhbw.de",
-		RuleRequest{Token: "group:WWI23SEB", Role: access.RoleUser, Tier: "student"})
-	if code != http.StatusCreated {
-		t.Fatalf("create rule: %d %s", code, body)
+	// The fleet needs fleet-admin (the readme is missing here, so passing the check answers 404), deleting its package admin.
+	for email, want := range map[string]int{"student@dhbw.de": 403, "it@dhbw.de": 404, "chef@dhbw.de": 404} {
+		if code, body := do(t, h, "GET", "/v1/fleet/readme", email, nil); code != want {
+			t.Errorf("fleet readme for %s: %d %s, want %d", email, code, body, want)
+		}
 	}
-	var created access.Rule
-	_ = json.Unmarshal(body, &created)
-
-	// The rule gives the role; the LLM needs tokens from a project, which this server has none of.
-	code, body = do(t, h, "GET", "/v1/me", "student@dhbw.de", nil)
-	_ = json.Unmarshal(body, &me)
-	if code != 200 || me.Role != access.RoleUser || me.MatchedToken != "group:wwi23seb" || me.LLMMTokens != 0 || me.Tier != "" || me.ChatURL != "" {
-		t.Fatalf("student after rule: %d %s", code, body)
+	if code, _ := do(t, h, "DELETE", "/v1/fleet/package", "it@dhbw.de", nil); code != http.StatusForbidden {
+		t.Errorf("fleet-admin deleting the package: %d", code)
 	}
-
-	// A user may not touch the access list.
-	if code, _ := do(t, h, "GET", "/v1/access-rules", "student@dhbw.de", nil); code != http.StatusForbidden {
-		t.Fatalf("user listing rules: want 403, got %d", code)
-	}
-	if code, _ := do(t, h, "DELETE", "/v1/access-rules/1", "student@dhbw.de", nil); code != http.StatusForbidden {
-		t.Fatalf("user deleting rule: want 403, got %d", code)
-	}
-
-	// Validation and conflicts.
-	if code, _ := do(t, h, "POST", "/v1/access-rules", "admin@dhbw.de", RuleRequest{Token: "group:x", Role: "boss", Tier: "staff"}); code != http.StatusBadRequest {
-		t.Fatalf("unknown role: want 400, got %d", code)
-	}
-	if code, _ := do(t, h, "POST", "/v1/access-rules", "admin@dhbw.de", RuleRequest{Token: "group:wwi23seb", Role: access.RoleUser, Tier: "staff"}); code != http.StatusConflict {
-		t.Fatalf("duplicate: want 409, got %d", code)
-	}
-	if code, _ := do(t, h, "POST", "/v1/access-rules", "admin@dhbw.de", RuleRequest{Token: "user:admin@dhbw.de", Role: access.RoleUser, Tier: "staff"}); code != http.StatusConflict {
-		t.Fatalf("overriding bootstrap admin: want 409, got %d", code)
-	}
-
-	// List shows the bootstrap admin first, then the stored rule.
-	code, body = do(t, h, "GET", "/v1/access-rules", "admin@dhbw.de", nil)
-	var rules []access.Rule
-	_ = json.Unmarshal(body, &rules)
-	if code != 200 || len(rules) != 2 || !rules[0].Bootstrap || rules[1].Token != "group:wwi23seb" {
-		t.Fatalf("list: %d %s", code, body)
-	}
-
-	// Removing the rule removes the access.
-	if code, _ := do(t, h, "DELETE", "/v1/access-rules/1", "admin@dhbw.de", nil); code != http.StatusNoContent {
-		t.Fatalf("delete: want 204, got %d", code)
-	}
-	_, body = do(t, h, "GET", "/v1/me", "student@dhbw.de", nil)
-	_ = json.Unmarshal(body, &me)
-	if me.Role != access.RoleNone {
-		t.Fatalf("access should be gone, got %s", body)
+	for _, path := range []string{"/v1/access-rules", "/v1/principals/search", "/v1/tiers"} {
+		if code, _ := do(t, h, "GET", path, "admin@dhbw.de", nil); code != http.StatusNotFound {
+			t.Errorf("%s: %d, want 404", path, code)
+		}
 	}
 }
 
@@ -138,49 +127,10 @@ func TestPublicEndpoints(t *testing.T) {
 	}
 }
 
-func TestPrincipalSearch(t *testing.T) {
-	roles := &roleprovider.Mock{
-		Groups: []roleprovider.Group{{Token: "group:wwi23seb", Description: "Kurs WWI23SEB"}, {Token: "group:it", Label: "IT-Service"}},
-		Users:  []string{"student@dhbw.de", "dozent@dhbw.de"},
-	}
-	svc, err := access.NewService(access.NewMemoryStore(), roles, access.Config{
-		Tiers: []string{"staff"}, BootstrapAdmins: []string{"admin@dhbw.de"}, BootstrapAdminTier: "staff",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := New(Options{DevMode: true, Access: svc, RoleProvider: roles, Log: zap.NewNop().Sugar()}).Router()
-
-	var got PrincipalSearchResponse
-	code, body := do(t, h, "GET", "/v1/principals/search?q=kurs", "admin@dhbw.de", nil)
-	_ = json.Unmarshal(body, &got)
-	if code != 200 || len(got.Groups) != 1 || got.Groups[0].Description != "Kurs WWI23SEB" || len(got.Users) != 0 {
-		t.Fatalf("description match: %d %s", code, body)
-	}
-	code, body = do(t, h, "GET", "/v1/principals/search?q=student", "admin@dhbw.de", nil)
-	_ = json.Unmarshal(body, &got)
-	if code != 200 || len(got.Users) != 1 || got.Users[0] != "student@dhbw.de" {
-		t.Fatalf("user match: %d %s", code, body)
-	}
-	// Without a query: groups yes, people never.
-	code, body = do(t, h, "GET", "/v1/principals/search", "admin@dhbw.de", nil)
-	_ = json.Unmarshal(body, &got)
-	if code != 200 || len(got.Groups) != 2 || len(got.Users) != 0 {
-		t.Fatalf("empty query: %d %s", code, body)
-	}
-	if code, _ := do(t, h, "GET", "/v1/principals/search?q=x", "student@dhbw.de", nil); code != 403 {
-		t.Fatalf("non-admin: %d", code)
-	}
-}
-
-// llmServer has a bootstrap admin (root), a project with LLM tokens and a GPU for member@dhbw.de, and nobody@dhbw.de without either; no access rule besides root's.
+// llmServer has an admin (root, through the group root_uni), a project with LLM tokens and a GPU for member@dhbw.de, and nobody@dhbw.de without either.
 func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler) {
 	t.Helper()
-	acc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{
-		Tiers: []string{"student", "staff"}, BootstrapAdmins: []string{"root@dhbw.de"}, BootstrapAdminTier: "staff"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	acc := accessFor(t, &roleprovider.Mock{Memberships: map[string][]string{"root@dhbw.de": {"group:root_uni"}}}, []string{"group:root_uni"}, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{
 		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "pytorch", Name: "PyTorch", GPUClass: "l4-3q"}},
 		GPUClasses: []string{"l4-3q"},
@@ -193,20 +143,20 @@ func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tiers := map[string]keys.Tier{"student": {Name: "student", KeyBudget: 1}, "staff": {Name: "staff", KeyBudget: 2}}
-	h := New(Options{DevMode: true, Access: acc, RoleProvider: &roleprovider.Mock{}, Log: zap.NewNop().Sugar(), ChatURL: "https://chat",
-		Keys: keys.NewService(litellm.New(fakeBackend(t).URL, "master", 5*time.Second), 5), Tiers: tiers,
-		Quota: LLMQuota{DefaultTier: "student", Projects: ws, SelfServiceURL: "https://self-service"}, GPU: g, Workspaces: ws}).Router()
+	quota := testQuota
+	quota.Projects, quota.SelfServiceURL = ws, "https://self-service"
+	h := New(Options{DevMode: true, Access: acc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat",
+		Keys: testKeys(fakeBackend(t).URL), Quota: quota, GPU: g, Workspaces: ws}).Router()
 	return acc, ws, h
 }
 
-// No access rule needed for the LLM: the tokens of a project are enough; without them there is none.
-func TestLLMWithoutRule(t *testing.T) {
+// The tokens of a project are the LLM; without them there is none, also for an admin.
+func TestLLMFromProjects(t *testing.T) {
 	_, _, h := llmServer(t)
 	var me MeResponse
 	code, body := do(t, h, "GET", "/v1/me", "member@dhbw.de", nil)
 	_ = json.Unmarshal(body, &me)
-	if code != 200 || me.Role != access.RoleNone || me.LLMMTokens != 80 || me.Tier != "student" || me.ChatURL != "https://chat" || me.WorkspaceProjects != 1 || me.JupyterURL == "" {
+	if code != 200 || me.Role != access.RoleUser || me.LLMMTokens != 80 || me.ChatURL != "https://chat" || me.WorkspaceProjects != 1 || me.JupyterURL == "" {
 		t.Fatalf("member: %d %s", code, body)
 	}
 	if code, body := do(t, h, "GET", "/v1/usage", "member@dhbw.de", nil); code != 200 {
@@ -215,7 +165,7 @@ func TestLLMWithoutRule(t *testing.T) {
 	me = MeResponse{}
 	code, body = do(t, h, "GET", "/v1/me", "nobody@dhbw.de", nil)
 	_ = json.Unmarshal(body, &me)
-	if code != 200 || me.LLMMTokens != 0 || me.Tier != "" || me.ChatURL != "" || me.JupyterURL != "" {
+	if code != 200 || me.LLMMTokens != 0 || me.ChatURL != "" || me.JupyterURL != "" {
 		t.Fatalf("nobody: %d %s", code, body)
 	}
 	for _, path := range []string{"/v1/usage", "/v1/keys"} {
@@ -223,7 +173,7 @@ func TestLLMWithoutRule(t *testing.T) {
 			t.Errorf("%s without tokens: %d %s", path, code, body)
 		}
 	}
-	// An admin's rule gives no LLM either.
+	// Being admin gives no LLM either.
 	if code, _ := do(t, h, "GET", "/v1/usage", "root@dhbw.de", nil); code != http.StatusForbidden {
 		t.Errorf("admin without tokens: %d", code)
 	}
@@ -265,17 +215,14 @@ func TestGPUHubAccess(t *testing.T) {
 	}
 }
 
-// Keys go into a project's pool: the named one if the caller may draw from it, the default project otherwise; the default can be set to an eligible project only, and the usage shows the pools.
+// Keys go into a project's pool: the named one if the caller may draw from it, the default project otherwise; the default can be set to an eligible project only, and the usage shows the pools with their limits.
 func TestKeysWithProjects(t *testing.T) {
 	ctx := context.Background()
-	acc, err := access.NewService(access.NewMemoryStore(), &roleprovider.Mock{}, access.Config{Tiers: []string{"student"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	acc := accessFor(t, &roleprovider.Mock{}, nil, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
 	for node, tp := range map[string]workspace.TreeProject{
 		"p_1": {Name: "Kurs A", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 80},
-		"p_2": {Name: "Kurs B", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 20},
+		"p_2": {Name: "Kurs B", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 20, LLMRPM: 300, LLMModels: []string{"code"}},
 		"p_3": {Name: "Fremd", Members: []workspace.Member{{Token: "user:other@dhbw.de"}}, LLMMTokens: 50},
 	} {
 		if _, err := ws.UpsertFromTree(ctx, node, tp); err != nil {
@@ -283,9 +230,9 @@ func TestKeysWithProjects(t *testing.T) {
 		}
 	}
 	f, srv := newFakeLite(t)
-	h := New(Options{DevMode: true, Access: acc, RoleProvider: &roleprovider.Mock{}, Log: zap.NewNop().Sugar(),
-		Keys: keys.NewService(litellm.New(srv.URL, "master", 5*time.Second), 5), Tiers: map[string]keys.Tier{"student": {Name: "student", KeyBudget: 1}},
-		Quota: LLMQuota{DefaultTier: "student", Projects: ws}, Workspaces: ws}).Router()
+	quota := testQuota
+	quota.Projects = ws
+	h := New(Options{DevMode: true, Access: acc, Log: zap.NewNop().Sugar(), Keys: testKeys(srv.URL), Quota: quota, Workspaces: ws}).Router()
 
 	var created CreateKeyResponse
 	code, body := do(t, h, "POST", "/v1/keys", "member@dhbw.de", CreateKeyRequest{Name: "laptop"})
@@ -303,6 +250,22 @@ func TestKeysWithProjects(t *testing.T) {
 	}
 	if f.teams["t-1"]["max_budget"] != 8.0 || f.teams["t-2"]["max_budget"] != 2.0 {
 		t.Errorf("teams: %v %v", f.teams["t-1"], f.teams["t-2"])
+	}
+	// The teams carry the limits: A the defaults, B its own RPM and its extra model.
+	if a, b := f.teams["t-1"], f.teams["t-2"]; a["rpm_limit"] != 60.0 || a["tpm_limit"] != 200000.0 || fmt.Sprint(a["models"]) != "[chat-default chat-fast embedding]" ||
+		b["rpm_limit"] != 300.0 || fmt.Sprint(b["models"]) != "[chat-default chat-fast code embedding]" {
+		t.Errorf("team limits: %v %v", a, b)
+	}
+	// Each key has only a share of its pool's budget.
+	for _, k := range f.keys {
+		want := map[any]float64{"t-1": 0.4, "t-2": 0.1}[k["team_id"]]
+		if mb, _ := k["max_budget"].(float64); math.Abs(mb-want) > 1e-9 || k["rpm_limit"] != nil || k["models"] != nil {
+			t.Errorf("key %v in %v: %v, want budget %v", k["key_alias"], k["team_id"], k, want)
+		}
+	}
+	// The person has a budget of 0 and no limits of their own.
+	if u := f.users["kc-dev-member@dhbw.de"]; u["rpm_limit"] != nil || u["tpm_limit"] != nil || u["models"] != nil || u["max_budget"] != 0.0 {
+		t.Errorf("user quota: %v", u)
 	}
 
 	if code, body := do(t, h, "PUT", "/v1/keys/default-project", "member@dhbw.de", DefaultProjectRequest{Project: "t-3"}); code != http.StatusForbidden {
@@ -325,6 +288,20 @@ func TestKeysWithProjects(t *testing.T) {
 	code, body = do(t, h, "GET", "/v1/usage", "member@dhbw.de", nil)
 	if _ = json.Unmarshal(body, &u); code != http.StatusOK || len(u.Projects) != 2 || u.Projects[0].Slug != "t-1" || u.Projects[0].Default || !u.Projects[1].Default || u.Projects[1].Budget != 2 || len(u.Keys) != 3 {
 		t.Fatalf("usage: %d %s", code, body)
+	}
+	if a, b := u.Projects[0], u.Projects[1]; a.RPM != 60 || a.TPM != 200000 || !slices.Equal(a.Models, []string{"chat-default", "chat-fast", "embedding"}) || math.Abs(a.KeyBudget-0.4) > 1e-9 || a.KeyBudgetDuration != "4h" ||
+		b.RPM != 300 || b.TPM != 200000 || !slices.Equal(b.Models, []string{"chat-default", "chat-fast", "code", "embedding"}) {
+		t.Errorf("limits in the usage: %+v", u.Projects)
+	}
+	if strings.Contains(string(body), "tier") {
+		t.Errorf("tier in the usage: %s", body)
+	}
+	var raw map[string]any
+	_ = json.Unmarshal(body, &raw)
+	for _, gone := range []string{"rpm", "tpm", "models"} {
+		if _, ok := raw[gone]; ok {
+			t.Errorf("person-level %s still in the usage: %s", gone, body)
+		}
 	}
 	if !strings.Contains(string(body), `"project_name":"Kurs B"`) {
 		t.Errorf("usage JSON: %s", body)

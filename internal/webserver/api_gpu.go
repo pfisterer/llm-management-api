@@ -14,7 +14,7 @@ import (
 
 // requireWorkspace aborts unless the caller may use workspaces: a member of an active project, or an admin (who manages the projects).
 func (s *Server) requireWorkspace(c *gin.Context) {
-	if !caller(c).Decision.Role.AtLeast(access.RoleAdmin) && len(s.myProjects(c)) == 0 {
+	if !caller(c).Role.AtLeast(access.RoleAdmin) && len(s.myProjects(c)) == 0 {
 		abort(c, http.StatusForbidden, "forbidden", "Kein Zugang zu Workspaces (kein Projekt).")
 		return
 	}
@@ -75,7 +75,7 @@ func (s *Server) environment(c *gin.Context) (gpu.Environment, bool) {
 		return gpu.Environment{}, false
 	}
 	cl := caller(c)
-	e, err := s.gpu.Get(c.Request.Context(), uint(id), cl.Email, cl.Decision.Role.AtLeast(access.RoleAdmin))
+	e, err := s.gpu.Get(c.Request.Context(), uint(id), cl.Email, cl.Role.AtLeast(access.RoleAdmin))
 	if err != nil {
 		s.gpuError(c, "get environment", err)
 		return gpu.Environment{}, false

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -185,20 +187,18 @@ func (f *fakeLiteLLM) team(id string) string {
 	return t
 }
 
-var student = Tier{Name: "student", KeyBudget: 0.5, KeyBudgetDuration: "4h", RPM: 60, TPM: 1000, Models: []string{"chat-default"}}
-var staff = Tier{Name: "staff", KeyBudget: 2, KeyBudgetDuration: "4h", RPM: 120, TPM: 4000, Models: []string{"code"}}
+// Pools as the webserver makes them: the project's limits with defaults filled in, base models plus its own.
+var poolA = Pool{Slug: "t-a", Name: "Kurs A", MTokens: 100, RPM: 60, TPM: 200000, Models: []string{"chat-default", "chat-fast", "embedding"}}
+var poolB = Pool{Slug: "t-b", Name: "Kurs B", MTokens: 20, RPM: 120, TPM: 400000, Models: []string{"chat-default", "chat-fast", "code", "embedding"}}
 
-var poolA = Pool{Slug: "t-a", Name: "Kurs A", MTokens: 100}
-var poolB = Pool{Slug: "t-b", Name: "Kurs B", MTokens: 20}
-
-func grant(t Tier, pools ...Pool) Grant { return Grant{Tier: t, Pools: pools} }
+func grant(pools ...Pool) Grant { return Grant{Pools: pools} }
 
 func setup(t *testing.T) (*Service, *fakeLiteLLM) {
 	t.Helper()
 	f := newFake()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	return NewService(litellm.New(srv.URL, "master", 5*time.Second), 2), f
+	return NewService(litellm.New(srv.URL, "master", 5*time.Second), 2, KeyBudget{Share: 0.05, Window: "4h"}), f
 }
 
 func TestUsageCreatesUserAndKeepsAdjustments(t *testing.T) {
@@ -206,39 +206,70 @@ func TestUsageCreatesUserAndKeepsAdjustments(t *testing.T) {
 	svc, f := setup(t)
 	p := Person{Subject: "abc", Email: "a@dhbw.de"}
 
-	u, err := svc.Usage(ctx, p, grant(student, poolA, poolB))
+	u, err := svc.Usage(ctx, p, grant(poolA, poolB))
 	if err != nil || f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["budget_duration"] != "30d" {
 		t.Fatalf("first usage: %+v %v %v", u, err, f.users["kc-abc"])
+	}
+	// A new user gets no limits and no models of their own: the teams' apply.
+	for _, field := range []string{"rpm_limit", "tpm_limit", "models"} {
+		if _, ok := f.users["kc-abc"][field]; ok {
+			t.Fatalf("new user with %s: %v", field, f.users["kc-abc"])
+		}
 	}
 	if f.writes[0] != "user/new:kc-abc" {
 		t.Fatalf("expected user creation, got %v", f.writes)
 	}
-	// The pools: the first is the default; before the team exists, its budget is the project's and nothing is spent.
+	// The pools: the first is the default; before the team exists, its budget is the project's and nothing is spent; the project's limits and the key budget are shown.
 	if len(u.Projects) != 2 || !u.Projects[0].Default || u.Projects[1].Default || u.Projects[0].Budget != 10 || u.Projects[0].Spend != 0 || u.Projects[1].MTokens != 20 {
 		t.Fatalf("projects: %+v", u.Projects)
 	}
+	if b := u.Projects[1]; b.RPM != 120 || b.TPM != 400000 || !slices.Equal(b.Models, poolB.Models) || math.Abs(b.KeyBudget-0.1) > 1e-9 || b.KeyBudgetDuration != "4h" {
+		t.Fatalf("limits of B: %+v", b)
+	}
 	// Nothing differs: nothing is written.
-	_, _ = svc.Usage(ctx, p, grant(student, poolA))
+	_, _ = svc.Usage(ctx, p, grant(poolA))
 	if len(f.writes) != 1 {
 		t.Fatalf("written without a difference: %v", f.writes)
 	}
-	// Limits are the tier's: a change made in the LiteLLM UI goes back.
+	// The budget goes back to 0 after a change in the LiteLLM UI; a user rate limit above what the projects allow together stays.
 	f.users["kc-abc"]["max_budget"] = 99.0
 	f.users["kc-abc"]["rpm_limit"] = 999
-	_, _ = svc.Usage(ctx, p, grant(student, poolA))
-	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["rpm_limit"] != 60.0 {
+	_, _ = svc.Usage(ctx, p, grant(poolA))
+	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["rpm_limit"] != 999 {
 		t.Fatalf("quota not brought back: %v", f.users["kc-abc"])
-	}
-	// A tier change does write the new quota.
-	u, _ = svc.Usage(ctx, p, grant(staff, poolA))
-	if *u.RPM != 120 || !strings.HasSuffix(f.writes[len(f.writes)-1], ":quota") {
-		t.Fatalf("tier change not applied: %v %v", u.RPM, f.writes)
 	}
 	// The team's numbers are shown once it exists.
 	f.teams["t-a"] = map[string]any{"team_id": "t-a", "spend": 2.5, "max_budget": 10.0, "budget_duration": "30d", "budget_reset_at": "2026-11-01T00:00:00Z"}
-	u, _ = svc.Usage(ctx, p, grant(staff, poolA))
+	u, _ = svc.Usage(ctx, p, grant(poolA))
 	if pu := u.Projects[0]; pu.Spend != 2.5 || pu.ResetAt == nil || *pu.ResetAt != "2026-11-01T00:00:00Z" {
 		t.Fatalf("team usage: %+v", pu)
+	}
+}
+
+// A user rate limit (from the person-level tiers of before, or set in LiteLLM's UI) cannot be cleared through LiteLLM's API: it is raised to the sum of the person's pools' limits, so it never stops a key below its project's.
+func TestUserLimitsRaised(t *testing.T) {
+	ctx := context.Background()
+	svc, f := setup(t)
+	f.users["kc-abc"] = map[string]any{"user_id": "kc-abc", "user_email": "a@dhbw.de", "max_budget": 0.0, "budget_duration": "30d", "rpm_limit": 60.0, "tpm_limit": 1000.0,
+		"metadata": map[string]any{"tier": "student", "default_project": "t-b"}}
+	info, _, _, _ := svc.lite.GetUser(ctx, "kc-abc")
+	if wrote, err := svc.SyncQuota(ctx, info, grant(poolA, poolB)); !wrote || err != nil {
+		t.Fatalf("not raised: %v %v", wrote, err)
+	}
+	u := f.users["kc-abc"]
+	if u["rpm_limit"] != 180.0 || u["tpm_limit"] != 600000.0 || u["max_budget"] != 0.0 {
+		t.Fatalf("after the sync: %v", u)
+	}
+	if meta := u["metadata"].(map[string]any); meta["tier"] != nil || meta["default_project"] != "t-b" || meta["source"] != "llm-management-api" {
+		t.Fatalf("metadata: %v", meta)
+	}
+	info, _, _, _ = svc.lite.GetUser(ctx, "kc-abc")
+	if wrote, err := svc.SyncQuota(ctx, info, grant(poolA, poolB)); wrote || err != nil {
+		t.Fatalf("written again: %v %v", wrote, err)
+	}
+	// Fewer projects: a higher limit is not lowered.
+	if wrote, _ := svc.SyncQuota(ctx, info, grant(poolA)); wrote {
+		t.Fatal("lowered")
 	}
 }
 
@@ -247,7 +278,7 @@ func TestCreateKeys(t *testing.T) {
 	svc, f := setup(t)
 	a := Person{Subject: "a", Email: "a@dhbw.de"}
 	b := Person{Subject: "b", Email: "b@dhbw.de"}
-	ga := grant(student, poolA, poolB)
+	ga := grant(poolA, poolB)
 
 	if _, _, err := svc.Create(ctx, a, ga, "  ", ""); !errors.Is(err, ErrNameRequired) {
 		t.Fatalf("empty name: %v", err)
@@ -256,12 +287,13 @@ func TestCreateKeys(t *testing.T) {
 	if err != nil || !strings.HasPrefix(secret, "sk-") || v.Name != "vs-code" || v.Project != "t-a" || v.ProjectName != "Kurs A" {
 		t.Fatalf("create: %q %+v %v", secret, v, err)
 	}
-	// The pool's team was made with the project's budget before the key went into it.
-	if tm := f.teams["t-a"]; tm == nil || tm["max_budget"] != 10.0 || tm["budget_duration"] != "30d" || tm["team_alias"] != "Kurs A" || tm["metadata"].(map[string]any)["project"] != "t-a" {
+	// The pool's team was made with the project's budget, limits and models before the key went into it.
+	if tm := f.teams["t-a"]; tm == nil || tm["max_budget"] != 10.0 || tm["budget_duration"] != "30d" || tm["team_alias"] != "Kurs A" || tm["metadata"].(map[string]any)["project"] != "t-a" ||
+		tm["rpm_limit"] != 60.0 || tm["tpm_limit"] != 200000.0 || fmt.Sprint(tm["models"]) != "[chat-default chat-fast embedding]" {
 		t.Fatalf("team: %v", f.teams["t-a"])
 	}
 	// The same name for ANOTHER person works: aliases carry the owner tag.
-	if _, _, err := svc.Create(ctx, b, grant(student, poolA), "vs code", ""); err != nil {
+	if _, _, err := svc.Create(ctx, b, grant(poolA), "vs code", ""); err != nil {
 		t.Fatalf("same name, other person: %v", err)
 	}
 	// The same name again for the same person does not.
@@ -269,7 +301,7 @@ func TestCreateKeys(t *testing.T) {
 		t.Fatalf("duplicate: %v", err)
 	}
 	// Only a project the person may draw from.
-	if _, _, err := svc.Create(ctx, b, grant(student, poolA), "laptop", "t-b"); !errors.Is(err, ErrNotEligible) {
+	if _, _, err := svc.Create(ctx, b, grant(poolA), "laptop", "t-b"); !errors.Is(err, ErrNotEligible) {
 		t.Fatalf("project of others: %v", err)
 	}
 	// A chat key exists but does not count (limit is 2 in this test).
@@ -296,10 +328,14 @@ func TestCreateKeys(t *testing.T) {
 			t.Fatalf("key project: %+v", k)
 		}
 	}
-	// Key quota comes from the tier.
+	// A key carries its pool's short-term budget (5 % of it per 4h) and no limits or models of its own.
 	for _, k := range f.keys {
-		if k["user_id"] == "kc-a" && k["token"] != "chat" && k["max_budget"] != 0.5 {
-			t.Fatalf("key quota: %v", k["max_budget"])
+		if k["user_id"] != "kc-a" || k["token"] == "chat" {
+			continue
+		}
+		want := map[any]float64{"t-a": 0.5, "t-b": 0.1}[k["team_id"]]
+		if mb, _ := k["max_budget"].(float64); math.Abs(mb-want) > 1e-9 || k["budget_duration"] != "4h" || k["rpm_limit"] != nil || k["tpm_limit"] != nil || k["models"] != nil {
+			t.Fatalf("key quota: %v", k)
 		}
 	}
 }
@@ -309,8 +345,8 @@ func TestDeleteOnlyOwnKeys(t *testing.T) {
 	svc, f := setup(t)
 	a := Person{Subject: "a", Email: "a@dhbw.de"}
 	b := Person{Subject: "b", Email: "b@dhbw.de"}
-	_, _, _ = svc.Create(ctx, a, grant(student, poolA), "x", "")
-	_, _, _ = svc.Create(ctx, b, grant(student, poolA), "y", "")
+	_, _, _ = svc.Create(ctx, a, grant(poolA), "x", "")
+	_, _, _ = svc.Create(ctx, b, grant(poolA), "y", "")
 	var bTok string
 	for tok, k := range f.keys {
 		if k["user_id"] == "kc-b" {
@@ -328,40 +364,43 @@ func TestDeleteOnlyOwnKeys(t *testing.T) {
 	}
 }
 
-// SyncQuota writes only a quota that differs, and then the whole tier with a budget of 0.
+// SyncQuota writes only a quota that differs: the budget back to 0.
 func TestSyncQuota(t *testing.T) {
 	ctx := context.Background()
 	svc, f := setup(t)
 	p := Person{Subject: "abc", Email: "a@dhbw.de"}
-	if _, err := svc.Usage(ctx, p, grant(student, poolA)); err != nil {
+	if _, err := svc.Usage(ctx, p, grant(poolA)); err != nil {
 		t.Fatal(err)
 	}
 	u, _, _, err := svc.lite.GetUser(ctx, "kc-abc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wrote, err := svc.SyncQuota(ctx, u, student); wrote || err != nil {
+	if wrote, err := svc.SyncQuota(ctx, u, grant(poolA)); wrote || err != nil {
 		t.Fatalf("same quota written: %v %v", wrote, err)
 	}
 	f.users["kc-abc"]["max_budget"] = 10.0
 	u, _, _, _ = svc.lite.GetUser(ctx, "kc-abc")
-	if wrote, err := svc.SyncQuota(ctx, u, student); !wrote || err != nil {
+	if wrote, err := svc.SyncQuota(ctx, u, grant(poolA)); !wrote || err != nil {
 		t.Fatalf("budget not written: %v %v", wrote, err)
 	}
-	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["rpm_limit"] != 60.0 || f.users["kc-abc"]["metadata"].(map[string]any)["tier"] != "student" {
+	if f.users["kc-abc"]["max_budget"] != 0.0 || f.users["kc-abc"]["metadata"].(map[string]any)["source"] != "llm-management-api" {
 		t.Fatalf("after sync: %v", f.users["kc-abc"])
 	}
 }
 
-// Every pool has a team with the project's budget; an ended project and a team whose project is gone keep their team with a budget of 0; teams of others are left alone; the window is sent only when it differs.
+// Every pool has a team with the project's budget, rate limits and models; an ended project and a team whose project is gone keep their team with a budget of 0 (the gone one keeps its limits); teams of others are left alone; the window is sent only when it differs.
 func TestSyncTeams(t *testing.T) {
 	ctx := context.Background()
 	svc, f := setup(t)
-	f.teams["t-gone"] = map[string]any{"team_id": "t-gone", "team_alias": "Alt", "max_budget": 5.0, "budget_duration": "30d", "spend": 3.0, "metadata": map[string]any{"source": "llm-management-api", "project": "t-gone"}}
+	f.teams["t-gone"] = map[string]any{"team_id": "t-gone", "team_alias": "Alt", "max_budget": 5.0, "budget_duration": "30d", "spend": 3.0, "rpm_limit": 30.0, "models": []any{"chat-default"},
+		"metadata": map[string]any{"source": "llm-management-api", "project": "t-gone"}}
 	f.teams["foreign"] = map[string]any{"team_id": "foreign", "max_budget": 7.0, "metadata": map[string]any{}}
-	f.teams["t-b"] = map[string]any{"team_id": "t-b", "team_alias": "Kurs B", "max_budget": 2.0, "budget_duration": "30d", "spend": 1.0, "metadata": map[string]any{"source": "llm-management-api", "project": "t-b"}}
-	ended := Pool{Slug: "t-b", Name: "Kurs B"}
-	never := Pool{Slug: "t-never", Name: "Ohne Tokens"}
+	f.teams["t-b"] = map[string]any{"team_id": "t-b", "team_alias": "Kurs B", "max_budget": 2.0, "budget_duration": "30d", "spend": 1.0, "rpm_limit": 120.0, "tpm_limit": 400000.0,
+		"models": []any{"embedding", "code", "chat-fast", "chat-default"}, "metadata": map[string]any{"source": "llm-management-api", "project": "t-b"}}
+	ended := poolB
+	ended.MTokens = 0
+	never := Pool{Slug: "t-never", Name: "Ohne Tokens", RPM: 60, TPM: 200000, Models: poolA.Models}
 
 	n, err := svc.SyncTeams(ctx, []Pool{poolA, ended, never})
 	if err != nil || n != 3 {
@@ -369,6 +408,9 @@ func TestSyncTeams(t *testing.T) {
 	}
 	if f.teams["t-a"]["max_budget"] != 10.0 || f.teams["t-b"]["max_budget"] != 0.0 || f.teams["t-gone"]["max_budget"] != 0.0 || f.teams["foreign"]["max_budget"] != 7.0 {
 		t.Fatalf("budgets: a=%v b=%v gone=%v foreign=%v", f.teams["t-a"]["max_budget"], f.teams["t-b"]["max_budget"], f.teams["t-gone"]["max_budget"], f.teams["foreign"]["max_budget"])
+	}
+	if f.teams["t-gone"]["rpm_limit"] != 30.0 || fmt.Sprint(f.teams["t-gone"]["models"]) != "[chat-default]" {
+		t.Fatalf("gone team's limits changed: %v", f.teams["t-gone"])
 	}
 	if _, ok := f.teams["t-never"]; ok {
 		t.Fatal("team made for a project without tokens")
@@ -384,11 +426,16 @@ func TestSyncTeams(t *testing.T) {
 	if n, err := svc.SyncTeams(ctx, []Pool{poolA, ended, never}); err != nil || n != 0 {
 		t.Fatalf("second sync: %d %v", n, err)
 	}
-	// More tokens: the budget follows.
+	// More tokens, a higher rate limit, one more model: the team follows.
 	more := poolA
-	more.MTokens = 300
-	if n, _ := svc.SyncTeams(ctx, []Pool{more}); n != 1 || f.teams["t-a"]["max_budget"] != 30.0 {
-		t.Fatalf("raised: %d %v", n, f.teams["t-a"]["max_budget"])
+	more.MTokens, more.RPM, more.Models = 300, 90, []string{"chat-default", "chat-fast", "code", "embedding"}
+	if n, _ := svc.SyncTeams(ctx, []Pool{more}); n != 1 || f.teams["t-a"]["max_budget"] != 30.0 || f.teams["t-a"]["rpm_limit"] != 90.0 || fmt.Sprint(f.teams["t-a"]["models"]) != "[chat-default chat-fast code embedding]" {
+		t.Fatalf("raised: %d %v", n, f.teams["t-a"])
+	}
+	// No rate limit at all: sent as null.
+	more.TPM = 0
+	if n, _ := svc.SyncTeams(ctx, []Pool{more}); n != 1 || f.teams["t-a"]["tpm_limit"] != nil {
+		t.Fatalf("no tpm: %d %v", n, f.teams["t-a"])
 	}
 	used, err := svc.UsedMTokens(ctx, []string{"t-b", "t-gone", "t-never"})
 	if err != nil || used["t-b"] != 10 || used["t-gone"] != 30 || len(used) != 2 {
@@ -396,18 +443,18 @@ func TestSyncTeams(t *testing.T) {
 	}
 }
 
-// The default project is stored in the user's metadata, only an eligible one, and the chat key follows it.
+// The default project is stored in the user's metadata, only an eligible one, and the chat key follows it with that project's key budget.
 func TestDefaultProject(t *testing.T) {
 	ctx := context.Background()
 	svc, f := setup(t)
 	p := Person{Subject: "abc", Email: "a@dhbw.de"}
-	g := grant(student, poolA, poolB)
+	g := grant(poolA, poolB)
 	if _, err := svc.EnsureChatKey(ctx, p, g, "master"); err != nil {
 		t.Fatal(err)
 	}
 	chat := f.keyBy(ChatKey("master", p.UserID()))
-	if chat["team_id"] != "t-a" {
-		t.Fatalf("chat key in %v, want the first project", chat["team_id"])
+	if chat["team_id"] != "t-a" || chat["max_budget"] != 0.5 {
+		t.Fatalf("chat key %v, want the first project with its key budget", chat)
 	}
 	if _, err := svc.SetDefaultProject(ctx, p, g, "t-other"); !errors.Is(err, ErrNotEligible) {
 		t.Fatalf("other project: %v", err)
@@ -416,62 +463,66 @@ func TestDefaultProject(t *testing.T) {
 	if err != nil || pool.Slug != "t-b" || f.users["kc-abc"]["metadata"].(map[string]any)["default_project"] != "t-b" {
 		t.Fatalf("set: %+v %v %v", pool, err, f.users["kc-abc"])
 	}
-	if chat["team_id"] != "t-b" || !isMember(f.teams["t-b"], "kc-abc") {
-		t.Fatalf("chat key not moved: %v %v", chat["team_id"], f.teams["t-b"])
+	if mb, _ := chat["max_budget"].(float64); chat["team_id"] != "t-b" || !isMember(f.teams["t-b"], "kc-abc") || math.Abs(mb-0.1) > 1e-9 {
+		t.Fatalf("chat key not moved: %v %v", chat, f.teams["t-b"])
 	}
-	// The tier stays and so does the default when the quota is written again.
-	_, _ = svc.Usage(ctx, p, grant(staff, poolA, poolB))
-	u, _ := svc.Usage(ctx, p, grant(staff, poolA, poolB))
+	// The default stays when the quota is written again.
+	f.users["kc-abc"]["max_budget"] = 5.0
+	u, _ := svc.Usage(ctx, p, g)
 	if !u.Projects[1].Default || u.Projects[0].Default || f.users["kc-abc"]["metadata"].(map[string]any)["default_project"] != "t-b" {
-		t.Fatalf("default after a tier change: %+v %v", u.Projects, f.users["kc-abc"]["metadata"])
+		t.Fatalf("default after the quota was written: %+v %v", u.Projects, f.users["kc-abc"]["metadata"])
 	}
 	// New keys go there when no project is named.
 	if _, v, err := svc.Create(ctx, p, g, "laptop", ""); err != nil || v.Project != "t-b" {
 		t.Fatalf("key without project: %+v %v", v, err)
 	}
 	// A default that is no longer eligible falls back to the first project.
-	if _, v, err := svc.Create(ctx, p, grant(student, poolA), "tablet", ""); err != nil || v.Project != "t-a" {
+	if _, v, err := svc.Create(ctx, p, grant(poolA), "tablet", ""); err != nil || v.Project != "t-a" {
 		t.Fatalf("key after the default ended: %+v %v", v, err)
 	}
 }
 
-// The sync moves keys outside the person's pools to the default project and takes keys out of every team when the person has no pool left; keys in an eligible pool stay.
+// The sync moves keys outside the person's pools to the default project and takes keys out of every team when the person has no pool left; keys in an eligible pool stay. Every key gets its pool's short-term budget (0 outside every pool), and limits or models of its own are cleared.
 func TestSyncKeys(t *testing.T) {
 	ctx := context.Background()
 	svc, f := setup(t)
 	p := Person{Subject: "abc", Email: "a@dhbw.de"}
-	_, _, _ = svc.Create(ctx, p, grant(student, poolA, poolB), "x", "t-a")
-	_, _, _ = svc.Create(ctx, p, grant(student, poolA, poolB), "y", "t-b")
-	f.keys["old"] = map[string]any{"token": "old", "user_id": "kc-abc", "key_alias": "old@" + aliasTag("kc-abc")} // from before the pools
+	_, _, _ = svc.Create(ctx, p, grant(poolA, poolB), "x", "t-a")
+	_, _, _ = svc.Create(ctx, p, grant(poolA, poolB), "y", "t-b")
+	// From the person-level tiers of before: no team, limits and models of its own.
+	f.keys["old"] = map[string]any{"token": "old", "user_id": "kc-abc", "key_alias": "old@" + aliasTag("kc-abc"), "max_budget": 0.5, "budget_duration": "4h", "rpm_limit": 60.0, "tpm_limit": 1000.0, "models": []any{"chat-default"}}
 	info, _, _, _ := svc.lite.GetUser(ctx, "kc-abc")
 
-	// Only B is left: A's key and the old one move to B; the old one also gets the tier's key quota it never had.
-	n, err := svc.SyncKeys(ctx, info, grant(student, poolB))
-	if err != nil || n != 3 || f.keys["old"]["max_budget"] != student.KeyBudget {
+	// Only B is left: A's key and the old one move to B and get B's key budget; the old one loses its limits and models.
+	n, err := svc.SyncKeys(ctx, info, grant(poolB))
+	if err != nil || n != 4 {
 		t.Fatalf("move: %d %v %v", n, err, f.writes)
 	}
 	for tok, k := range f.keys {
-		if k["team_id"] != "t-b" {
-			t.Fatalf("key %s in %v, want t-b", tok, k["team_id"])
+		if mb, _ := k["max_budget"].(float64); k["team_id"] != "t-b" || math.Abs(mb-0.1) > 1e-9 {
+			t.Fatalf("key %s: %v, want in t-b with 0.1", tok, k)
 		}
 	}
-	if n, _ := svc.SyncKeys(ctx, info, grant(student, poolB)); n != 0 {
+	if old := f.keys["old"]; old["rpm_limit"] != nil || old["tpm_limit"] != nil || fmt.Sprint(old["models"]) != "[]" || old["budget_duration"] != "4h" {
+		t.Fatalf("old key not cleared: %v", old)
+	}
+	if n, _ := svc.SyncKeys(ctx, info, grant(poolB)); n != 0 {
 		t.Fatalf("moved again: %d", n)
 	}
-	// No pool left: every key leaves its team, so the user's budget of 0 stops it.
-	if n, err := svc.SyncKeys(ctx, info, grant(student)); err != nil || n != 3 {
+	// No pool left: every key leaves its team, so the user's budget of 0 stops it, and its own budget becomes 0.
+	if n, err := svc.SyncKeys(ctx, info, grant()); err != nil || n != 6 {
 		t.Fatalf("detach: %d %v", n, err)
 	}
 	for tok, k := range f.keys {
-		if k["team_id"] != nil {
-			t.Fatalf("key %s still in %v", tok, k["team_id"])
+		if k["team_id"] != nil || k["max_budget"] != 0.0 {
+			t.Fatalf("key %s: %v", tok, k)
 		}
 	}
-	if n, _ := svc.SyncKeys(ctx, info, grant(student)); n != 0 {
+	if n, _ := svc.SyncKeys(ctx, info, grant()); n != 0 {
 		t.Fatalf("detached again: %d", n)
 	}
-	// A project again: the keys come back into its pool.
-	if n, _ := svc.SyncKeys(ctx, info, grant(student, poolA)); n != 3 || f.team("old") != "t-a" {
-		t.Fatalf("back: %d %v", n, f.team("old"))
+	// A project again: the keys come back into its pool, with its key budget.
+	if n, _ := svc.SyncKeys(ctx, info, grant(poolA)); n != 6 || f.team("old") != "t-a" || f.keys["old"]["max_budget"] != 0.5 {
+		t.Fatalf("back: %d %v", n, f.keys["old"])
 	}
 }
