@@ -52,6 +52,42 @@ type Service struct {
 	llm     LLMUsed
 	now     func() time.Time
 	storage storageState
+	labels  ImageLabels
+}
+
+// ImageLabels reads an image's labels from its registry, for the check of course images; nil = no check.
+type ImageLabels func(ctx context.Context, image string) (map[string]string, error)
+
+// SetImageLabels adds the check of course images (KernelImage) to Update.
+func (s *Service) SetImageLabels(f ImageLabels) { s.labels = f }
+
+// BaseLabel marks notebook-base (dhbw-workspace-images) and every image derived from it; BaseVersions are the major versions a course image may be built on.
+const BaseLabel = "cloud.dhbw.base"
+
+var BaseVersions = []string{"notebook-v1"}
+
+var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:@-]+$`)
+
+// checkKernelImage refuses a course image that is not derived from notebook-base; an unchanged one is not checked again.
+func (s *Service) checkKernelImage(ctx context.Context, p *Project, cur string) error {
+	p.KernelImage = strings.TrimSpace(p.KernelImage)
+	if p.KernelImage == "" || p.KernelImage == cur {
+		return nil
+	}
+	if !imageRE.MatchString(p.KernelImage) {
+		return refuse("Kursimage %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.KernelImage)
+	}
+	if s.labels == nil {
+		return nil
+	}
+	labels, err := s.labels(ctx, p.KernelImage)
+	if err != nil {
+		return refuse("Kursimage %s ist nicht abrufbar (es muss öffentlich sein): %v", p.KernelImage, err)
+	}
+	if !slices.Contains(BaseVersions, labels[BaseLabel]) {
+		return refuse("Kursimage %s ist nicht von registry.gpu.services.dhbw.cloud/platform/notebook-base abgeleitet (Label %s fehlt). Für beliebige Images gibt es „Freies Image“.", p.KernelImage, BaseLabel)
+	}
+	return nil
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.
@@ -175,7 +211,7 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the images; everything else is kept.
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the images and the course image; everything else is kept.
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
@@ -187,11 +223,14 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		// admins set how the project uses them.
 		keepTreeFields(&p, cur)
 	case !asAdmin:
-		desc, members, images := p.Description, p.Members, p.Images
+		desc, members, images, kernelImage := p.Description, p.Members, p.Images, p.KernelImage
 		p = cur
-		p.Description, p.Members, p.Images = desc, members, images
+		p.Description, p.Members, p.Images, p.KernelImage = desc, members, images, kernelImage
 	}
 	if err := s.validate(&p); err != nil {
+		return Project{}, err
+	}
+	if err := s.checkKernelImage(ctx, &p, cur.KernelImage); err != nil {
 		return Project{}, err
 	}
 	if err := withinTree(p); err != nil {

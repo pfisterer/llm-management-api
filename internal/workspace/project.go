@@ -54,7 +54,9 @@ type Project struct {
 	Profiles    []string `json:"profiles" gorm:"serializer:json" example:"cpu,pytorch"`
 	GPUClasses  []string `json:"gpu_classes" gorm:"serializer:json" example:"l4-3q"`
 	Images      []Image  `json:"images" gorm:"serializer:json"`
-	FreeImages  bool     `json:"free_images"` // W3: any image, CPU only, without home
+	FreeImages  bool     `json:"free_images"` // W3: any image, with or without GPU (profiles free, free-gpu)
+	// KernelImage is the project's course image for the profile "CPU + GPU-Kernel" (10.12): the notebook and the GPU kernel run it instead of notebook-base. It must be derived from notebook-base (label BaseLabel); empty = notebook-base.
+	KernelImage string   `json:"kernel_image,omitempty" example:"ghcr.io/dozent/ml-kurs:2026"`
 	Limits      Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
 	Budgets     []Budget `json:"budgets" gorm:"serializer:json"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.

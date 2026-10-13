@@ -23,6 +23,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
+	"github.com/pfisterer/llm-management-api/internal/oci"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/webserver"
@@ -182,6 +183,9 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			log.Warnw("storage reports not loaded", "error", err)
 		}
 		wsSvc.SetUsage(st.usage)
+		// Course images (KernelImage) are checked in their registry, anonymously like a node pulls them.
+		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
+		wsSvc.SetImageLabels(ociClient.Labels)
 		if gpuSvc.InferenceEnabled() {
 			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.
 			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {

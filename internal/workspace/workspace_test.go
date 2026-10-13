@@ -154,3 +154,37 @@ func TestForPerson(t *testing.T) {
 		t.Fatalf("all: %+v", all)
 	}
 }
+
+func TestKernelImageMustDeriveFromBase(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	checked := 0
+	s.SetImageLabels(func(_ context.Context, image string) (map[string]string, error) {
+		checked++
+		switch image {
+		case "ghcr.io/kurs/ml:1":
+			return map[string]string{BaseLabel: "notebook-v1"}, nil
+		case "ghcr.io/kurs/fremd:1":
+			return map[string]string{}, nil
+		}
+		return nil, errors.New("not found")
+	})
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}}, "admin")
+	for image, want := range map[string]string{"ghcr.io/kurs/fremd:1": "nicht von", "ghcr.io/kurs/weg:1": "nicht abrufbar", "Kein Image": "kein Image-Name"} {
+		if _, err := s.Update(ctx, Project{Slug: "kurs", KernelImage: image}, "manager@dhbw.de", false); !strings.Contains(reason(err), want) {
+			t.Errorf("%s: %v", image, err)
+		}
+	}
+	out, err := s.Update(ctx, Project{Slug: "kurs", KernelImage: " ghcr.io/kurs/ml:1 "}, "manager@dhbw.de", false)
+	if err != nil || out.KernelImage != "ghcr.io/kurs/ml:1" {
+		t.Fatalf("derived image: %+v %v", out, err)
+	}
+	// Unchanged: not looked up again (the registry may be away); empty: back to notebook-base.
+	n := checked
+	if _, err := s.Update(ctx, Project{Slug: "kurs", KernelImage: "ghcr.io/kurs/ml:1"}, "manager@dhbw.de", false); err != nil || checked != n {
+		t.Errorf("unchanged image: %v, checked %d times", err, checked-n)
+	}
+	if out, err := s.Update(ctx, Project{Slug: "kurs"}, "manager@dhbw.de", false); err != nil || out.KernelImage != "" {
+		t.Errorf("cleared: %+v %v", out, err)
+	}
+}

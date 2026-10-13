@@ -45,6 +45,8 @@ type HubProject struct {
 	Profiles   []string          `json:"profiles"`
 	Images     []workspace.Image `json:"images"`
 	FreeImages bool              `json:"free_images"`
+	// KernelImage is the course image of the profile "CPU + GPU-Kernel" for the notebook and the GPU kernel; empty = notebook-base.
+	KernelImage string `json:"kernel_image,omitempty"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
 	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
@@ -91,7 +93,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			for _, m := range mine {
-				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages, StorageGB: m.StorageGB, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
+				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages, KernelImage: m.KernelImage, StorageGB: m.StorageGB, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}

@@ -163,8 +163,8 @@ func (s *GormStore) Delete(ctx context.Context, slug string) error {
 
 // storageReport is the last storage report of one kind ("dirs", "valkey") as JSON, so a restart of the service does not lose what the hourly job measured.
 type storageReport struct {
-	Kind string    `gorm:"primaryKey"`
-	Body string    `gorm:"type:text"`
+	Kind string `gorm:"primaryKey"`
+	Body string `gorm:"type:text"`
 	At   time.Time
 }
 
