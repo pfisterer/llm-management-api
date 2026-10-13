@@ -112,6 +112,14 @@ func TestCheckStart(t *testing.T) {
 	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei", Profile: FreeProfile, CPU: 0.25, RAMGB: 1})); got != "" {
 		t.Fatalf("free image: %q", got)
 	}
+	// With a GPU: the project's GPU class and GPUs per person count as for the GPU profiles.
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei", Profile: FreeGPUProfile, GPUs: 1})); !strings.Contains(got, "keine GPUs") {
+		t.Fatalf("free image with GPU, project without GPUs: %q", got)
+	}
+	_, _ = s.create(ctx, Project{Slug: "frei-gpu", Members: []Member{{Token: "user:a@dhbw.de"}}, FreeImages: true, Limits: Limits{GPUsPerPerson: 1}}, "admin")
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei-gpu", Profile: FreeGPUProfile, GPUs: 1})); !strings.Contains(got, "l4-3q") {
+		t.Fatalf("free image with GPU, class not granted: %q", got)
+	}
 	// Server limit: two running servers of a in kurs.
 	s2 := service(Running{Server: "s1", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"}, Running{Server: "s2", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"},
 		Running{Server: "k1", Person: "a@dhbw.de", Project: "kurs", Profile: "gpu-kernel"})

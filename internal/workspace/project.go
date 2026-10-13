@@ -104,12 +104,15 @@ func (p Project) RoleOf(tokens []string) string {
 	return role
 }
 
-// Allows tells whether the project lets a profile be started.
-// FreeProfile is the hub profile for any image (W3); it is allowed through FreeImages, not through Profiles.
-const FreeProfile = "free"
+// FreeProfile and FreeGPUProfile are the hub profiles for any image (W3), without and with a GPU; they are allowed through FreeImages, not through Profiles. The GPU one needs a GPU class of the project as well (its class is the first of the catalogue, see Service.profile).
+const (
+	FreeProfile    = "free"
+	FreeGPUProfile = "free-gpu"
+)
 
+// Allows tells whether the project lets a profile be started.
 func (p Project) Allows(profile string) bool {
-	if profile == FreeProfile {
+	if profile == FreeProfile || profile == FreeGPUProfile {
 		return p.FreeImages
 	}
 	return slices.Contains(p.Profiles, profile)

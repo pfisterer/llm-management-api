@@ -69,6 +69,10 @@ func (s *Service) Catalog() Config {
 }
 
 func (s *Service) profile(slug string) (Profile, bool) {
+	if slug == FreeGPUProfile && len(s.cfg.GPUClasses) > 0 {
+		// Any image with a GPU runs on the hub's GPU queue, which is the first class (docs/bauplan.md 6.6).
+		return Profile{Slug: FreeGPUProfile, GPUClass: s.cfg.GPUClasses[0]}, true
+	}
 	for _, p := range s.cfg.Profiles {
 		if p.Slug == slug {
 			return p, true
