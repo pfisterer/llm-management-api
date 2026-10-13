@@ -33,7 +33,7 @@ type ValkeyMemory struct {
 	UsedBytes   int64 `json:"used_bytes" example:"52428800"`
 	PeakBytes   int64 `json:"peak_bytes" example:"60000000"`
 	RSSBytes    int64 `json:"rss_bytes" example:"70000000"`
-	MaxBytes    int64 `json:"max_bytes" example:"0"`             // maxmemory; 0 = none set
+	MaxBytes    int64 `json:"max_bytes" example:"0"`              // maxmemory; 0 = none set
 	SystemBytes int64 `json:"system_bytes" example:"16000000000"` // RAM of the node
 }
 

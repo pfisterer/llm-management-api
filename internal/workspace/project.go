@@ -65,9 +65,9 @@ type Project struct {
 	LLMRPM int `json:"llm_rpm" gorm:"column:llm_rpm"`
 	LLMTPM int `json:"llm_tpm" gorm:"column:llm_tpm"`
 	// LLMModels are model groups the tree granted the project on top of the base models.
-	LLMModels []string   `json:"llm_models" gorm:"column:llm_models;serializer:json"`
+	LLMModels []string `json:"llm_models" gorm:"column:llm_models;serializer:json"`
 	// StorageGB is the project's workspace storage in GB, from the budget tree: one volume for the homes of its members and their shared folder (StoragePVCPrefix); 0 = no volume, servers then start with an empty home that is lost when they end.
-	StorageGB int `json:"storage_gb" gorm:"column:storage_gb"`
+	StorageGB int        `json:"storage_gb" gorm:"column:storage_gb"`
 	EndsAt    *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
 	TreeNode  string     `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
 	CreatedBy string     `json:"created_by,omitempty"`
