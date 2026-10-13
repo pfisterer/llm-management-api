@@ -47,6 +47,9 @@ type HubProject struct {
 	FreeImages bool              `json:"free_images"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
+	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
+	EndsAt   *time.Time `json:"ends_at,omitempty"`
+	DeleteAt *time.Time `json:"delete_at,omitempty"`
 }
 
 // GPUHubAccessResponse is the access decision for one person, for JupyterHub: whether they may log in (a project, or admin), and how many GPUs they may use at the same time (the most any of their projects allows per person).
@@ -88,7 +91,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			for _, m := range mine {
-				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages, StorageGB: m.StorageGB})
+				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages, StorageGB: m.StorageGB, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}

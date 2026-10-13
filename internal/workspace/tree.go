@@ -32,6 +32,8 @@ type TreeProject struct {
 	LLMModels []string `json:"llm_models" example:"code,all-proxy-models"`
 	// StorageGB is the project's workspace storage (homes and shared folder together); 0 = none.
 	StorageGB int `json:"storage_gb" example:"50"`
+	// DeleteAt is the day the tree deletes the project (its end plus a grace period), for the warnings; nil = not planned.
+	DeleteAt *time.Time `json:"delete_at,omitempty"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -133,6 +135,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = classes, maps.Clone(tp.GPUsByClass), tp.LLMMTokens
 	p.LLMRPM, p.LLMTPM, p.LLMModels = tp.LLMRPM, tp.LLMTPM, cleanModels(tp.LLMModels)
 	p.StorageGB = max(tp.StorageGB, 0)
+	p.DeleteAt = tp.DeleteAt
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
@@ -250,6 +253,7 @@ func keepTreeFields(p *Project, cur Project) {
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = cur.GPUClasses, cur.GPUsByClass, cur.LLMMTokens
 	p.LLMRPM, p.LLMTPM, p.LLMModels = cur.LLMRPM, cur.LLMTPM, cur.LLMModels
 	p.StorageGB = cur.StorageGB
+	p.DeleteAt = cur.DeleteAt
 	own := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range cur.Budgets {
 		if b.Tree {
