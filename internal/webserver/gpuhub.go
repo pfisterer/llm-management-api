@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
@@ -27,7 +29,13 @@ type GPUHubOptions struct {
 	Workspaces *workspace.Service
 	// SelfServiceURL is where people get a project; passed on to the hub for those without one.
 	SelfServiceURL string
-	Log            *zap.SugaredLogger
+	// Workspace keys (POST /gpu/hub/workspace-key): the LLM key a server gets for its project. Keys nil = route off.
+	Keys      *keys.Service
+	Quota     LLMQuota
+	MasterKey string
+	Gateway   string // LiteLLM inference gateway inside the cluster, asked for the key's models
+	APIURL    string // the LLM API as people reach it, e.g. https://api.llm.services.dhbw.cloud/v1
+	Log       *zap.SugaredLogger
 }
 
 // HubProject is a project as the hub needs it for its profile list.
@@ -148,6 +156,59 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			c.JSON(http.StatusOK, gin.H{"homes": len(rows)})
 		})
 	}
+	if o.Keys != nil {
+		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. A project without LLM tokens (or a person the LLM does not know yet) answers 200 with an empty key and the reason: the server starts without.
+		r.POST("/gpu/hub/workspace-key", func(c *gin.Context) {
+			if !hubToken(c, o.Token) {
+				return
+			}
+			var req WorkspaceKeyRequest
+			if err := c.ShouldBindJSON(&req); err != nil || req.User == "" || req.Project == "" {
+				abort(c, http.StatusBadRequest, "invalid", "user und project fehlen.")
+				return
+			}
+			ctx := c.Request.Context()
+			email := strings.ToLower(strings.TrimSpace(req.User))
+			sub := strings.TrimSpace(req.Subject)
+			if sub == "" {
+				found, ok, err := o.Keys.SubjectOf(ctx, email)
+				if err != nil {
+					o.Log.Errorw("workspace key: person not looked up", "user", email, "error", err)
+					abort(c, http.StatusBadGateway, "upstream", "LiteLLM nicht erreichbar.")
+					return
+				}
+				if !ok {
+					c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "person unknown to the LLM service"})
+					return
+				}
+				sub = found
+			}
+			g, status, msg := o.Quota.GrantFor(ctx, o.Access.Who(ctx, email).Tokens)
+			if status != 0 {
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: msg})
+				return
+			}
+			key, err := o.Keys.EnsureWorkspaceKey(ctx, keys.Person{Subject: sub, Email: email}, g, o.MasterKey, req.Project)
+			if errors.Is(err, keys.ErrNotEligible) {
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "project has no LLM tokens"})
+				return
+			}
+			if err != nil {
+				o.Log.Errorw("workspace key failed", "user", email, "project", req.Project, "error", err)
+				abort(c, http.StatusBadGateway, "upstream", "Key konnte nicht angelegt werden.")
+				return
+			}
+			models, err := keys.ModelsOf(ctx, o.Gateway, key)
+			if err != nil {
+				o.Log.Warnw("workspace key: models not listed", "project", req.Project, "error", err)
+			}
+			resp := WorkspaceKeyResponse{Key: key, BaseURL: o.APIURL, Models: models}
+			if slices.Contains(models, DefaultWorkspaceModel) {
+				resp.DefaultModel = DefaultWorkspaceModel
+			}
+			c.JSON(http.StatusOK, resp)
+		})
+	}
 	if o.Workspaces != nil {
 		// INFO memory of the Valkey with the JuiceFS metadata, from the same CronJob: for the admins' storage view.
 		r.POST("/workspaces/valkey", func(c *gin.Context) {
@@ -169,6 +230,25 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		})
 	}
 	return r
+}
+
+// DefaultWorkspaceModel is the model VS Code's chat starts with, when the key may use it.
+const DefaultWorkspaceModel = "code"
+
+// WorkspaceKeyRequest asks for the workspace key of a person in a project. Subject is the Keycloak sub from the hub's login (auth state); without it the person is looked up by e-mail.
+type WorkspaceKeyRequest struct {
+	User    string `json:"user"`
+	Subject string `json:"sub"`
+	Project string `json:"project"`
+}
+
+// WorkspaceKeyResponse is the key with where and what it may ask; Key empty with a Reason when there is none.
+type WorkspaceKeyResponse struct {
+	Key          string   `json:"key,omitempty"`
+	BaseURL      string   `json:"base_url,omitempty"`
+	Models       []string `json:"models,omitempty"`
+	DefaultModel string   `json:"default_model,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
 }
 
 func hubToken(c *gin.Context, token string) bool {

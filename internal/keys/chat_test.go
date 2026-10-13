@@ -60,3 +60,14 @@ func TestEnsureChatKey(t *testing.T) {
 		t.Fatalf("own key after chat key: %v", err)
 	}
 }
+
+// A workspace key is the same on every start of the same person in the same project, and another in another project or for the chat.
+func TestWorkspaceKey(t *testing.T) {
+	a := WorkspaceKey("master", "kc-1", "t-a")
+	if a != WorkspaceKey("master", "kc-1", "t-a") || a == WorkspaceKey("master", "kc-1", "t-b") || a == WorkspaceKey("master", "kc-2", "t-a") || a == ChatKey("master", "kc-1") {
+		t.Fatal("workspace keys must be stable per person and project and differ otherwise")
+	}
+	if len(a) != len("sk-ws-")+48 || a[:6] != "sk-ws-" {
+		t.Fatalf("key = %q", a)
+	}
+}
