@@ -37,6 +37,8 @@ type HubProject struct {
 	Profiles   []string          `json:"profiles"`
 	Images     []workspace.Image `json:"images"`
 	FreeImages bool              `json:"free_images"`
+	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
+	StorageGB int `json:"storage_gb"`
 }
 
 // GPUHubAccessResponse is the access decision for one person, for JupyterHub: whether they may log in (a project, or admin), and how many GPUs they may use at the same time (the most any of their projects allows per person).
@@ -78,7 +80,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			for _, m := range mine {
-				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages})
+				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, Images: m.Images, FreeImages: m.FreeImages, StorageGB: m.StorageGB})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}
@@ -114,7 +116,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		})
 	}
 	if o.Usage != nil && o.Project != nil {
-		// The output of `juicefs quota list` from the daily CronJob workspace-home-usage (tasks/juicefs.yaml), as text: parsing stays here, the job stays a one-liner.
+		// The output of `juicefs quota list` from the hourly CronJob workspace-storage-usage (tasks/juicefs.yaml), as text: parsing stays here, the job stays a one-liner. Booked as the day's home sizes (the largest of the day counts) and kept for the admins' storage view.
 		r.POST("/workspaces/homes", func(c *gin.Context) {
 			if !hubToken(c, o.Token) {
 				return
@@ -129,6 +131,11 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				abort(c, http.StatusBadRequest, "invalid", err.Error())
 				return
 			}
+			if o.Workspaces != nil {
+				if dirs, ok := workspace.ParseQuotaTable(string(raw)); ok {
+					o.Workspaces.SetStorageDirs(dirs)
+				}
+			}
 			rows, err := usage.HomeRows(c.Request.Context(), o.Usage, used, o.Project, time.Now())
 			if err == nil {
 				err = o.Usage.Add(c.Request.Context(), rows)
@@ -139,6 +146,26 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"homes": len(rows)})
+		})
+	}
+	if o.Workspaces != nil {
+		// INFO memory of the Valkey with the JuiceFS metadata, from the same CronJob: for the admins' storage view.
+		r.POST("/workspaces/valkey", func(c *gin.Context) {
+			if !hubToken(c, o.Token) {
+				return
+			}
+			raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+			if err != nil {
+				abort(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
+				return
+			}
+			m, ok := workspace.ParseValkeyInfo(string(raw))
+			if !ok {
+				abort(c, http.StatusBadRequest, "invalid", "Keine Ausgabe von INFO memory.")
+				return
+			}
+			o.Workspaces.SetValkeyMemory(m)
+			c.JSON(http.StatusOK, gin.H{"used_bytes": m.UsedBytes})
 		})
 	}
 	return r

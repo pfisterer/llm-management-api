@@ -304,6 +304,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 					}
 				}
 				wsSvc.Enforce(ctx, running, gpuSvc.EndServer, log)
+				purgeStorage(ctx, gpuSvc, wsSvc, pods, log)
 			}
 		}()
 	}
@@ -370,6 +371,38 @@ func workspaceSource(g *gpu.Service) usage.Source {
 				GPUs: p.GPUs, CPUUsed: p.CPUUsed, RAMUsedGB: p.RAMUsedGB})
 		}
 		return out, nil
+	}
+}
+
+// purgeStorage deletes the volumes of projects that are gone (deleted in the budget tree or by an admin): first it ends the servers still running in such a project, then it deletes the volume, which removes the members' homes and the shared folder. Workspace.Orphans waits two passes before it names a volume, so a briefly wrong project list deletes nothing.
+func purgeStorage(ctx context.Context, gpuSvc *gpu.Service, wsSvc *workspace.Service, pods []gpu.WorkspacePod, log *zap.SugaredLogger) {
+	vols, err := gpuSvc.ProjectVolumes(ctx)
+	if err != nil {
+		log.Warnw("storage: listing volumes failed", "error", err)
+		return
+	}
+	in := make([]workspace.StorageVolume, 0, len(vols))
+	for _, v := range vols {
+		in = append(in, workspace.StorageVolume{PVC: v.PVC, Project: v.Project})
+	}
+	orphans, err := wsSvc.Orphans(ctx, in)
+	if err != nil {
+		log.Warnw("storage: projects not readable, nothing deleted", "error", err)
+		return
+	}
+	for _, v := range orphans {
+		for _, p := range pods {
+			if p.Project == v.Project && p.Profile != "gpu-kernel" {
+				if err := gpuSvc.EndServer(ctx, p.Person, p.Server); err != nil {
+					log.Warnw("storage: ending a server of a deleted project failed", "project", v.Project, "person", p.Person, "server", p.Server, "error", err)
+				}
+			}
+		}
+		if err := gpuSvc.DeleteVolume(ctx, v.PVC); err != nil {
+			log.Warnw("storage: deleting a volume failed", "pvc", v.PVC, "error", err)
+			continue
+		}
+		log.Infow("storage: volume of a deleted project deleted", "pvc", v.PVC, "project", v.Project)
 	}
 }
 

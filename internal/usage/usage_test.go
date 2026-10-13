@@ -102,6 +102,10 @@ func TestHomes(t *testing.T) {
 	if u, err := ParseQuotaList(real); err != nil || !near(u["home-dennis-pfisterer-dhbw-de---c771a8ee"], 4.7/1024) {
 		t.Fatalf("juicefs 1.4 output: %v %v", u, err)
 	}
+	// A project's volume is booked to its project as a whole.
+	if rows, err := HomeRows(context.Background(), NewMemoryStore(), map[string]float64{"ws-t-abc": 2}, func(context.Context, string) string { return "x" }, time.Now()); err != nil || len(rows) != 1 || rows[0].Project != "t-abc" || rows[0].Person != ProjectStorage || rows[0].HomeGB != 2 {
+		t.Fatalf("project volume: %+v %v", rows, err)
+	}
 	if _, err := ParseQuotaList("no table"); err == nil {
 		t.Fatal("expected an error without a table")
 	}

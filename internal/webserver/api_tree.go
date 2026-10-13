@@ -73,7 +73,7 @@ func (s *Server) putTreeProject(c *gin.Context) {
 //
 //	@ID				deleteTreeProject
 //	@Summary		Delete a project of the budget tree
-//	@Description	Removes the node's project; its usage stays booked. 404 when there is none.
+//	@Description	Removes the node's project; its usage stays booked. Within ten minutes its servers are ended and its workspace storage (the members' homes in the project and the shared folder) is deleted. 404 when there is none.
 //	@Tags			tree
 //	@Security		BearerAuth
 //	@Param			node	path	string	true	"the project's node in the budget tree"

@@ -11,7 +11,7 @@ import (
 
 // TreeBudget is a project's share of a budget in the budget tree: an amount per window for the whole project; 0 = no cap.
 type TreeBudget struct {
-	Unit     string  `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours,llm_mtokens"`
+	Unit     string  `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours,llm_mtokens,storage_gb"`
 	GPUClass string  `json:"gpu_class,omitempty" example:"l4-3q"`
 	Window   string  `json:"window" example:"30d" enums:"24h,7d,30d"`
 	Amount   float64 `json:"amount" example:"500"`
@@ -30,6 +30,8 @@ type TreeProject struct {
 	LLMTPM int `json:"llm_tpm" example:"400000"`
 	// LLMModels are model groups the project was granted on top of the base models every project has.
 	LLMModels []string `json:"llm_models" example:"code,all-proxy-models"`
+	// StorageGB is the project's workspace storage (homes and shared folder together); 0 = none.
+	StorageGB int `json:"storage_gb" example:"50"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -38,7 +40,7 @@ type TreeUse struct {
 	Used float64 `json:"used"`
 }
 
-// TreeStatus is a tree-managed project as the tree sees it: where it is (slug) and what it used. Used is empty while no usage is booked here (development without the collector): nothing measured, not nothing used. A project with LLM tokens also reports its pool there: unit llm_mtokens, window 30d, amount = its tokens, used = what its members spent of the pool in LiteLLM's current window (0 before the pool's team exists); missing when LiteLLM could not be asked.
+// TreeStatus is a tree-managed project as the tree sees it: where it is (slug) and what it used. Used is empty while no usage is booked here (development without the collector): nothing measured, not nothing used. A project with LLM tokens also reports its pool there: unit llm_mtokens, window 30d, amount = its tokens, used = what its members spent of the pool in LiteLLM's current window (0 before the pool's team exists); missing when LiteLLM could not be asked. A project with storage reports it as unit storage_gb without a window, used = GiB in its volume at the last hourly report; missing before the first one.
 type TreeStatus struct {
 	Node string    `json:"node" example:"p_7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
 	Slug string    `json:"slug" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
@@ -130,6 +132,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	p.Name, p.Members, p.EndsAt = tp.Name, slices.Clone(tp.Members), tp.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = classes, maps.Clone(tp.GPUsByClass), tp.LLMMTokens
 	p.LLMRPM, p.LLMTPM, p.LLMModels = tp.LLMRPM, tp.LLMTPM, cleanModels(tp.LLMModels)
+	p.StorageGB = max(tp.StorageGB, 0)
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
@@ -200,6 +203,11 @@ func (s *Service) treeStatusWith(ctx context.Context, p Project, llmUsed map[str
 	if p.LLMMTokens > 0 && llmKnown {
 		st.Used = append(st.Used, TreeUse{TreeBudget: TreeBudget{Unit: "llm_mtokens", Window: LLMWindow, Amount: float64(p.LLMMTokens)}, Used: llmUsed[p.Slug]})
 	}
+	if p.StorageGB > 0 {
+		if used, ok := s.storageUsed(p.Slug); ok {
+			st.Used = append(st.Used, TreeUse{TreeBudget: TreeBudget{Unit: "storage_gb", Amount: float64(p.StorageGB)}, Used: used})
+		}
+	}
 	return st, nil
 }
 
@@ -236,11 +244,12 @@ func cleanModels(in []string) []string {
 	return slices.Compact(out)
 }
 
-// keepTreeFields puts back what the tree owns into a project a person changed: members, end, the tree's budgets, GPUs per class, the LLM tokens, rate limits and models, name and the node.
+// keepTreeFields puts back what the tree owns into a project a person changed: members, end, the tree's budgets, GPUs per class, the LLM tokens, rate limits and models, the storage, name and the node.
 func keepTreeFields(p *Project, cur Project) {
 	p.TreeNode, p.Name, p.Members, p.EndsAt = cur.TreeNode, cur.Name, cur.Members, cur.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = cur.GPUClasses, cur.GPUsByClass, cur.LLMMTokens
 	p.LLMRPM, p.LLMTPM, p.LLMModels = cur.LLMRPM, cur.LLMTPM, cur.LLMModels
+	p.StorageGB = cur.StorageGB
 	own := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range cur.Budgets {
 		if b.Tree {

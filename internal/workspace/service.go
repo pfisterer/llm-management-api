@@ -51,6 +51,7 @@ type Service struct {
 	usage   UsageReader
 	llm     LLMUsed
 	now     func() time.Time
+	storage storageState
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.

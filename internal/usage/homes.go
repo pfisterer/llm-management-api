@@ -73,7 +73,10 @@ func parseSize(s string) (float64, bool) {
 	return v * mult / (1 << 30), true
 }
 
-// HomeRows turns the used space per home directory into rows with profile "home". A home directory is home-<slug>---<hash>, where hash is the first 8 hex digits of SHA-256 of the JupyterHub user name (KubeSpawner's safe names); people are matched by that hash among those the store has seen. A home whose person is not known (yet) is booked to "unbekannt: <dir>", so its storage still shows up.
+// ProjectStorage is the person a project's volume is booked to: it belongs to the project, not to one member.
+const ProjectStorage = "Projektspeicher"
+
+// HomeRows turns the used space per home directory into rows with profile "home". A project's volume ws-<slug> is booked to that project as ProjectStorage. A home directory is home-<slug>---<hash>, where hash is the first 8 hex digits of SHA-256 of the JupyterHub user name (KubeSpawner's safe names); people are matched by that hash among those the store has seen. A home whose person is not known (yet) is booked to "unbekannt: <dir>", so its storage still shows up.
 func HomeRows(ctx context.Context, st Store, used map[string]float64, project ProjectOf, now time.Time) ([]Row, error) {
 	people, err := st.Persons(ctx)
 	if err != nil {
@@ -87,6 +90,11 @@ func HomeRows(ctx context.Context, st Store, used map[string]float64, project Pr
 	day := Day(now)
 	var rows []Row
 	for dir, gib := range used {
+		// A project's volume (ws-<slug>, homes of its members and the shared folder): booked to the project as a whole.
+		if slug, ok := strings.CutPrefix(dir, "ws-"); ok && slug != "" {
+			rows = append(rows, Row{Day: day, Project: slug, Person: ProjectStorage, Profile: "home", HomeGB: gib, UpdatedAt: now})
+			continue
+		}
 		if !strings.HasPrefix(dir, "home-") {
 			continue
 		}

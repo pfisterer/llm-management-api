@@ -211,7 +211,7 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 //
 //	@ID				deleteWorkspaceProject
 //	@Summary		Delete a workspace project
-//	@Description	Running servers keep running; usage stays booked to the project.
+//	@Description	Usage stays booked to the project. Within ten minutes its servers are ended and its workspace storage (the members' homes in the project and the shared folder) is deleted.
 //	@Tags			workspaces
 //	@Security		BearerAuth
 //	@Param			slug	path	string	true	"short name"
@@ -239,4 +239,25 @@ func (s *Server) workspaceError(c *gin.Context, err error) bool {
 		s.internalError(c, "workspace project", err)
 	}
 	return true
+}
+
+// getWorkspaceStorage godoc
+//
+//	@ID				getWorkspaceStorage
+//	@Summary		Workspace storage
+//	@Description	For admins: how full the workspace storage is. The directories of the JuiceFS file system with their used space and quota, largest first (a project's volume names its project), and the memory of the Valkey that holds the file system's metadata. Both as reported last by the hourly job; missing before its first report after a restart.
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Success		200	{object}	workspace.StorageReport
+//	@Failure		403	{object}	ErrorResponse
+//	@Router			/v1/workspaces/storage [get]
+func (s *Server) getWorkspaceStorage(c *gin.Context) {
+	r, err := s.ws.StorageReport(c.Request.Context())
+	if err != nil {
+		s.log.Errorw("storage report failed", "error", err)
+		abort(c, http.StatusInternalServerError, "internal", "Speicher konnte nicht gelesen werden.")
+		return
+	}
+	c.JSON(http.StatusOK, r)
 }
