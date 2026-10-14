@@ -23,16 +23,22 @@ func WorkspaceKey(masterKey, userID, project string) string {
 // workspaceAlias is the name the workspace key of a project has in the person's key list.
 func workspaceAlias(project string) string { return "workspace-" + project }
 
-// EnsureWorkspaceKey makes sure the person exists in LiteLLM with their quota and has the workspace key of the project in that project's pool, with the pool's key budget, and returns it. ErrNotEligible when the project has no pool the person may draw from (no LLM tokens).
+// EnsureWorkspaceKey makes sure the person exists in LiteLLM with their quota and has the workspace key of the project in a pool, with the pool's key budget, and returns it. The pool is the project's own; a project without LLM tokens (a workspace project, the LLM in a project of its own, docs/bauplan.md 8.14) draws from the person's default project. ErrNotEligible when the person has no pool at all.
 func (s *Service) EnsureWorkspaceKey(ctx context.Context, p Person, g Grant, masterKey, project string) (string, error) {
-	pool, ok := g.pool(project)
-	if !ok {
+	if len(g.Pools) == 0 {
 		return "", ErrNotEligible
 	}
 	uid := p.UserID()
 	key := WorkspaceKey(masterKey, uid, project)
-	if _, _, err := s.reconcile(ctx, p, g); err != nil {
+	info, _, err := s.reconcile(ctx, p, g)
+	if err != nil {
 		return "", err
+	}
+	pool, ok := g.pool(project)
+	if !ok {
+		if pool, ok = g.defaultPool(info); !ok {
+			return "", ErrNotEligible
+		}
 	}
 	cur, found, err := s.lite.KeyInfo(ctx, key)
 	if err != nil {

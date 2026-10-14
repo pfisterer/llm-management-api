@@ -192,7 +192,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		})
 	}
 	if o.Keys != nil {
-		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. A project without LLM tokens (or a person the LLM does not know yet) answers 200 with an empty key and the reason: the server starts without.
+		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws from the project's LLM tokens, or, for a project without (a workspace project), from the person's default LLM project. A person without any LLM project (or one the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without.
 		r.POST("/gpu/hub/workspace-key", func(c *gin.Context) {
 			if !hubToken(c, o.Token) {
 				return
@@ -225,7 +225,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			key, err := o.Keys.EnsureWorkspaceKey(ctx, keys.Person{Subject: sub, Email: email}, g, o.MasterKey, req.Project)
 			if errors.Is(err, keys.ErrNotEligible) {
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "project has no LLM tokens"})
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "no LLM project"})
 				return
 			}
 			if err != nil {
