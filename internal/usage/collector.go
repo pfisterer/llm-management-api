@@ -9,15 +9,17 @@ import (
 
 // Sample is one running workspace pod at the moment of sampling.
 type Sample struct {
-	Project   string // from the pod's label; empty = ask ProjectOf (pods from before projects)
-	Person    string
-	Profile   string
-	GPUClass  string  // empty without GPU
-	CPU       float64 // requested cores
-	RAMGB     float64 // requested GiB
-	GPUs      float64
-	CPUUsed   float64 // measured cores, 0 when unknown
-	RAMUsedGB float64 // measured GiB
+	Project  string // from the pod's label; empty = ask ProjectOf (pods from before projects)
+	Person   string
+	Profile  string
+	GPUClass string // empty without GPU
+	// GPUProduct is the GPU type of the pod's node; empty without GPU or while waiting.
+	GPUProduct string
+	CPU        float64 // requested cores
+	RAMGB      float64 // requested GiB
+	GPUs       float64
+	CPUUsed    float64 // measured cores, 0 when unknown
+	RAMUsedGB  float64 // measured GiB
 }
 
 // Source lists the running workspace pods.
@@ -63,7 +65,7 @@ func (c *Collector) Tick(ctx context.Context) error {
 		if project == "" {
 			project = c.project(ctx, s.Person)
 		}
-		r := Row{Day: day, Project: project, Person: s.Person, Profile: s.Profile, GPUClass: s.GPUClass,
+		r := Row{Day: day, Project: project, Person: s.Person, Profile: s.Profile, GPUClass: s.GPUClass, GPUProduct: s.GPUProduct,
 			ServerHours: h, VCPUHours: s.CPU * h, RAMGBHours: s.RAMGB * h, GPUHours: s.GPUs * h,
 			CPUUsedHours: s.CPUUsed * h, RAMUsedGBHours: s.RAMUsedGB * h, UpdatedAt: now}
 		k := keyOf(r)

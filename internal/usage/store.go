@@ -11,11 +11,11 @@ import (
 )
 
 type key struct {
-	day                              time.Time
-	project, person, profile, gpuCls string
+	day                                          time.Time
+	project, person, profile, gpuCls, gpuProduct string
 }
 
-func keyOf(r Row) key { return key{r.Day, r.Project, r.Person, r.Profile, r.GPUClass} }
+func keyOf(r Row) key { return key{r.Day, r.Project, r.Person, r.Profile, r.GPUClass, r.GPUProduct} }
 
 func add(dst *Row, r Row) {
 	dst.ServerHours += r.ServerHours
@@ -43,7 +43,7 @@ func (s *MemoryStore) Add(_ context.Context, rows []Row) error {
 		k := keyOf(r)
 		cur, ok := s.m[k]
 		if !ok {
-			cur = Row{Day: r.Day, Project: r.Project, Person: r.Person, Profile: r.Profile, GPUClass: r.GPUClass}
+			cur = Row{Day: r.Day, Project: r.Project, Person: r.Person, Profile: r.Profile, GPUClass: r.GPUClass, GPUProduct: r.GPUProduct}
 		}
 		add(&cur, r)
 		s.m[k] = cur
@@ -81,6 +81,9 @@ func (s *MemoryStore) Persons(context.Context) ([]string, error) {
 type GormStore struct{ db *gorm.DB }
 
 func NewGormStore(db *gorm.DB) (*GormStore, error) {
+	if err := migrateGPUProduct(db); err != nil {
+		return nil, err
+	}
 	if err := db.AutoMigrate(&Row{}); err != nil {
 		return nil, err
 	}
@@ -99,7 +102,7 @@ func (s *GormStore) Add(ctx context.Context, rows []Row) error {
 		return gorm.Expr("workspace_usage_daily." + col + " + excluded." + col)
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "day"}, {Name: "project"}, {Name: "person"}, {Name: "profile"}, {Name: "gpu_class"}},
+		Columns: []clause.Column{{Name: "day"}, {Name: "project"}, {Name: "person"}, {Name: "profile"}, {Name: "gpu_class"}, {Name: "gpu_product"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"server_hours":      inc("server_hours"),
 			"vcpu_hours":        inc("vcpu_hours"),
@@ -123,4 +126,24 @@ func (s *GormStore) Persons(ctx context.Context) ([]string, error) {
 	var out []string
 	err := s.db.WithContext(ctx).Model(&Row{}).Distinct().Pluck("person", &out).Error
 	return out, err
+}
+
+// migrateGPUProduct adds the GPU type to the key of the daily rows (15.10.2026): AutoMigrate adds columns but never changes a primary key, so the key is replaced here once.
+func migrateGPUProduct(db *gorm.DB) error {
+	m := db.Migrator()
+	if !m.HasTable(&Row{}) || m.HasColumn(&Row{}, "gpu_product") {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, stmt := range []string{
+			"ALTER TABLE workspace_usage_daily ADD COLUMN gpu_product text NOT NULL DEFAULT ''",
+			"ALTER TABLE workspace_usage_daily DROP CONSTRAINT IF EXISTS workspace_usage_daily_pkey",
+			"ALTER TABLE workspace_usage_daily ADD PRIMARY KEY (day, project, person, profile, gpu_class, gpu_product)",
+		} {
+			if err := tx.Exec(stmt).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

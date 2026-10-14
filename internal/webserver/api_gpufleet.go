@@ -16,6 +16,9 @@ type GPUFleetResponse struct {
 	Pools   []gpu.Pool      `json:"pools"`
 	Tiers   []gpu.Tier      `json:"tiers"`
 	Classes []gpu.ClassInfo `json:"classes"`
+	// Models are the gap filler models a node can run (keys), TierModels the default of each tier.
+	Models     []string          `json:"models"`
+	TierModels map[string]string `json:"tier_models"`
 }
 
 // getGPUFleet godoc
@@ -39,7 +42,7 @@ func (s *Server) getGPUFleet(c *gin.Context) {
 			var classes []gpu.ClassInfo
 			classes, err = s.gpu.GPUClasses(ctx)
 			if err == nil {
-				c.JSON(http.StatusOK, GPUFleetResponse{Nodes: orEmpty(nodes), Pools: orEmpty(pools), Tiers: gpu.Tiers, Classes: orEmpty(classes)})
+				c.JSON(http.StatusOK, GPUFleetResponse{Nodes: orEmpty(nodes), Pools: orEmpty(pools), Tiers: gpu.Tiers, Classes: orEmpty(classes), Models: orEmpty(s.gpu.GapModels()), TierModels: s.gpu.TierModels()})
 				return
 			}
 		}
@@ -90,6 +93,9 @@ func (s *Server) putGPUNode(c *gin.Context) {
 		return
 	}
 	s.reconcileSoon(c)
+	if err := s.gpu.ReconcileGapFillers(c.Request.Context()); err != nil {
+		s.log.Warnw("gpu gap fillers after change", "error", err)
+	}
 	s.getGPUFleet(c)
 }
 

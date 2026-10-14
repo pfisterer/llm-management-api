@@ -8,19 +8,21 @@ import (
 
 // WorkspacePod is one running workspace pod (Jupyter server or GPU kernel) with what it reserves and, when metrics-server answers, what it uses.
 type WorkspacePod struct {
-	Pod       string
-	Running   bool   // false: waiting (Kueue, image pull); reserves nothing yet, but counts for the limits on concurrent use
-	Queued    bool   // still waiting for its place: gated by Kueue or on no node yet (a pod pulling its image on the GPU node holds the GPU already)
-	Server    string // JupyterHub's server name (label hub.jupyter.org/servername); "" = the default server
-	Project   string // label dhbw.cloud/project set by the hub; empty for pods started before projects
-	Person    string // JupyterHub user name (e-mail)
-	Profile   string // label dhbw.cloud/profile set by the hub; "gpu-kernel" for kernel pods
-	GPUClass  string // from the node selector Kueue set; empty without GPU
-	CPU       float64
-	RAMGB     float64
-	GPUs      float64
-	CPUUsed   float64
-	RAMUsedGB float64
+	Pod      string
+	Running  bool   // false: waiting (Kueue, image pull); reserves nothing yet, but counts for the limits on concurrent use
+	Queued   bool   // still waiting for its place: gated by Kueue or on no node yet (a pod pulling its image on the GPU node holds the GPU already)
+	Server   string // JupyterHub's server name (label hub.jupyter.org/servername); "" = the default server
+	Project  string // label dhbw.cloud/project set by the hub; empty for pods started before projects
+	Person   string // JupyterHub user name (e-mail)
+	Profile  string // label dhbw.cloud/profile set by the hub; "gpu-kernel" for kernel pods
+	GPUClass string // from the node selector Kueue set; empty without GPU
+	// GPUProduct is the GPU type of the pod's node (nvidia.com/gpu.product); empty without GPU or before the pod has a node.
+	GPUProduct string
+	CPU        float64
+	RAMGB      float64
+	GPUs       float64
+	CPUUsed    float64
+	RAMUsedGB  float64
 }
 
 // podLister and metrics are the parts of the Kubernetes client the workspace listing needs.
@@ -52,6 +54,15 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 				ram += parseGiB(c.Usage["memory"])
 			}
 			used[m.Metadata.Name] = [2]float64{cpu, ram}
+		}
+	}
+	// The GPU type of each GPU node, for the booking of what was really used within a class.
+	productOf := map[string]string{}
+	if nl, ok := s.pods.(nodeLister); ok {
+		if nodes, err := nl.listNodes(ctx, "dhbw.cloud/node-type=gpu"); err == nil {
+			for _, n := range nodes {
+				productOf[n.Metadata.Name] = n.Metadata.Labels["nvidia.com/gpu.product"]
+			}
 		}
 	}
 	// Kernel pods carry no hub annotation; their owner is the person's server pod.
@@ -94,10 +105,15 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 			w.GPUs += parseCPU(g)
 		}
 		if w.GPUs > 0 {
-			w.GPUClass = p.Spec.NodeSelector["dhbw.cloud/gpu-class"]
+			// The class chosen at the start (label set by the hub or, for kernels, this service): a GPU borrowed from another pool of the tier counts against the chosen class. Else the class of the node Kueue put it on.
+			w.GPUClass = p.Metadata.Labels[labelClass]
+			if w.GPUClass == "" {
+				w.GPUClass = p.Spec.NodeSelector[labelClass]
+			}
 			if w.GPUClass == "" {
 				w.GPUClass = "unbekannt"
 			}
+			w.GPUProduct = productOf[p.Spec.NodeName]
 		}
 		if u, ok := used[p.Metadata.Name]; ok {
 			w.CPUUsed, w.RAMUsedGB = u[0], u[1]

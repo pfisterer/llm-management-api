@@ -74,7 +74,7 @@ type NodeAssignment struct {
 	Pool           string     `json:"pool"`
 	Tier           string     `json:"tier"`
 	AvailableUntil *time.Time `json:"available_until,omitempty"`
-	// GapModel: the inference gap filler on this node; "" = the tier's default, "-" = none (not yet in effect, the gap fillers still come from the inventory).
+	// GapModel: the inference gap filler on this node, a key of the configured models; "" = the tier's default, "-" = none.
 	GapModel  string    `json:"gap_model"`
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"`
@@ -223,6 +223,8 @@ type FleetConfig struct {
 	ReserveMemoryGi float64 `json:"reserveMemoryGi"` // GiB per node kept for the system
 	// Adopt maps the class ids from before pools to their pool and tier ({"l4-3q": {"allgemein", "klein"}}): their nodes are assigned on first sight, and the class pool-tier replaces the old id (projects, usage, tree). Only for the switch; empty afterwards.
 	Adopt map[string]LegacyClass `json:"adopt"`
+	// Inference: the gap fillers on the GPU nodes (gapfill.go); empty image = off.
+	Inference InferenceConfig `json:"inference"`
 }
 
 type LegacyClass struct {
@@ -456,8 +458,8 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 	if _, ok := tierByID(a.Tier); !ok {
 		return &ErrFleet{fmt.Sprintf("Stufe %q gibt es nicht.", a.Tier)}
 	}
-	if a.GapModel != "" && a.GapModel != "-" && strings.ContainsAny(a.GapModel, " \t\n") {
-		return &ErrFleet{"Modellname ohne Leerzeichen."}
+	if _, ok := s.fleetCfg.Inference.Models[a.GapModel]; a.GapModel != "" && a.GapModel != NoGapFiller && !ok {
+		return &ErrFleet{fmt.Sprintf("Modell %q gibt es nicht.", a.GapModel)}
 	}
 	nodes, err := s.GPUNodes(ctx)
 	if err != nil {
@@ -592,16 +594,35 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 		return errors.Join(append(errs, err)...)
 	}
 	ns := s.kernelNamespace()
+	pools, err := s.fleet.Pools(ctx)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	lends := map[string]bool{}
+	for _, p := range pools {
+		lends[p.ID] = p.Lend
+	}
+	// Per class its own quota; the classes of a tier form a cohort, so a queue can borrow what another pool of the tier lends (docs/bauplan.md 10.13).
+	quota := map[string]flavorQuota{}
 	for _, c := range classes {
-		var gpus, cpu, mem float64
+		q := flavorQuota{class: c.ID, lend: lends[c.Pool]}
 		for _, n := range nodes {
 			if n.Class == c.ID && n.Ready {
-				gpus += n.GPUs
-				cpu += max(n.CPU-s.fleetCfg.ReserveCPU, 0)
-				mem += max(n.MemGi-s.fleetCfg.ReserveMemoryGi, 0)
+				q.gpus += n.GPUs
+				q.cpu += max(n.CPU-s.fleetCfg.ReserveCPU, 0)
+				q.mem += max(n.MemGi-s.fleetCfg.ReserveMemoryGi, 0)
 			}
 		}
-		for _, obj := range []map[string]any{flavorFor(c.ID), clusterQueueFor(c.ID, gpus, cpu, mem), localQueueFor(ns, c.ID)} {
+		quota[c.ID] = q
+	}
+	for _, c := range classes {
+		others := []flavorQuota{}
+		for _, o := range classes {
+			if o.Tier == c.Tier && o.ID != c.ID {
+				others = append(others, flavorQuota{class: o.ID})
+			}
+		}
+		for _, obj := range []map[string]any{flavorFor(c.ID), clusterQueueFor(c.Tier, quota[c.ID], others), localQueueFor(ns, c.ID)} {
 			if err := ensureObject(ctx, k, obj); err != nil {
 				errs = append(errs, fmt.Errorf("class %s: %w", c.ID, err))
 			}
@@ -650,21 +671,43 @@ func quantity(v float64) string {
 	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", v), "0"), ".")
 }
 
-func clusterQueueFor(class string, gpus, cpu, memGi float64) map[string]any {
+// flavorQuota is what a class's queue holds of one flavor: its own nodes' resources, or nothing of another class it may borrow from.
+type flavorQuota struct {
+	class          string
+	gpus, cpu, mem float64
+	lend           bool // its idle GPUs may go to the other pools of the tier
+}
+
+func (q flavorQuota) entry(own bool) map[string]any {
+	res := func(name, v string) map[string]any {
+		r := map[string]any{"name": name, "nominalQuota": v}
+		if own && !q.lend {
+			r["lendingLimit"] = "0"
+		}
+		return r
+	}
+	return map[string]any{"name": q.class, "resources": []any{
+		res("cpu", quantity(q.cpu)), res("memory", quantity(q.mem)+"Gi"), res("nvidia.com/gpu", quantity(q.gpus)),
+	}}
+}
+
+// clusterQueueFor is the queue of a class: its own flavor first, then the other classes of its tier with no quota of their own (borrowed only where their pool lends). A pool takes lent GPUs back at once (reclaimWithinCohort).
+func clusterQueueFor(tier string, own flavorQuota, others []flavorQuota) map[string]any {
+	flavors := []any{own.entry(true)}
+	for _, o := range others {
+		flavors = append(flavors, o.entry(false))
+	}
 	return map[string]any{
 		"apiVersion": "kueue.x-k8s.io/v1beta2", "kind": "ClusterQueue",
-		"metadata": map[string]any{"name": "gpu-" + class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
+		"metadata": map[string]any{"name": "gpu-" + own.class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
 		"spec": map[string]any{
 			"namespaceSelector": map[string]any{},
-			// A workload with higher priority evicts lower ones in the same queue: that is what makes the inference gap fillers give the GPU back.
-			"preemption": map[string]any{"withinClusterQueue": "LowerPriority"},
+			"cohortName":        "tier-" + tier,
+			// A workload with higher priority evicts lower ones in the same queue: that is what makes the inference gap fillers give the GPU back. Lent GPUs come back to their pool at once.
+			"preemption": map[string]any{"withinClusterQueue": "LowerPriority", "reclaimWithinCohort": "Any"},
 			"resourceGroups": []any{map[string]any{
 				"coveredResources": []any{"cpu", "memory", "nvidia.com/gpu"},
-				"flavors": []any{map[string]any{"name": class, "resources": []any{
-					map[string]any{"name": "cpu", "nominalQuota": quantity(cpu)},
-					map[string]any{"name": "memory", "nominalQuota": quantity(memGi) + "Gi"},
-					map[string]any{"name": "nvidia.com/gpu", "nominalQuota": quantity(gpus)},
-				}}},
+				"flavors":          flavors,
 			}},
 		},
 	}
@@ -678,12 +721,20 @@ func localQueueFor(ns, class string) map[string]any {
 	}
 }
 
-// objectPath is the API path of a Kueue object (collection when name is "").
+// objectPath is the API path of an object the service keeps (collection when name is "").
 func objectPath(obj map[string]any, name string) string {
 	kind := obj["kind"].(string)
 	meta := obj["metadata"].(map[string]any)
-	plural := map[string]string{"ResourceFlavor": "resourceflavors", "ClusterQueue": "clusterqueues", "LocalQueue": "localqueues"}[kind]
-	p := "/apis/kueue.x-k8s.io/v1beta2/"
+	api := map[string][2]string{
+		"ResourceFlavor": {"/apis/kueue.x-k8s.io/v1beta2/", "resourceflavors"},
+		"ClusterQueue":   {"/apis/kueue.x-k8s.io/v1beta2/", "clusterqueues"},
+		"LocalQueue":     {"/apis/kueue.x-k8s.io/v1beta2/", "localqueues"},
+		"Deployment":     {"/apis/apps/v1/", "deployments"},
+		"Service":        {"/api/v1/", "services"},
+		"Ingress":        {"/apis/networking.k8s.io/v1/", "ingresses"},
+	}[kind]
+	prefix, plural := api[0], api[1]
+	p := prefix
 	if ns, _ := meta["namespace"].(string); ns != "" {
 		p += "namespaces/" + ns + "/"
 	}
@@ -694,7 +745,7 @@ func objectPath(obj map[string]any, name string) string {
 	return p
 }
 
-// ensureObject creates the object or replaces its spec when it differs; its status and the rest of its metadata stay.
+// ensureObject creates the object or brings what we set into it: the spec merged into the existing one (fields the API server set, like a Service's clusterIP, stay) and our labels; status and the rest of the metadata stay.
 func ensureObject(ctx context.Context, k kubeDoer, want map[string]any) error {
 	name := want["metadata"].(map[string]any)["name"].(string)
 	var cur map[string]any
@@ -705,11 +756,30 @@ func ensureObject(ctx context.Context, k kubeDoer, want map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if sameSpec(cur["spec"], want["spec"]) {
+	wantLabels, _ := want["metadata"].(map[string]any)["labels"].(map[string]any)
+	curMeta := obj(cur, "metadata")
+	if sameSpec(cur["spec"], want["spec"]) && sameSpec(curMeta["labels"], wantLabels) {
 		return nil
 	}
-	cur["spec"] = want["spec"]
+	cur["spec"] = mergeInto(cur["spec"], want["spec"])
+	if wantLabels != nil {
+		curMeta["labels"] = mergeInto(curMeta["labels"], wantLabels)
+		cur["metadata"] = curMeta
+	}
 	return k.do(ctx, "PUT", objectPath(want, name), cur, nil)
+}
+
+// mergeInto sets what want sets: maps merged key by key, everything else (lists too) replaced.
+func mergeInto(have, want any) any {
+	w, ok := want.(map[string]any)
+	h, ok2 := have.(map[string]any)
+	if !ok || !ok2 {
+		return want
+	}
+	for k, v := range w {
+		h[k] = mergeInto(h[k], v)
+	}
+	return h
 }
 
 // sameSpec compares what we set with what the API server returns (which adds defaults): every field we set must be there with the same value.

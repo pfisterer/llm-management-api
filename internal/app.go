@@ -366,6 +366,9 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 					if err := gpuSvc.ReconcileFleet(ctx); err != nil {
 						log.Warnw("gpu fleet reconcile", "error", err)
 					}
+					if err := gpuSvc.ReconcileGapFillers(ctx); err != nil {
+						log.Warnw("gpu gap fillers reconcile", "error", err)
+					}
 					select {
 					case <-ctx.Done():
 						return
@@ -468,7 +471,7 @@ func workspaceSource(g *gpu.Service) usage.Source {
 			if !p.Running {
 				continue // waiting pods reserve nothing yet
 			}
-			out = append(out, usage.Sample{Project: p.Project, Person: p.Person, Profile: p.Profile, GPUClass: p.GPUClass, CPU: p.CPU, RAMGB: p.RAMGB,
+			out = append(out, usage.Sample{Project: p.Project, Person: p.Person, Profile: p.Profile, GPUClass: p.GPUClass, GPUProduct: p.GPUProduct, CPU: p.CPU, RAMGB: p.RAMGB,
 				GPUs: p.GPUs, CPUUsed: p.CPUUsed, RAMUsedGB: p.RAMUsedGB})
 		}
 		return out, nil

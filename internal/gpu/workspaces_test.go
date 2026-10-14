@@ -65,3 +65,25 @@ func TestQuantities(t *testing.T) {
 		}
 	}
 }
+
+type fakeWorkspaceNodes struct {
+	fakeWorkspaceKube
+	nodes []nodeInfo
+}
+
+func (f fakeWorkspaceNodes) listNodes(context.Context, string) ([]nodeInfo, error) {
+	return f.nodes, nil
+}
+
+// A GPU pod is booked with the GPU type of its node.
+func TestWorkspacePodsProduct(t *testing.T) {
+	s, _, _, _ := testService()
+	s.pods = fakeWorkspaceNodes{fakeWorkspaceKube: fakeWorkspaceKube{fakePods: fakePods{`[
+		{"metadata":{"name":"jupyter-b","labels":{"component":"singleuser-server","dhbw.cloud/profile":"gpu"},"annotations":{"hub.jupyter.org/username":"b@dhbw.de"}},
+		 "spec":{"nodeName":"gpu-2","nodeSelector":{"dhbw.cloud/gpu-class":"allgemein-mittel"},"containers":[{"resources":{"limits":{"nvidia.com/gpu":"1"}}}]},"status":{"phase":"Running"}}
+	]`}, metrics: `[]`}, nodes: []nodeInfo{gpuNode("gpu-2", "allgemein-mittel", "NVIDIA-L40S-12Q", "12288", "1")}}
+	pods, err := s.WorkspacePods(context.Background())
+	if err != nil || len(pods) != 1 || pods[0].GPUProduct != "NVIDIA-L40S-12Q" || pods[0].GPUClass != "allgemein-mittel" {
+		t.Fatalf("pods = %+v, %v", pods, err)
+	}
+}

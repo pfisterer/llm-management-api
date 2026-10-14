@@ -39,6 +39,16 @@ func (f *fakeFleetKube) patchNodeLabels(_ context.Context, node string, labels m
 func (f *fakeFleetKube) do(_ context.Context, method, path string, body, out any) error {
 	switch method {
 	case "GET":
+		if base, _, isList := strings.Cut(path, "?"); isList {
+			var items []any
+			for p, o := range f.objects {
+				if strings.HasPrefix(p, base+"/") {
+					items = append(items, o)
+				}
+			}
+			b, _ := json.Marshal(map[string]any{"items": items})
+			return json.Unmarshal(b, out)
+		}
 		o, ok := f.objects[path]
 		if !ok {
 			return ErrNotFound
@@ -52,6 +62,11 @@ func (f *fakeFleetKube) do(_ context.Context, method, path string, body, out any
 	case "PUT":
 		f.objects[path] = body.(map[string]any)
 		f.writes++
+	case "DELETE":
+		if _, ok := f.objects[path]; !ok {
+			return ErrNotFound
+		}
+		delete(f.objects, path)
 	}
 	return nil
 }
@@ -102,7 +117,7 @@ func TestReconcileFleet(t *testing.T) {
 	}
 	cq := k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-klein"]
 	b, _ := json.Marshal(cq)
-	if !strings.Contains(string(b), `"nominalQuota":"7"`) || !strings.Contains(string(b), `"nominalQuota":"22Gi"`) || !strings.Contains(string(b), `{"name":"nvidia.com/gpu","nominalQuota":"1"}`) {
+	if !strings.Contains(string(b), `"nominalQuota":"7"`) || !strings.Contains(string(b), `"nominalQuota":"22Gi"`) || !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"1"`) {
 		t.Errorf("queue of allgemein-klein: %s", b)
 	}
 	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-allgemein-klein"] == nil || k.objects["/apis/kueue.x-k8s.io/v1beta2/resourceflavors/allgemein-klein"] == nil {
@@ -140,7 +155,7 @@ func TestReconcileFleet(t *testing.T) {
 		t.Errorf("unassigned node keeps its class: %v", k.nodes[1].Metadata.Labels)
 	}
 	b, _ = json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-mittel"])
-	if !strings.Contains(string(b), `{"name":"nvidia.com/gpu","nominalQuota":"0"}`) {
+	if !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"0"`) {
 		t.Errorf("empty class keeps its queue with quota 0: %s", b)
 	}
 }
@@ -169,5 +184,34 @@ func TestFleetRefusals(t *testing.T) {
 	}
 	if err := s.DeletePool(ctx, "wi"); !errors.As(err, &refused) {
 		t.Errorf("pool with a class deleted: %v", err)
+	}
+}
+
+func dump(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// Two pools of one tier: one cohort; each queue may borrow the other's flavor, which only lends when its pool does.
+func TestFleetLending(t *testing.T) {
+	ctx := context.Background()
+	s, k := fleetTestService()
+	_ = s.SeedFleet(ctx)
+	_ = s.SavePool(ctx, Pool{ID: "wi", Name: "WI", Lend: true})
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "allgemein", Tier: "mittel"})
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "mittel"})
+	if err := s.ReconcileFleet(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wi := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-wi-mittel"])
+	all := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-mittel"])
+	for _, q := range []string{wi, all} {
+		if !strings.Contains(q, `"cohortName":"tier-mittel"`) || !strings.Contains(q, `"reclaimWithinCohort":"Any"`) {
+			t.Errorf("cohort: %s", q)
+		}
+	}
+	// wi lends: no lendingLimit on its own flavor; allgemein keeps its GPUs; each lists the other with no quota of its own.
+	if strings.Contains(wi, `"lendingLimit"`) || !strings.Contains(all, `"lendingLimit":"0"`) || !strings.Contains(all, `"name":"wi-mittel"`) || !strings.Contains(wi, `"name":"allgemein-mittel"`) {
+		t.Errorf("lending:\nwi  %s\nall %s", wi, all)
 	}
 }

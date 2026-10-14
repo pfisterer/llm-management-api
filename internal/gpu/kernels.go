@@ -328,6 +328,7 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest) map[string]any {
 				"kueue.x-k8s.io/queue-name":                 queue,
 				"dhbw.cloud/kernel-user":                    o.UserLabel,
 				kernelLabelOwner:                            o.Pod,
+				labelClass:                                  o.GPUClass,
 				"dhbw.cloud/project":                        o.Project,
 			},
 			// Deleted with its server.

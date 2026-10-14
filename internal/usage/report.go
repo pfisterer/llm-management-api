@@ -8,12 +8,14 @@ import (
 
 // Total is the sum of rows: one entry per project, person, profile and GPU class over the period, or one per day.
 type Total struct {
-	Project  string    `json:"project,omitempty"`
-	Person   string    `json:"person,omitempty"`
-	Profile  string    `json:"profile,omitempty"`
-	GPUClass string    `json:"gpu_class,omitempty"`
-	Day      time.Time `json:"day,omitzero"`
-	Days     int       `json:"days"` // days with usage
+	Project  string `json:"project,omitempty"`
+	Person   string `json:"person,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	GPUClass string `json:"gpu_class,omitempty"`
+	// GPUProduct is the GPU type used (nvidia.com/gpu.product of the node).
+	GPUProduct string    `json:"gpu_product,omitempty"`
+	Day        time.Time `json:"day,omitzero"`
+	Days       int       `json:"days"` // days with usage
 
 	ServerHours    float64   `json:"server_hours"`
 	VCPUHours      float64   `json:"vcpu_hours"`
@@ -59,7 +61,7 @@ func BuildReport(ctx context.Context, st Store, from, to time.Time, keep Filter)
 		return Report{}, err
 	}
 	rep := Report{From: from, To: to, PerDay: []Total{}, Entries: []Total{}}
-	type ek struct{ project, person, profile, gpu string }
+	type ek struct{ project, person, profile, gpu, product string }
 	entries := map[ek]*Total{}
 	days := map[time.Time]*Total{}
 	for _, r := range rows {
@@ -67,9 +69,9 @@ func BuildReport(ctx context.Context, st Store, from, to time.Time, keep Filter)
 			continue
 		}
 		rep.Total.add(r)
-		k := ek{r.Project, r.Person, r.Profile, r.GPUClass}
+		k := ek{r.Project, r.Person, r.Profile, r.GPUClass, r.GPUProduct}
 		if entries[k] == nil {
-			entries[k] = &Total{Project: r.Project, Person: r.Person, Profile: r.Profile, GPUClass: r.GPUClass}
+			entries[k] = &Total{Project: r.Project, Person: r.Person, Profile: r.Profile, GPUClass: r.GPUClass, GPUProduct: r.GPUProduct}
 		}
 		entries[k].add(r)
 		if days[r.Day] == nil {
@@ -92,7 +94,10 @@ func BuildReport(ctx context.Context, st Store, from, to time.Time, keep Filter)
 		if a.Profile != b.Profile {
 			return a.Profile < b.Profile
 		}
-		return a.GPUClass < b.GPUClass
+		if a.GPUClass != b.GPUClass {
+			return a.GPUClass < b.GPUClass
+		}
+		return a.GPUProduct < b.GPUProduct
 	})
 	for _, t := range days {
 		t.Days = 1
