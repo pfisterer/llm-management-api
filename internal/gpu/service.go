@@ -312,6 +312,50 @@ func (s *Service) Servers(ctx context.Context, user string) ([]Server, error) {
 	return out, nil
 }
 
+// StartOptions is what a start chooses: the project, the profile and, for a profile with a GPU, the GPU class. They become the server's user_options, which the hub checks before the start (project, limits, GPU quota) and KubeSpawner applies (the project's environment, the class's queue).
+type StartOptions struct {
+	Project  string
+	Profile  string
+	GPUClass string
+}
+
+// StartServer starts a new named server for the person through the hub API: named <project>-<profile>, with -2, -3 … while that name runs. A stopped server of that name is started again with the new options. The person is created in the hub if they never logged in there.
+func (s *Service) StartServer(ctx context.Context, user string, o StartOptions) (Server, error) {
+	if err := s.servers.ensureUser(ctx, user); err != nil {
+		return Server{}, err
+	}
+	u, err := s.servers.user(ctx, user)
+	if errors.Is(err, ErrNotFound) {
+		u, err = &hubUser{}, nil
+	}
+	if err != nil {
+		return Server{}, err
+	}
+	name := o.Project + "-" + o.Profile
+	for i := 2; ; i++ {
+		if _, running := u.Servers[name]; !running {
+			break
+		}
+		name = fmt.Sprintf("%s-%s-%d", o.Project, o.Profile, i)
+	}
+	options := map[string]any{"profile": o.Profile, "project": o.Project}
+	if o.GPUClass != "" {
+		options["gpu_class"] = o.GPUClass
+	}
+	if err := s.servers.startServer(ctx, user, name, options); err != nil {
+		return Server{}, err
+	}
+	srv := Server{Name: name, Pending: "spawn", Profile: o.Profile, URL: strings.TrimRight(s.cfg.JupyterURL, "/") + "/user/" + url.PathEscape(user) + "/" + url.PathEscape(name) + "/"}
+	if list, err := s.Servers(ctx, user); err == nil {
+		for _, sv := range list {
+			if sv.Name == name {
+				srv = sv
+			}
+		}
+	}
+	return srv, nil
+}
+
 // StopServer stops (and removes) one of the person's named servers.
 // EndServer stops a server but keeps it (named servers stay in the list and can be started again), e.g. when a budget is used up.
 func (s *Service) EndServer(ctx context.Context, user, name string) error {

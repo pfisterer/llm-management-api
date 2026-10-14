@@ -3,11 +3,13 @@ package webserver
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
 // requireWorkspace aborts unless the caller may use workspaces: a member of an active project, or an admin (who manages the projects).
@@ -81,4 +83,99 @@ func (s *Server) stopServer(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// StartOptionsResponse is what a start may choose: the caller's projects (with their profiles, GPU classes, environment, storage and end) and the profiles.
+type StartOptionsResponse struct {
+	Projects []HubProject        `json:"projects"`
+	Profiles []workspace.Profile `json:"profiles"`
+}
+
+// getStartOptions godoc
+//
+//	@ID			getGPUStartOptions
+//	@Summary	What I can start
+//	@Description	The caller's active projects as a start sees them, and the profiles. Admins without a project get no projects: every start needs one.
+//	@Tags		gpu
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	StartOptionsResponse
+//	@Router		/v1/gpu/start-options [get]
+func (s *Server) getStartOptions(c *gin.Context) {
+	ctx := c.Request.Context()
+	c.JSON(http.StatusOK, StartOptionsResponse{Projects: hubProjects(ctx, s.ws, s.myProjects(c)), Profiles: s.ws.Catalog(ctx).Profiles})
+}
+
+// StartServerRequest chooses a project, a profile and, for a profile with a GPU, a GPU class (optional when the project has only one).
+type StartServerRequest struct {
+	Project  string `json:"project" binding:"required"`
+	Profile  string `json:"profile" binding:"required"`
+	GPUClass string `json:"gpu_class"`
+}
+
+// startServer godoc
+//
+//	@ID			startGPUServer
+//	@Summary	Start a server
+//	@Description	Starts a new named server in JupyterHub with the project's environment. The hub checks the start as for every start (membership, profile, GPU class, limits per person, GPU quota); a refusal is 409 with its reason. 202 with the server while it starts.
+//	@Tags		gpu
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		start	body		StartServerRequest	true	"what to start"
+//	@Success	202		{object}	gpu.Server
+//	@Failure	400		{object}	ErrorResponse
+//	@Failure	409		{object}	ErrorResponse
+//	@Router		/v1/gpu/servers [post]
+func (s *Server) startServer(c *gin.Context) {
+	var req StartServerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abort(c, http.StatusBadRequest, "invalid", "project und profile fehlen.")
+		return
+	}
+	o, msg := s.startOptions(c, req)
+	if msg != "" {
+		abort(c, http.StatusBadRequest, "invalid", msg)
+		return
+	}
+	srv, err := s.gpu.StartServer(c.Request.Context(), caller(c).Email, o)
+	if err != nil {
+		s.gpuError(c, "start server", err)
+		return
+	}
+	c.JSON(http.StatusAccepted, srv)
+}
+
+// startOptions checks a start against the caller's projects, as the start page offers it; the hub checks the limits.
+func (s *Server) startOptions(c *gin.Context, req StartServerRequest) (gpu.StartOptions, string) {
+	var project *workspace.Mine
+	for _, m := range s.myProjects(c) {
+		if m.Slug == req.Project {
+			project = &m
+		}
+	}
+	if project == nil {
+		return gpu.StartOptions{}, "Kein aktives Projekt " + req.Project + " mit Workspace-Zugang."
+	}
+	if !slices.Contains(project.Profiles, req.Profile) || (req.Profile == workspace.SplitProfile && !project.Derived()) {
+		return gpu.StartOptions{}, "Diese Umgebung ist im Projekt nicht freigegeben."
+	}
+	o := gpu.StartOptions{Project: req.Project, Profile: req.Profile}
+	usesGPU := false
+	for _, p := range s.ws.Catalog(c.Request.Context()).Profiles {
+		if p.Slug == req.Profile {
+			usesGPU = p.GPU
+		}
+	}
+	if !usesGPU {
+		return o, ""
+	}
+	o.GPUClass = req.GPUClass
+	if o.GPUClass == "" && len(project.GPUClasses) == 1 {
+		o.GPUClass = project.GPUClasses[0]
+	}
+	if !project.AllowsGPUClass(o.GPUClass) {
+		return gpu.StartOptions{}, "Diese GPU-Klasse ist im Projekt nicht freigegeben."
+	}
+	return o, ""
 }

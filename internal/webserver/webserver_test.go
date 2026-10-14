@@ -223,6 +223,31 @@ func TestRequireWorkspace(t *testing.T) {
 	}
 }
 
+// Starting from the self-service UI: only the caller's projects, profiles and GPU classes; the hub checks the rest.
+func TestStartServer(t *testing.T) {
+	_, _, h := llmServer(t)
+	code, body := do(t, h, "GET", "/v1/gpu/start-options", "member@dhbw.de", nil)
+	if code != 200 || !strings.Contains(string(body), `"slug":"t-1"`) || strings.Contains(string(body), "Nur LLM") || !strings.Contains(string(body), `"profiles":[{"slug":"cpu"`) {
+		t.Fatalf("start options: %d %s", code, body)
+	}
+	for _, tc := range []struct {
+		req  StartServerRequest
+		want int
+	}{
+		{StartServerRequest{Project: "t-2", Profile: "cpu"}, 400},
+		{StartServerRequest{Project: "t-1", Profile: "nope"}, 400},
+		{StartServerRequest{Project: "t-1", Profile: "gpu", GPUClass: "other"}, 400},
+		{StartServerRequest{Project: "t-1", Profile: "gpu"}, 202},
+	} {
+		if code, body := do(t, h, "POST", "/v1/gpu/servers", "member@dhbw.de", tc.req); code != tc.want {
+			t.Errorf("%+v: %d %s, want %d", tc.req, code, body, tc.want)
+		}
+	}
+	if code, _ := do(t, h, "POST", "/v1/gpu/servers", "nobody@dhbw.de", StartServerRequest{Project: "t-1", Profile: "cpu"}); code != http.StatusForbidden {
+		t.Errorf("nobody: %d", code)
+	}
+}
+
 func TestGPUHubAccess(t *testing.T) {
 	acc, ws, _ := llmServer(t)
 	r := GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", SelfServiceURL: "https://self-service", Log: zap.NewNop().Sugar()}, true)

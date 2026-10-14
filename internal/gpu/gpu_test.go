@@ -237,3 +237,35 @@ func TestEnsurePrepull(t *testing.T) {
 		t.Fatalf("update: %v %d %v", err, f.puts, f.cur["metadata"])
 	}
 }
+
+type runningHub struct {
+	fakeHub
+	running map[string]HubServer
+}
+
+func (f *runningHub) user(context.Context, string) (*hubUser, error) {
+	return &hubUser{Servers: f.running}, nil
+}
+
+func TestStartServerNames(t *testing.T) {
+	s, _, _, _ := testService()
+	h := &runningHub{fakeHub: fakeHub{started: map[string]map[string]any{}}, running: map[string]HubServer{"ml-gpu": {Ready: true}}}
+	s.servers = h
+	srv, err := s.StartServer(context.Background(), "a@b.de", StartOptions{Project: "ml", Profile: "gpu", GPUClass: "general-medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.Name != "ml-gpu-2" || srv.URL != "https://hub/user/a@b.de/ml-gpu-2/" {
+		t.Fatalf("server: %+v", srv)
+	}
+	o := h.started["ml-gpu-2"]
+	if o["profile"] != "gpu" || o["project"] != "ml" || o["gpu_class"] != "general-medium" {
+		t.Fatalf("options: %v", o)
+	}
+	if _, err := s.StartServer(context.Background(), "a@b.de", StartOptions{Project: "ml", Profile: "cpu"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := h.started["ml-cpu"]["gpu_class"]; has {
+		t.Fatal("cpu start carries a GPU class")
+	}
+}

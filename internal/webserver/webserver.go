@@ -149,6 +149,10 @@ func (s *Server) Router() *gin.Engine {
 		g := v1.Group("/gpu", s.requireWorkspace)
 		g.GET("/servers", s.listServers)
 		g.DELETE("/servers/:name", s.stopServer)
+		if s.ws != nil {
+			g.GET("/start-options", s.getStartOptions)
+			g.POST("/servers", s.startServer)
+		}
 	}
 	if s.gpu != nil && s.gpu.FleetEnabled() {
 		f := v1.Group("/gpu/fleet", require(access.RoleAdmin))

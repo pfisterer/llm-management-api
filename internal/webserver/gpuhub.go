@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"io"
@@ -78,6 +79,26 @@ type GPUHubAccessResponse struct {
 	GetProjectURL string `json:"get_project_url,omitempty"`
 }
 
+// hubProjects is how a start sees the person's projects: what the hub offers and the self-service UI's start page (GET /v1/gpu/start-options).
+func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mine) []HubProject {
+	classes := ws.GPUClasses(ctx)
+	out := []HubProject{}
+	for _, m := range mine {
+		hubClasses := []HubGPUClass{}
+		for _, id := range m.GPUClasses {
+			hc := HubGPUClass{ID: id, Name: id, Available: classes == nil}
+			for _, cl := range classes {
+				if cl.ID == id {
+					hc.Name, hc.Available = cl.Name, cl.GPUs > 0
+				}
+			}
+			hubClasses = append(hubClasses, hc)
+		}
+		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
+	}
+	return out
+}
+
 // GPUHubRouter serves GET /gpu/hub/access?user=<email> for JupyterHub in the
 // GPU cluster. Its own listener, reached only through the WireGuard link (a
 // Service with the link address as external IP), and a shared bearer token.
@@ -106,19 +127,8 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				abort(c, http.StatusInternalServerError, "internal", "Projekte konnten nicht gelesen werden.")
 				return
 			}
-			classes := o.Workspaces.GPUClasses(c.Request.Context())
+			resp.Projects = hubProjects(c.Request.Context(), o.Workspaces, mine)
 			for _, m := range mine {
-				hubClasses := []HubGPUClass{}
-				for _, id := range m.GPUClasses {
-					hc := HubGPUClass{ID: id, Name: id, Available: classes == nil}
-					for _, cl := range classes {
-						if cl.ID == id {
-							hc.Name, hc.Available = cl.Name, cl.GPUs > 0
-						}
-					}
-					hubClasses = append(hubClasses, hc)
-				}
-				resp.Projects = append(resp.Projects, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: o.Workspaces.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: o.Workspaces.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}
