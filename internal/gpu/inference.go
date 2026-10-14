@@ -65,15 +65,20 @@ const (
 
 // InferencePod is one pod of the inference pool for the admin page, in whatever state.
 type InferencePod struct {
-	Replica  string     `json:"replica"`
-	Pod      string     `json:"pod"`
-	Site     string     `json:"site"` // name in the discovery job and in LiteLLM
-	Node     string     `json:"node,omitempty"`
-	GPUClass string     `json:"gpu_class"`
-	Role     string     `json:"role" enums:"gap-filler,base-load"`
-	Model    string     `json:"model"`
-	State    string     `json:"state" enums:"bereit,startet,wartet auf GPU,wird beendet"`
-	Since    *time.Time `json:"since"` // start on the node, or creation while it still waits
+	Replica  string `json:"replica"`
+	Pod      string `json:"pod"`
+	Site     string `json:"site"` // name in the discovery job and in LiteLLM
+	Node     string `json:"node,omitempty"`
+	GPUClass string `json:"gpu_class"`
+	Role     string `json:"role" enums:"gap-filler,base-load"`
+	Model    string `json:"model"`
+	State    string `json:"state" enums:"bereit,startet,wartet auf GPU,wird beendet"`
+	// ModelKey is the catalogue model of a gap filler (label dhbw.cloud/inference-model); empty for the base load.
+	ModelKey string `json:"model_key,omitempty"`
+	Restarts int    `json:"restarts"`
+	// Problem is why the container is not running or last ended, e.g. "CrashLoopBackOff" or "OOMKilled".
+	Problem string     `json:"problem,omitempty"`
+	Since   *time.Time `json:"since"` // start on the node, or creation while it still waits
 }
 
 // InferencePool is the inference pool for the admin page.
@@ -104,7 +109,15 @@ func (s *Service) InferencePool(ctx context.Context) (InferencePool, error) {
 			continue
 		}
 		ip := InferencePod{Replica: name, Pod: p.Metadata.Name, Site: InferenceSitePrefix + name, Node: p.Spec.NodeName,
-			GPUClass: p.Metadata.Labels["dhbw.cloud/gpu-class"], Role: p.Metadata.Labels["dhbw.cloud/inference-role"], Model: servedModel(p)}
+			GPUClass: p.Metadata.Labels["dhbw.cloud/gpu-class"], Role: p.Metadata.Labels["dhbw.cloud/inference-role"], Model: servedModel(p), ModelKey: p.Metadata.Labels["dhbw.cloud/inference-model"]}
+		for _, cs := range p.Status.ContainerStatuses {
+			ip.Restarts += cs.RestartCount
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" && cs.State.Waiting.Reason != "ContainerCreating" && cs.State.Waiting.Reason != "PodInitializing" {
+				ip.Problem = cs.State.Waiting.Reason
+			} else if cs.LastState.Terminated != nil && cs.RestartCount > 0 {
+				ip.Problem = cs.LastState.Terminated.Reason
+			}
+		}
 		switch {
 		case p.Metadata.DeletionTimestamp != nil:
 			ip.State = InferenceTerminating

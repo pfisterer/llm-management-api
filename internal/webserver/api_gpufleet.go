@@ -16,8 +16,8 @@ type GPUFleetResponse struct {
 	Pools   []gpu.Pool      `json:"pools"`
 	Tiers   []gpu.Tier      `json:"tiers"`
 	Classes []gpu.ClassInfo `json:"classes"`
-	// Models are the gap filler models a node can run (keys), TierModels the default of each tier.
-	Models     []string          `json:"models"`
+	// Models are the gap filler models of the catalogue (a node is offered those whose min_gb its GPU memory reaches), TierModels the default of each tier.
+	Models     []gpu.ModelChoice `json:"models"`
 	TierModels map[string]string `json:"tier_models"`
 }
 
@@ -42,7 +42,7 @@ func (s *Server) getGPUFleet(c *gin.Context) {
 			var classes []gpu.ClassInfo
 			classes, err = s.gpu.GPUClasses(ctx)
 			if err == nil {
-				c.JSON(http.StatusOK, GPUFleetResponse{Nodes: orEmpty(nodes), Pools: orEmpty(pools), Tiers: gpu.Tiers, Classes: orEmpty(classes), Models: orEmpty(s.gpu.GapModels()), TierModels: s.gpu.TierModels()})
+				c.JSON(http.StatusOK, GPUFleetResponse{Nodes: orEmpty(nodes), Pools: orEmpty(pools), Tiers: gpu.Tiers, Classes: orEmpty(classes), Models: orEmpty(s.gpu.ModelChoices(ctx)), TierModels: s.gpu.TierModels(ctx)})
 				return
 			}
 		}

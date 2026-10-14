@@ -17,6 +17,7 @@ type InferenceModel struct {
 	Model     string         `json:"model"`
 	Args      []string       `json:"args,omitempty"`
 	Resources map[string]any `json:"resources,omitempty"`
+	MinGB     float64        `json:"minGB,omitempty"` // GPU memory it needs
 }
 
 // InferenceConfig is what the gap fillers need: the vLLM image, the public host, the models by key and the default model key of each tier.
@@ -35,41 +36,26 @@ const (
 	NoGapFiller = "-"
 )
 
-// GapModels lists the model keys an admin can choose for a node.
-func (s *Service) GapModels() []string {
-	keys := make([]string, 0, len(s.fleetCfg.Inference.Models))
-	for k := range s.fleetCfg.Inference.Models {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // TierModels is the default gap filler model of each tier.
-func (s *Service) TierModels() map[string]string {
-	out := map[string]string{}
-	for k, v := range s.fleetCfg.Inference.TierModels {
-		out[k] = v
+func (s *Service) TierModels(ctx context.Context) map[string]string {
+	_, tiers, err := s.catalogue(ctx)
+	if err != nil {
+		return map[string]string{}
 	}
-	return out
+	return tiers
 }
 
-// gapModelFor is the model key of a node's gap filler; "" = none.
-func (s *Service) gapModelFor(n GPUNode) string {
-	if n.Assignment == nil || n.Class == "" {
-		return ""
+// gapModelFor is the catalogue model of a node's gap filler; false = none.
+func gapModelFor(n GPUNode, models map[string]CatalogModel, tiers map[string]string) (CatalogModel, bool) {
+	if n.Assignment == nil || n.Class == "" || n.Assignment.GapModel == NoGapFiller {
+		return CatalogModel{}, false
 	}
 	key := n.Assignment.GapModel
-	if key == NoGapFiller {
-		return ""
-	}
 	if key == "" {
-		key = s.fleetCfg.Inference.TierModels[n.Assignment.Tier]
+		key = tiers[n.Assignment.Tier]
 	}
-	if _, ok := s.fleetCfg.Inference.Models[key]; !ok {
-		return ""
-	}
-	return key
+	m, ok := models[key]
+	return m, ok
 }
 
 type gapReplica struct {
@@ -90,10 +76,14 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	models, tiers, err := s.catalogue(ctx)
+	if err != nil {
+		return err
+	}
 	want := map[string]gapReplica{}
 	for _, n := range nodes {
-		if key := s.gapModelFor(n); key != "" {
-			r := gapReplica{name: "gap-" + n.Name, node: n.Name, class: n.Class, model: key}
+		if m, ok := gapModelFor(n, models, tiers); ok {
+			r := gapReplica{name: "gap-" + n.Name, node: n.Name, class: n.Class, model: m.Key}
 			if len("vllm-"+r.name) <= 63 {
 				want["vllm-"+r.name] = r
 			}
@@ -141,7 +131,7 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 	sort.Strings(names)
 	for _, name := range names {
 		r := want[name]
-		m := s.fleetCfg.Inference.Models[r.model]
+		m := models[r.model]
 		for _, o := range []map[string]any{s.gapDeployment(ns, r, m), gapService(ns, r), s.gapIngress(ns, r)} {
 			if err := ensureObject(ctx, k, o); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", name, err))
@@ -161,7 +151,7 @@ func gapLabels(r gapReplica) map[string]any {
 	return map[string]any{"app": "vllm", "replica": r.name, managedLabel: managedValue}
 }
 
-func (s *Service) gapDeployment(ns string, r gapReplica, m InferenceModel) map[string]any {
+func (s *Service) gapDeployment(ns string, r gapReplica, m CatalogModel) map[string]any {
 	queue := "inference-" + r.class
 	labels := gapLabels(r)
 	labels["kueue.x-k8s.io/queue-name"] = queue
@@ -171,10 +161,7 @@ func (s *Service) gapDeployment(ns string, r gapReplica, m InferenceModel) map[s
 	for _, a := range m.Args {
 		args = append(args, a)
 	}
-	resources := m.Resources
-	if resources == nil {
-		resources = map[string]any{"requests": map[string]any{"cpu": "1", "memory": "3Gi", "nvidia.com/gpu": 1}, "limits": map[string]any{"memory": "5Gi", "nvidia.com/gpu": 1}}
-	}
+	resources := m.resources()
 	probe := func(failures int) map[string]any {
 		return map[string]any{"httpGet": map[string]any{"path": "/health", "port": "http"}, "periodSeconds": 10, "failureThreshold": failures}
 	}

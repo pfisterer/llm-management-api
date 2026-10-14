@@ -73,12 +73,13 @@ type allStores struct {
 	usage    usage.Store
 	projects workspace.Store
 	gpuFleet gpu.FleetStore
+	models   gpu.ModelStore
 }
 
 // stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), gpu.NewMemoryFleetStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -121,7 +122,11 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, gf}, nil
+	gm, err := gpu.NewGormModelStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{fs, cs, gs, us, ws, gf, gm}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -188,6 +193,11 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			gpuSvc.SetFleet(st.gpuFleet, cfg.GPUFleet.FleetConfig)
 			if err := gpuSvc.SeedFleet(context.Background()); err != nil {
 				return fmt.Errorf("gpu fleet: %w", err)
+			}
+			// The catalogue of the platform's own models (docs/bauplan.md 10.16); the inventory seeds it once.
+			gpuSvc.SetModels(st.models)
+			if err := gpuSvc.SeedModels(context.Background()); err != nil {
+				return fmt.Errorf("model catalogue: %w", err)
 			}
 			// The class ids from before pools (l4-3q) become pool-tier: projects and booked usage follow once; the tree renames its resources when it sees "replaces" in the catalogue.
 			for _, old := range gpuSvc.AdoptedIDs() {

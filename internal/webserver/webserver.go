@@ -155,6 +155,12 @@ func (s *Server) Router() *gin.Engine {
 		f.PUT("/nodes/:name", s.putGPUNode)
 		f.PUT("/pools/:id", s.putGPUPool)
 		f.DELETE("/pools/:id", s.deleteGPUPool)
+		// The platform's own models (docs/bauplan.md 10.16).
+		m := v1.Group("/inference", require(access.RoleAdmin))
+		m.GET("/models", s.getModelCatalog)
+		m.PUT("/models/:key", s.putCatalogModel)
+		m.DELETE("/models/:key", s.deleteCatalogModel)
+		m.PUT("/tiers/:tier", s.putTierModel)
 	}
 	return r
 }

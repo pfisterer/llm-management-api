@@ -57,6 +57,8 @@ type Service struct {
 	// fleet: pools, GPU classes and node assignments (fleet.go); nil = the GPU administration is off.
 	fleet    FleetStore
 	fleetCfg FleetConfig
+	// models: the catalogue of the gap filler models (models.go); nil = the inventory's as they are.
+	models ModelStore
 	// ready is told when a project image build is ready, so the project uses it.
 	ready func(ctx context.Context, e Environment) error
 	// bases are the current bases of the projects' environments at their release (SetBases).

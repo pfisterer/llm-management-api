@@ -143,8 +143,21 @@ type podInfo struct {
 		} `json:"containers"`
 	} `json:"spec"`
 	Status struct {
-		Phase      string     `json:"phase"`
-		StartTime  *time.Time `json:"startTime"`
+		Phase             string     `json:"phase"`
+		StartTime         *time.Time `json:"startTime"`
+		ContainerStatuses []struct {
+			RestartCount int `json:"restartCount"`
+			State        struct {
+				Waiting *struct {
+					Reason string `json:"reason"`
+				} `json:"waiting"`
+			} `json:"state"`
+			LastState struct {
+				Terminated *struct {
+					Reason string `json:"reason"`
+				} `json:"terminated"`
+			} `json:"lastState"`
+		} `json:"containerStatuses"`
 		Conditions []struct {
 			Type   string `json:"type"`
 			Status string `json:"status"`

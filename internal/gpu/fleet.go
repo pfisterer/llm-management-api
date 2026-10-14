@@ -458,8 +458,14 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 	if _, ok := tierByID(a.Tier); !ok {
 		return &ErrFleet{fmt.Sprintf("Stufe %q gibt es nicht.", a.Tier)}
 	}
-	if _, ok := s.fleetCfg.Inference.Models[a.GapModel]; a.GapModel != "" && a.GapModel != NoGapFiller && !ok {
-		return &ErrFleet{fmt.Sprintf("Modell %q gibt es nicht.", a.GapModel)}
+	if a.GapModel != "" && a.GapModel != NoGapFiller {
+		models, _, err := s.catalogue(ctx)
+		if err != nil {
+			return err
+		}
+		if _, ok := models[a.GapModel]; !ok {
+			return &ErrFleet{fmt.Sprintf("Modell %q gibt es nicht.", a.GapModel)}
+		}
 	}
 	nodes, err := s.GPUNodes(ctx)
 	if err != nil {
