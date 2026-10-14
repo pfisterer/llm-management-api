@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -58,6 +59,8 @@ type Config struct {
 
 	// GPU part (environments from Git, JupyterHub servers in the GPU cluster).
 	GPU gpu.Config
+	// GPUFleet switches the GPU administration on (GPU_FLEET, JSON).
+	GPUFleet GPUFleetConfig
 	// Listener for JupyterHub's access questions (GPU part), and its token.
 	GPUHubBind  string
 	GPUHubToken string
@@ -75,6 +78,12 @@ type Config struct {
 	LLMKeyBudgetWindow string
 	// How often LiteLLM's teams (one per project), quotas and keys are brought in step with the tree (besides right after each change from the tree).
 	BudgetSyncInterval time.Duration
+}
+
+// GPUFleetConfig is GPU_FLEET.
+type GPUFleetConfig struct {
+	Enabled bool `json:"enabled"`
+	gpu.FleetConfig
 }
 
 func LoadConfig() (Config, error) {
@@ -141,6 +150,12 @@ func LoadConfig() (Config, error) {
 		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", "inference"),
 		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", "jupyterhub"),
 		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", "notebooks"), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
+	}
+	// GPU administration: {"enabled": true, "reserveCPU": 1, "reserveMemoryGi": 2, "legacy": {"l4-3q": {"pool": "allgemein", "tier": "klein"}}}.
+	if raw := envconf.String("GPU_FLEET", ""); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.GPUFleet); err != nil {
+			return Config{}, fmt.Errorf("GPU_FLEET: %w", err)
+		}
 	}
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
 	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")

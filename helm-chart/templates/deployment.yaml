@@ -140,6 +140,9 @@ spec:
             - name: GPU_INFERENCE_API_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-inference-api-key}}
             {{- end }}
+            {{- if .Values.gpu.fleet }}
+            - {name: GPU_FLEET, value: {{ .Values.gpu.fleet | toJson | quote }}}
+            {{- end }}
             - {name: GPU_KERNEL_QUEUE, value: {{ .Values.gpu.kernels.queue | quote }}}
             - {name: GPU_KERNEL_NO_GPU, value: {{ .Values.gpu.kernels.noGPU | quote }}}
             {{- if .Values.gpu.workspaces }}

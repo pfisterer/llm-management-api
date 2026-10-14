@@ -10,13 +10,16 @@ import (
 )
 
 var catalog = Config{
-	Profiles:   []Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "gpu", Name: "GPU", GPUClass: "l4-3q"}, {Slug: SplitProfile, Name: "CPU + GPU-Kernel", GPUClass: "l4-3q"}},
-	Bases:      []Base{{ID: "python", Name: "Python", Image: "reg/platform/base-python:v2"}, {ID: "pytorch", Name: "PyTorch", Image: "reg/platform/base-pytorch:v2", Default: true}, {ID: "tensorflow", Name: "TensorFlow", Image: "reg/platform/base-tensorflow:v2"}},
-	GPUClasses: []string{"l4-3q"},
+	Profiles: []Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "gpu", Name: "GPU", GPU: true}, {Slug: SplitProfile, Name: "CPU + GPU-Kernel", GPU: true}},
+	Bases:    []Base{{ID: "python", Name: "Python", Image: "reg/platform/base-python:v2"}, {ID: "pytorch", Name: "PyTorch", Image: "reg/platform/base-pytorch:v2", Default: true}, {ID: "tensorflow", Name: "TensorFlow", Image: "reg/platform/base-tensorflow:v2"}},
 }
 
 func service(running ...Running) *Service {
-	return NewService(NewMemoryStore(), catalog, func(context.Context) ([]Running, error) { return running, nil })
+	s := NewService(NewMemoryStore(), catalog, func(context.Context) ([]Running, error) { return running, nil })
+	s.SetGPUClasses(func(context.Context) ([]GPUClass, error) {
+		return []GPUClass{{ID: "l4-3q", Name: "Allgemein · klein"}, {ID: "allgemein-mittel", Name: "Allgemein · mittel"}}, nil
+	})
+	return s
 }
 
 func reason(err error) string {
@@ -95,7 +98,7 @@ func TestCheckStart(t *testing.T) {
 		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "gpu", GPUs: 1}, "keine GPUs"},
 		{"cores per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 1.5}, "Kerne"},
 		{"memory per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", RAMGB: 5}, "Speicher"},
-		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1}, "GPUs der Klasse l4-3q"},
+		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1}, "GPUs der Klasse Allgemein · klein"},
 		{"own restart does not count", StartRequest{Person: "b@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1, Server: "jupyter-b-gpu"}, ""},
 	}
 	for _, c := range cases {
@@ -324,6 +327,30 @@ func TestRoleOf(t *testing.T) {
 	} {
 		if got := p.RoleOf(strings.Fields(tokens)); got != want {
 			t.Errorf("%s: %q, want %q", tokens, got, want)
+		}
+	}
+}
+
+// With several GPU classes the start names one, and only a granted one.
+func TestCheckStartClass(t *testing.T) {
+	ctx := context.Background()
+	me := []string{"user:a@dhbw.de"}
+	s := service()
+	_, _ = s.create(ctx, Project{Slug: "zwei", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"gpu"},
+		GPUClasses: []string{"l4-3q", "allgemein-mittel"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16, GPUsPerPerson: 1}}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "eins", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"gpu"},
+		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16, GPUsPerPerson: 1}}, "admin")
+	for _, c := range []struct {
+		req  StartRequest
+		want string
+	}{
+		{StartRequest{Person: "a@dhbw.de", Project: "zwei", Profile: "gpu", GPUs: 1}, "GPU-Klasse wählen"},
+		{StartRequest{Person: "a@dhbw.de", Project: "zwei", Profile: "gpu", GPUs: 1, GPUClass: "allgemein-mittel"}, ""},
+		{StartRequest{Person: "a@dhbw.de", Project: "eins", Profile: "gpu", GPUs: 1}, ""},
+		{StartRequest{Person: "a@dhbw.de", Project: "eins", Profile: "gpu", GPUs: 1, GPUClass: "allgemein-mittel"}, "Allgemein · mittel ist im Projekt"},
+	} {
+		if got := reason(s.CheckStart(ctx, me, c.req)); (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%+v: %q, want %q", c.req, got, c.want)
 		}
 	}
 }

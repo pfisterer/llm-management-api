@@ -34,6 +34,7 @@ type KernelOwner struct {
 	UserLabel string // its label hub.jupyter.org/username (escaped), shared by the person's servers and kernels
 	Project   string
 	Profile   string
+	GPUClass  string // chosen at the server's start (label dhbw.cloud/gpu-class, set by the hub); the kernel goes to its queue
 	Image     string
 	container map[string]any
 	volumes   []any
@@ -174,7 +175,7 @@ func (s *Service) KernelOwnerAt(ctx context.Context, ip string) (*KernelOwner, e
 		}
 		labels, annotations := obj(meta, "labels"), obj(meta, "annotations")
 		o := &KernelOwner{Pod: str(meta, "name"), UID: str(meta, "uid"), IP: ip, Person: str(annotations, "hub.jupyter.org/username"),
-			UserLabel: str(labels, "hub.jupyter.org/username"), Project: str(labels, "dhbw.cloud/project"), Profile: str(labels, "dhbw.cloud/profile")}
+			UserLabel: str(labels, "hub.jupyter.org/username"), Project: str(labels, "dhbw.cloud/project"), Profile: str(labels, "dhbw.cloud/profile"), GPUClass: str(labels, labelClass)}
 		for _, c := range list(spec, "containers") {
 			if c, ok := c.(map[string]any); ok && str(c, "name") == "notebook" {
 				o.container, o.Image = c, str(c, "image")
@@ -237,10 +238,7 @@ func validKernelRequest(o *KernelOwner, r *KernelRequest) error {
 
 // kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, and the launcher's parameters as environment. Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
 func (s *Service) kernelPod(o *KernelOwner, r KernelRequest) map[string]any {
-	queue := s.cfg.Kernels.Queue
-	if queue == "" {
-		queue = "notebooks"
-	}
+	queue := s.kernelQueue(o)
 	suffix := make([]byte, 3)
 	_, _ = rand.Read(suffix)
 	name := "kernel-" + r.KernelID[:8] + "-" + hex.EncodeToString(suffix)
@@ -380,10 +378,7 @@ func (s *Service) KernelOverview(ctx context.Context, o *KernelOwner) (KernelOve
 			}
 		}
 	}
-	queue := s.cfg.Kernels.Queue
-	if queue == "" {
-		queue = "notebooks"
-	}
+	queue := s.kernelQueue(o)
 	var pending struct {
 		Items []struct {
 			Metadata struct {
@@ -420,6 +415,17 @@ func (s *Service) KernelOverview(ctx context.Context, o *KernelOwner) (KernelOve
 		sort.Slice(out.Ends, func(i, j int) bool { return out.Ends[i].Before(out.Ends[j]) })
 	}
 	return out, nil
+}
+
+// kernelQueue is the LocalQueue of the server's GPU class, else the configured one (staging without GPUs, servers from before classes).
+func (s *Service) kernelQueue(o *KernelOwner) string {
+	if o.GPUClass != "" && !s.cfg.Kernels.NoGPU {
+		return "gpu-" + o.GPUClass
+	}
+	if s.cfg.Kernels.Queue != "" {
+		return s.cfg.Kernels.Queue
+	}
+	return "notebooks"
 }
 
 func holdsGPU(p podInfo) bool {

@@ -54,6 +54,9 @@ type Service struct {
 	// whoami is the hub user of a token (kernels.go: the server's own token); cached in tokens.
 	whoami func(ctx context.Context, token string) (string, error)
 	tokens tokenCache
+	// fleet: pools, GPU classes and node assignments (fleet.go); nil = the GPU administration is off.
+	fleet    FleetStore
+	fleetCfg FleetConfig
 	// ready is told when a project image build is ready, so the project uses it.
 	ready func(ctx context.Context, e Environment) error
 	// bases are the current bases of the projects' environments at their release (SetBases).

@@ -81,6 +81,8 @@ gpu:
   inference:
     url: ""
     namespace: inference
+  # GPU administration (pools, tiers, node assignments; docs in the AI service's README): {enabled, reserveCPU, reserveMemoryGi, legacy: {<class>: {pool, tier}}}. The ServiceAccount needs patch on nodes, get/list/create/update on Kueue resourceflavors and clusterqueues, and on localqueues in the workspace namespace. Empty = off.
+  fleet: {}
   # GPU kernel pods of "CPU + GPU-Kernel", created for the notebook servers (POST /gpu/kernels on the hub listener): the Kueue LocalQueue in the workspace namespace, and noGPU for a cluster without GPUs (kernels then run on the CPU, for tests). The ServiceAccount needs create/delete on pods and read on Kueue workloads and pendingworkloads there, and list on pods cluster-wide.
   kernels:
     queue: notebooks

@@ -72,12 +72,13 @@ type allStores struct {
 	gpu      gpu.Store
 	usage    usage.Store
 	projects workspace.Store
+	gpuFleet gpu.FleetStore
 }
 
 // stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), gpu.NewMemoryFleetStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -116,7 +117,11 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws}, nil
+	gf, err := gpu.NewGormFleetStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{fs, cs, gs, us, ws, gf}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -178,6 +183,21 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 		}
 		wsSvc = workspace.NewService(st.projects, wsCfg, runningWorkspaces(gpuSvc))
+		// GPU administration (docs/bauplan.md 10.13): pools, tiers and node assignments; the classes are what projects and the tree know.
+		if cfg.GPUFleet.Enabled {
+			gpuSvc.SetFleet(st.gpuFleet, cfg.GPUFleet.FleetConfig)
+			if err := gpuSvc.SeedFleet(context.Background()); err != nil {
+				return fmt.Errorf("gpu fleet: %w", err)
+			}
+			wsSvc.SetGPUClasses(func(ctx context.Context) ([]workspace.GPUClass, error) {
+				classes, err := gpuSvc.GPUClasses(ctx)
+				out := make([]workspace.GPUClass, 0, len(classes))
+				for _, c := range classes {
+					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products})
+				}
+				return out, err
+			})
+		}
 		// The last storage report of the hourly job, so the admins' view is not empty after a restart.
 		if err := wsSvc.LoadStorage(context.Background()); err != nil {
 			log.Warnw("storage reports not loaded", "error", err)
@@ -198,7 +218,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		}
 		// A GPU kernel counts like a GPU server against the project's limits and budgets (docs/bauplan.md 6.2).
 		gpuSvc.SetKernelCheck(func(ctx context.Context, o *gpu.KernelOwner) error {
-			err := wsSvc.CheckStart(ctx, accessSvc.Who(ctx, o.Person).Tokens, workspace.StartRequest{Person: o.Person, Project: o.Project, Profile: gpu.SplitProfile, Kernel: true, CPU: 1, RAMGB: 2e9 / (1 << 30), GPUs: 1})
+			err := wsSvc.CheckStart(ctx, accessSvc.Who(ctx, o.Person).Tokens, workspace.StartRequest{Person: o.Person, Project: o.Project, Profile: gpu.SplitProfile, Kernel: true, CPU: 1, RAMGB: 2e9 / (1 << 30), GPUs: 1, GPUClass: o.GPUClass})
 			var refusal *workspace.Refusal
 			if errors.As(err, &refusal) {
 				return &gpu.KernelRefused{Reason: refusal.Reason}
@@ -320,6 +340,23 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// GPU use per hour: capacity, workspaces, inference pool, queue (docs/bauplan.md 6.10).
 		if gs, ok := st.usage.(usage.GPUStore); ok {
 			go usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+		}
+		// GPU administration: every minute the node labels and the Kueue queues of the classes follow the assignments and the nodes (a node that joins or leaves changes the quota).
+		if gpuSvc.FleetEnabled() {
+			go func() {
+				t := time.NewTicker(time.Minute)
+				defer t.Stop()
+				for {
+					if err := gpuSvc.ReconcileFleet(ctx); err != nil {
+						log.Warnw("gpu fleet reconcile", "error", err)
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+					}
+				}
+			}()
 		}
 		// Budgets (W4): every five minutes, end the servers of people whose budget in the server's project is used up.
 		go func() {

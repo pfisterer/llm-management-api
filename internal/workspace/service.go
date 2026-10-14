@@ -10,18 +10,31 @@ import (
 	"time"
 )
 
-// Profile is one entry of JupyterHub's profile list, as far as projects need it. GPUClass empty = CPU only.
+// Profile is one entry of JupyterHub's profile list, as far as projects need it. GPU: its servers or kernels use a GPU, of the class chosen at the start.
 type Profile struct {
-	Slug     string `json:"slug" example:"pytorch"`
-	Name     string `json:"name" example:"PyTorch (GPU)"`
-	GPUClass string `json:"gpu_class,omitempty" example:"l4-3q"`
+	Slug string `json:"slug" example:"gpu"`
+	Name string `json:"name" example:"GPU"`
+	GPU  bool   `json:"gpu,omitempty"`
 }
 
-// Config is the catalogue (from the inventory, next to the JupyterHub profiles). Projects come only from the budget tree (/v1/tree).
+// Config is the catalogue (from the inventory, next to the JupyterHub profiles; the GPU classes from the GPU administration). Projects come only from the budget tree (/v1/tree).
 type Config struct {
-	Profiles   []Profile `json:"profiles"`
-	GPUClasses []string  `json:"gpuClasses"`
-	Bases      []Base    `json:"bases"`
+	Profiles   []Profile  `json:"profiles"`
+	GPUClasses []GPUClass `json:"gpuClasses"`
+	Bases      []Base     `json:"bases"`
+}
+
+// GPUClass is a combination of pool and tier of the GPU administration (docs/bauplan.md 10.13): what the tree grants (ws-gpus-<id>, ws-gpu-hours-<id>) and what a start chooses.
+type GPUClass struct {
+	ID       string  `json:"id" example:"allgemein-mittel"`
+	Name     string  `json:"name" example:"Allgemein · mittel"`
+	Pool     string  `json:"pool" example:"allgemein"`
+	PoolName string  `json:"pool_name" example:"Allgemein"`
+	Tier     string  `json:"tier" example:"mittel"`
+	TierName string  `json:"tier_name" example:"mittel"`
+	Nodes    int     `json:"nodes"`
+	GPUs     float64 `json:"gpus"` // GPUs of its ready nodes right now
+	Products string  `json:"products,omitempty"`
 }
 
 // Base is a base of the projects' environments (dhbw-workspace-images at its release): a project runs it, or an image built on it from Git.
@@ -63,6 +76,7 @@ type Service struct {
 	storage storageState
 	labels  ImageLabels
 	builds  ImageBuilder
+	classes func(ctx context.Context) ([]GPUClass, error)
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.
@@ -75,8 +89,45 @@ func NewService(store Store, cfg Config, running func(ctx context.Context) ([]Ru
 // SetBudgetCheck adds the budget check to CheckStart.
 func (s *Service) SetBudgetCheck(b BudgetCheck) { s.budget = b }
 
-func (s *Service) Catalog() Config {
-	return Config{Profiles: s.cfg.Profiles, GPUClasses: s.cfg.GPUClasses, Bases: s.cfg.Bases}
+// SetGPUClasses sets where the GPU classes come from (the GPU administration); without it any class is accepted (no GPU cluster).
+func (s *Service) SetGPUClasses(f func(ctx context.Context) ([]GPUClass, error)) { s.classes = f }
+
+// GPUClasses are the classes of the GPU administration; nil without it or when it cannot be read.
+func (s *Service) GPUClasses(ctx context.Context) []GPUClass {
+	if s.classes == nil {
+		return nil
+	}
+	out, err := s.classes(ctx)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// knownClass tells whether a class exists; without a GPU administration every class does.
+func (s *Service) knownClass(id string) bool {
+	if s.classes == nil {
+		return true
+	}
+	return slices.ContainsFunc(s.GPUClasses(context.Background()), func(c GPUClass) bool { return c.ID == id })
+}
+
+// ClassName names a class for people ("Allgemein · mittel"); the id when unknown.
+func (s *Service) ClassName(ctx context.Context, id string) string {
+	for _, c := range s.GPUClasses(ctx) {
+		if c.ID == id {
+			return c.Name
+		}
+	}
+	return id
+}
+
+func (s *Service) Catalog(ctx context.Context) Config {
+	classes := s.GPUClasses(ctx)
+	if classes == nil {
+		classes = []GPUClass{}
+	}
+	return Config{Profiles: s.cfg.Profiles, GPUClasses: classes, Bases: s.cfg.Bases}
 }
 
 func (s *Service) profile(slug string) (Profile, bool) {
@@ -159,7 +210,7 @@ func (s *Service) validate(p *Project) error {
 		}
 	}
 	for _, c := range p.GPUClasses {
-		if !slices.Contains(s.cfg.GPUClasses, c) {
+		if !s.knownClass(c) {
 			return refuse("GPU-Klasse %q gibt es nicht.", c)
 		}
 	}
@@ -168,7 +219,7 @@ func (s *Service) validate(p *Project) error {
 		return refuse("Grenzen dürfen nicht negativ sein.")
 	}
 	for c, n := range p.GPUsByClass {
-		if n < 0 || !slices.Contains(s.cfg.GPUClasses, c) {
+		if n < 0 || !s.knownClass(c) {
 			return refuse("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", c)
 		}
 	}
@@ -231,6 +282,8 @@ type StartRequest struct {
 	CPU     float64 `json:"cpu"`
 	RAMGB   float64 `json:"ram_gb"`
 	GPUs    float64 `json:"gpus"`
+	// GPUClass is the class chosen at the start; empty = the project's only one.
+	GPUClass string `json:"gpu_class,omitempty"`
 	// Kernel: a GPU kernel of a running "CPU + GPU-Kernel" server (no new server, so the limit on servers does not apply).
 	Kernel bool `json:"-"`
 }
@@ -259,13 +312,20 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	if r.Profile == SplitProfile && !p.Derived() {
 		return refuse("„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", p.Name)
 	}
-	pr, _ := s.profile(r.Profile)
+	class := ""
 	if r.GPUs > 0 {
-		if p.Limits.GPUsPerPerson == 0 {
+		if p.Limits.GPUsPerPerson == 0 || len(p.GPUClasses) == 0 {
 			return refuse("Im Projekt „%s“ sind keine GPUs freigegeben.", p.Name)
 		}
-		if pr.GPUClass != "" && !p.AllowsGPUClass(pr.GPUClass) {
-			return refuse("GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", pr.GPUClass, p.Name)
+		class = r.GPUClass
+		if class == "" && len(p.GPUClasses) == 1 {
+			class = p.GPUClasses[0]
+		}
+		if class == "" {
+			return refuse("Bitte eine GPU-Klasse wählen.")
+		}
+		if !p.AllowsGPUClass(class) {
+			return refuse("GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", s.ClassName(ctx, class), p.Name)
 		}
 	}
 	running, err := s.running(ctx)
@@ -278,7 +338,7 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 		if (!r.Kernel && x.Server == r.Server) || x.Project != p.Slug {
 			continue
 		}
-		if x.GPUClass == pr.GPUClass {
+		if class != "" && x.GPUClass == class {
 			classGPUs += x.GPUs
 		}
 		if !strings.EqualFold(x.Person, r.Person) {
@@ -301,11 +361,11 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 		return refuse("Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Server bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
 	case r.GPUs > 0 && gpus+r.GPUs > float64(l.GPUsPerPerson):
 		return refuse("Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", p.Name, plural(l.GPUsPerPerson, "ist 1 GPU", "sind %d GPUs"), gpus)
-	case r.GPUs > 0 && p.GPUsByClass[pr.GPUClass] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[pr.GPUClass]):
-		return refuse("Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[pr.GPUClass], pr.GPUClass, p.Name)
+	case r.GPUs > 0 && p.GPUsByClass[class] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[class]):
+		return refuse("Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[class], s.ClassName(ctx, class), p.Name)
 	}
 	if s.budget != nil {
-		return s.budget(ctx, p, r.Person, pr.GPUClass)
+		return s.budget(ctx, p, r.Person, class)
 	}
 	return nil
 }

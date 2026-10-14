@@ -52,11 +52,20 @@ type HubProject struct {
 	ImageLabel   string `json:"image_label,omitempty"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
+	// GPUClasses the project may use, for the choice at the start (only offered with more than one).
+	GPUClasses []HubGPUClass `json:"gpu_classes"`
 	// SharedReadOnly: the person only reads the project's shared folder (role reader); the hub mounts it read-only, the GPU kernel pod follows the server.
 	SharedReadOnly bool `json:"shared_read_only"`
 	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
 	EndsAt   *time.Time `json:"ends_at,omitempty"`
 	DeleteAt *time.Time `json:"delete_at,omitempty"`
+}
+
+// HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
+type HubGPUClass struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
 }
 
 // GPUHubAccessResponse is the access decision for one person, for JupyterHub: whether they may log in (a project, or admin), and how many GPUs they may use at the same time (the most any of their projects allows per person).
@@ -97,8 +106,19 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				abort(c, http.StatusInternalServerError, "internal", "Projekte konnten nicht gelesen werden.")
 				return
 			}
+			classes := o.Workspaces.GPUClasses(c.Request.Context())
 			for _, m := range mine {
-				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: o.Workspaces.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: o.Workspaces.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
+				hubClasses := []HubGPUClass{}
+				for _, id := range m.GPUClasses {
+					hc := HubGPUClass{ID: id, Name: id, Available: classes == nil}
+					for _, cl := range classes {
+						if cl.ID == id {
+							hc.Name, hc.Available = cl.Name, cl.GPUs > 0
+						}
+					}
+					hubClasses = append(hubClasses, hc)
+				}
+				resp.Projects = append(resp.Projects, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: o.Workspaces.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: o.Workspaces.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}

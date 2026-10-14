@@ -125,5 +125,5 @@ func (s *Server) getTreeCatalog(c *gin.Context) {
 	if base == nil {
 		base = []string{}
 	}
-	c.JSON(http.StatusOK, TreeCatalog{Config: s.ws.Catalog(), LLMBaseModels: base, LLMDefaultRPM: s.quota.DefaultRPM, LLMDefaultTPM: s.quota.DefaultTPM})
+	c.JSON(http.StatusOK, TreeCatalog{Config: s.ws.Catalog(c.Request.Context()), LLMBaseModels: base, LLMDefaultRPM: s.quota.DefaultRPM, LLMDefaultTPM: s.quota.DefaultTPM})
 }

@@ -135,7 +135,9 @@ func (s *Server) myProjects(c *gin.Context) []workspace.Mine {
 //	@Success		200	{object}	workspace.Config
 //	@Failure		403	{object}	ErrorResponse
 //	@Router			/v1/workspaces/catalog [get]
-func (s *Server) getWorkspaceCatalog(c *gin.Context) { c.JSON(http.StatusOK, s.ws.Catalog()) }
+func (s *Server) getWorkspaceCatalog(c *gin.Context) {
+	c.JSON(http.StatusOK, s.ws.Catalog(c.Request.Context()))
+}
 
 // listWorkspaceProjects godoc
 //

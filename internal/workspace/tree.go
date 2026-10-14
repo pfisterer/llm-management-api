@@ -111,19 +111,17 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 		p = Project{Slug: treeSlug(node), TreeNode: node, CreatedBy: "tree",
 			Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16}}
 	}
-	for _, c := range classes {
-		if !slices.Contains(p.GPUClasses, c) {
-			// A class granted now brings its profiles, whether the project is new or grew.
-			for _, pr := range s.cfg.Profiles {
-				if pr.GPUClass == c && !slices.Contains(p.Profiles, pr.Slug) {
-					p.Profiles = append(p.Profiles, pr.Slug)
-				}
+	if len(classes) > 0 && len(p.GPUClasses) == 0 {
+		// The first GPUs granted bring the GPU profiles, whether the project is new or grew.
+		for _, pr := range s.cfg.Profiles {
+			if pr.GPU && !slices.Contains(p.Profiles, pr.Slug) {
+				p.Profiles = append(p.Profiles, pr.Slug)
 			}
 		}
 	}
 	if !exists {
 		for _, pr := range s.cfg.Profiles {
-			if pr.GPUClass == "" && !slices.Contains(p.Profiles, pr.Slug) {
+			if !pr.GPU && !slices.Contains(p.Profiles, pr.Slug) {
 				p.Profiles = append(p.Profiles, pr.Slug)
 			}
 		}
