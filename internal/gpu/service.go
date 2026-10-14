@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -13,11 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var (
-	ErrInvalidRepo = errors.New("Repository nicht verwendbar")
-	ErrForbidden   = errors.New("not your environment")
-	ErrNotReady    = errors.New("environment not ready")
-)
+var ErrInvalidRepo = errors.New("Repository nicht verwendbar")
 
 // builds starts and watches build jobs; registry answers whether an image
 // exists; servers starts JupyterHub servers. Interfaces so the service can be
@@ -53,8 +48,8 @@ type Service struct {
 	refs    refResolver
 	pods    podLister
 	log     *zap.SugaredLogger
-	// replaced is told when a course image rebuilt on a new base is ready (old, new), so projects can follow it.
-	replaced func(ctx context.Context, old, new string) error
+	// ready is told when a project image build is ready, so the project uses it.
+	ready func(ctx context.Context, e Environment) error
 }
 
 // New connects to the GPU cluster's APIs.
@@ -121,11 +116,10 @@ func (s *Service) normaliseRepo(raw string) (string, string, error) {
 	return canonical, slug, nil
 }
 
-// Create adds an environment for owner: resolve the ref, reuse the image if it
-// exists, otherwise start a build.
-func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string, course bool) (Environment, error) {
-	if course && s.cfg.CourseBase == "" {
-		return Environment{}, fmt.Errorf("%w: Kursimages aus Git sind hier nicht eingerichtet", ErrInvalidRepo)
+// create adds a project image for owner: resolve the ref, reuse the image if it exists, otherwise start a build on notebook-base.
+func (s *Service) create(ctx context.Context, owner, gitURL, ref, name string) (Environment, error) {
+	if s.cfg.CourseBase == "" {
+		return Environment{}, fmt.Errorf("%w: Projekt-Images aus Git sind hier nicht eingerichtet", ErrInvalidRepo)
 	}
 	canonical, slug, err := s.normaliseRepo(gitURL)
 	if err != nil {
@@ -146,11 +140,8 @@ func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string, c
 	if strings.TrimSpace(name) == "" {
 		name = pathBase(canonical)
 	}
-	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit}
-	if course {
-		e.Base = s.cfg.CourseBase
-		tag = courseTag(commit, e.Base)
-	}
+	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit, Base: s.cfg.CourseBase}
+	tag = projectImageTag(commit, e.Base)
 	e.Image = fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
 	if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 		return Environment{}, err
@@ -229,18 +220,14 @@ func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 		return e
 	case st.Succeeded > 0:
 		e.Status, e.Message = StatusReady, ""
-		if e.Replaces != "" && s.replaced != nil {
-			if err := s.replaced(ctx, e.Replaces, e.Image); err != nil {
-				s.log.Warnw("course image: projects not moved to the rebuilt image", "old", e.Replaces, "new", e.Image, "error", err)
+		if s.ready != nil {
+			if err := s.ready(ctx, e); err != nil {
+				s.log.Warnw("project image: project not moved to the new build", "image", e.Image, "error", err)
 				return e
 			}
-			e.Replaces = ""
 		}
 	case st.Failed > 0:
 		e.Status, e.Message = StatusFailed, "Build fehlgeschlagen, Details im Build-Log."
-		if e.Replaces != "" {
-			e.Message = "Neubau auf dem neuen Basis-Image fehlgeschlagen, Projekte nutzen weiter " + e.Replaces + "; Details im Build-Log."
-		}
 		// A refusal of the build script itself (lines starting with "dhbw: ", e.g. a base image that is not allowed) is the better message.
 		if log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, e.JobName, 50); err == nil {
 			for _, line := range strings.Split(log, "\n") {
@@ -272,93 +259,6 @@ func slugOf(image string) string {
 }
 
 func tagOf(image string) string { return image[strings.LastIndex(image, ":")+1:] }
-
-// List returns owner's environments (all for owner ""), with fresh build status.
-func (s *Service) List(ctx context.Context, owner string) ([]Environment, error) {
-	envs, err := s.store.List(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	for i := range envs {
-		envs[i] = s.refresh(ctx, envs[i])
-	}
-	return envs, nil
-}
-
-// Get returns one environment; admin may read every environment.
-func (s *Service) Get(ctx context.Context, id uint, caller string, admin bool) (Environment, error) {
-	e, err := s.store.Get(ctx, id)
-	if err != nil {
-		return Environment{}, err
-	}
-	if e.Owner != caller && !admin {
-		return Environment{}, ErrForbidden
-	}
-	return s.refresh(ctx, e), nil
-}
-
-// Log returns the tail of the build log.
-func (s *Service) Log(ctx context.Context, e Environment) (string, error) {
-	if e.JobName == "" {
-		return "", ErrNotFound
-	}
-	return s.builds.jobLog(ctx, s.cfg.BuildNamespace, e.JobName, 400)
-}
-
-// Rebuild builds the image again (after a failure, or forced).
-func (s *Service) Rebuild(ctx context.Context, e Environment) (Environment, error) {
-	if err := s.startBuildIfMissing(ctx, &e, slugOf(e.Image), tagOf(e.Image), true); err != nil {
-		return Environment{}, err
-	}
-	return s.store.Save(ctx, e)
-}
-
-// Delete forgets the environment (the image stays until Harbor's retention removes it).
-func (s *Service) Delete(ctx context.Context, e Environment) error { return s.store.Delete(ctx, e.ID) }
-
-// ServerName is the JupyterHub server name for an environment: short, stable.
-func ServerName(e Environment) string {
-	n := slugUnsafe.ReplaceAllString(strings.ToLower(e.Name), "-")
-	n = strings.Trim(n, "-")
-	if len(n) > 30 {
-		n = strings.TrimRight(n[:30], "-")
-	}
-	if n == "" {
-		n = "env"
-	}
-	return fmt.Sprintf("%s-%d", n, e.ID)
-}
-
-// Start starts (or reuses) the person's named server for the environment.
-// gpu selects the GPU profile; JupyterHub enforces the GPU quota and answers
-// with a message if it is exhausted.
-func (s *Service) Start(ctx context.Context, e Environment, user string, gpu bool, project string) (string, error) {
-	e = s.refresh(ctx, e)
-	if e.Status != StatusReady {
-		return "", ErrNotReady
-	}
-	if err := s.servers.ensureUser(ctx, user); err != nil {
-		return "", err
-	}
-	profile := "git-cpu"
-	if gpu {
-		profile = "git-gpu"
-	}
-	name := ServerName(e)
-	opts := map[string]any{"profile": profile, "image--unlisted-choice": e.Image}
-	if project != "" {
-		opts["project"] = project
-	}
-	err := s.servers.startServer(ctx, user, name, opts)
-	var he *HubError
-	if errors.As(err, &he) && he.Status == http.StatusBadRequest && strings.Contains(he.Message, "already running") {
-		err = nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s/user/%s/%s/", strings.TrimRight(s.cfg.JupyterURL, "/"), url.PathEscape(user), name), nil
-}
 
 // Server is a person's JupyterHub server as shown in the UI.
 type Server struct {
@@ -404,7 +304,14 @@ func (s *Service) StopServer(ctx context.Context, user, name string) error {
 	return s.servers.stopServer(ctx, user, name, name != "")
 }
 
-// NewForTest builds a service without cluster connections (memory store only), for tests of other packages.
+// NewForTest builds a service without cluster connections (memory store only, a hub without users), for tests of other packages.
 func NewForTest(cfg Config) (*Service, error) {
-	return newService(cfg, NewMemoryStore(), nil, nil, nil, nil, nil), nil
+	return newService(cfg, NewMemoryStore(), nil, nil, noHub{}, nil, nil), nil
 }
+
+type noHub struct{}
+
+func (noHub) user(context.Context, string) (*hubUser, error)                    { return nil, ErrNotFound }
+func (noHub) ensureUser(context.Context, string) error                          { return nil }
+func (noHub) startServer(context.Context, string, string, map[string]any) error { return nil }
+func (noHub) stopServer(context.Context, string, string, bool) error            { return nil }

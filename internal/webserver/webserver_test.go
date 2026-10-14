@@ -214,7 +214,7 @@ func TestLLMFromProjects(t *testing.T) {
 func TestRequireWorkspace(t *testing.T) {
 	_, _, h := llmServer(t)
 	for user, want := range map[string]int{"member@dhbw.de": 200, "root@dhbw.de": 200, "nobody@dhbw.de": http.StatusForbidden} {
-		if code, body := do(t, h, "GET", "/v1/gpu/environments", user, nil); code != want {
+		if code, body := do(t, h, "GET", "/v1/gpu/servers", user, nil); code != want {
 			t.Errorf("%s: %d %s, want %d", user, code, body, want)
 		}
 	}

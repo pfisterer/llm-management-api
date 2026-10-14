@@ -10,18 +10,20 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// Course images (docs/bauplan.md 10.12): the image of a project's "CPU + GPU-Kernel", notebook and GPU kernel alike. Built from a Git repository the way Binder reads it — apt.txt, environment.yml, requirements.txt, postBuild, in binder/ or .binder/ if there is one — but on notebook-base (Config.CourseBase) instead of repo2docker's own base, so the result has everything the profile needs and the label cloud.dhbw.base. A repository with a Dockerfile is not a course build: its own FROM decides, and it is added as an ordinary environment.
+// Project images from Git (docs/bauplan.md 10.12): the image of a project's "CPU + GPU-Kernel" and "Projekt-Image (GPU)". Built from a Git repository the way Binder reads it — apt.txt, environment.yml, requirements.txt, postBuild, in binder/ or .binder/ if there is one — but on notebook-base (Config.CourseBase) instead of repo2docker's own base, so the result has everything the profiles need and the label cloud.dhbw.base. A repository with a Dockerfile is refused: such an image is built by its owners and entered in the project as a finished image.
 
-// courseScript is the build job's script for a course image: it writes the Dockerfile from the repository's files and builds it with BuildKit.
-const courseScript = `set -euo pipefail
+// projectImageScript is the build job's script: it writes the Dockerfile from the repository's files and builds it with BuildKit.
+const projectImageScript = `set -euo pipefail
 git clone --quiet --no-checkout "$GIT_URL" /tmp/repo
 git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
 dir=/tmp/repo
 for d in binder .binder; do if [ -d "/tmp/repo/$d" ]; then dir="/tmp/repo/$d"; break; fi; done
 if [ -f "$dir/Dockerfile" ]; then
-  echo "dhbw: Das Repository hat ein Dockerfile. Ein Kursimage entsteht aus requirements.txt, environment.yml, apt.txt und postBuild; ein eigenes Dockerfile (FROM …/platform/notebook-base) als normale Umgebung hinzufügen."
+  echo "dhbw: Das Repository hat ein Dockerfile. Aus Git wird das Projekt-Image aus requirements.txt, environment.yml, apt.txt und postBuild gebaut; ein eigenes Image (FROM …/platform/notebook-base) selbst bauen und im Projekt als fertiges Image eintragen."
   exit 1
 fi
 if [ ! -f "$dir/requirements.txt" ] && [ ! -f "$dir/environment.yml" ] && [ ! -f "$dir/apt.txt" ] && [ ! -f "$dir/postBuild" ]; then
@@ -59,8 +61,8 @@ buildctl-daemonless.sh build --progress=plain --frontend dockerfile.v0 --local c
 
 var tagUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
-// courseTag is the tag of a course image: the commit and the release of its base, so a new base is a new image.
-func courseTag(commit, base string) string {
+// projectImageTag is the tag of a project image: the commit and the release of its base, so a new base is a new image.
+func projectImageTag(commit, base string) string {
 	v := base[strings.LastIndex(base, ":")+1:]
 	if i := strings.LastIndex(base, "@"); i >= 0 {
 		v = strings.TrimPrefix(base[i+1:], "sha256:")[:12]
@@ -68,13 +70,105 @@ func courseTag(commit, base string) string {
 	return commit[:12] + "-" + tagUnsafe.ReplaceAllString(v, "-")
 }
 
-// SetImageReplaced is told when a course image rebuilt on a new base is ready, with the old and the new image (the projects follow).
-func (s *Service) SetImageReplaced(f func(ctx context.Context, old, new string) error) {
-	s.replaced = f
+// projectOwner is the owner of a project's image builds.
+func projectOwner(slug string) string { return "project:" + slug }
+
+// ProjectOf is the project slug of a build's owner; false for anything else.
+func ProjectOf(e Environment) (string, bool) { return strings.CutPrefix(e.Owner, "project:") }
+
+// SetBuildReady is told when a project image build is ready (also a rebuild on a new base), so the project uses the new image.
+func (s *Service) SetBuildReady(f func(ctx context.Context, e Environment) error) { s.ready = f }
+
+// latest is the project's current build: the newest of its owner; nil = none.
+func (s *Service) latest(ctx context.Context, slug string) (*Environment, error) {
+	envs, err := s.store.List(ctx, projectOwner(slug))
+	if err != nil || len(envs) == 0 {
+		return nil, err
+	}
+	return &envs[0], nil // newest first
 }
 
-// RebaseCourseImages rebuilds the course images that are on an older base than Config.CourseBase, and follows the rebuilds under way: a ready one hands its new image to the projects (SetImageReplaced). Run periodically.
-func (s *Service) RebaseCourseImages(ctx context.Context) error {
+func buildOf(e Environment) workspace.ImageBuild {
+	return workspace.ImageBuild{Status: string(e.Status), Image: e.Image, Commit: e.Commit, Branch: e.Branch, Message: e.Message, UpdatedAt: e.UpdatedAt}
+}
+
+// BuildProjectImage builds the project's image from a repository: an unchanged repository and ref keep the current build unless rebuild is set, which resolves the ref again (a branch's newest commit) and builds a failed image anew. Older builds of the project are forgotten; their images stay in Harbor until its retention removes them.
+func (s *Service) BuildProjectImage(ctx context.Context, slug, gitURL, ref string, rebuild bool) (workspace.ImageBuild, error) {
+	cur, err := s.latest(ctx, slug)
+	if err != nil {
+		return workspace.ImageBuild{}, err
+	}
+	canonical, _, err := s.normaliseRepo(gitURL)
+	if err != nil {
+		return workspace.ImageBuild{}, err
+	}
+	ref = strings.TrimSpace(ref)
+	if cur != nil && !rebuild && cur.GitURL == canonical && cur.Ref == ref {
+		return buildOf(s.refresh(ctx, *cur)), nil
+	}
+	e, err := s.create(ctx, projectOwner(slug), canonical, ref, slug)
+	if err != nil {
+		return workspace.ImageBuild{}, err
+	}
+	if rebuild && cur != nil && cur.Image == e.Image && cur.Status == StatusFailed {
+		// The same commit failed before: build it again instead of reporting the old failure.
+		if err := s.startBuildIfMissing(ctx, &e, slugOf(e.Image), tagOf(e.Image), true); err != nil {
+			return workspace.ImageBuild{}, err
+		}
+	}
+	if e, err = s.store.Save(ctx, e); err != nil {
+		return workspace.ImageBuild{}, err
+	}
+	if err := s.forgetOthers(ctx, slug, e.ID); err != nil {
+		return workspace.ImageBuild{}, err
+	}
+	return buildOf(e), nil
+}
+
+func (s *Service) forgetOthers(ctx context.Context, slug string, keep uint) error {
+	envs, err := s.store.List(ctx, projectOwner(slug))
+	if err != nil {
+		return err
+	}
+	for _, e := range envs {
+		if e.ID != keep {
+			if err := s.store.Delete(ctx, e.ID); err != nil && !errors.Is(err, ErrNotFound) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ProjectImageBuild is the state of the project's current build, followed up first (a finished build hands its image to the project); nil = none.
+func (s *Service) ProjectImageBuild(ctx context.Context, slug string) (*workspace.ImageBuild, error) {
+	cur, err := s.latest(ctx, slug)
+	if err != nil || cur == nil {
+		return nil, err
+	}
+	b := buildOf(s.refresh(ctx, *cur))
+	return &b, nil
+}
+
+// ProjectImageLog is the tail of the current build's log.
+func (s *Service) ProjectImageLog(ctx context.Context, slug string) (string, error) {
+	cur, err := s.latest(ctx, slug)
+	if err != nil {
+		return "", err
+	}
+	if cur == nil || cur.JobName == "" {
+		return "", ErrNotFound
+	}
+	return s.builds.jobLog(ctx, s.cfg.BuildNamespace, cur.JobName, 400)
+}
+
+// ForgetProjectImage drops the project's builds (the project no longer builds from Git, or is gone).
+func (s *Service) ForgetProjectImage(ctx context.Context, slug string) error {
+	return s.forgetOthers(ctx, slug, 0)
+}
+
+// RebaseProjectImages rebuilds the project images that are on an older base than Config.CourseBase, and follows the builds under way: a ready one hands its image to its project (SetBuildReady). Run periodically.
+func (s *Service) RebaseProjectImages(ctx context.Context) error {
 	if s.cfg.CourseBase == "" {
 		return nil
 	}
@@ -84,36 +178,30 @@ func (s *Service) RebaseCourseImages(ctx context.Context) error {
 	}
 	var errs []error
 	for _, e := range envs {
-		if e.Base == "" {
+		if _, ok := ProjectOf(e); !ok {
 			continue
 		}
 		e = s.refresh(ctx, e)
 		if e.Base == s.cfg.CourseBase || e.Status == StatusBuilding {
 			continue
 		}
-		old := e.Image
-		if e.Status == StatusFailed && e.Replaces != "" {
-			old = e.Replaces // a failed rebuild: the projects still use the image before it
-		}
 		slug := slugOf(e.Image)
-		tag := courseTag(e.Commit, s.cfg.CourseBase)
-		e.Base, e.Image, e.Replaces = s.cfg.CourseBase, fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag), old
+		tag := projectImageTag(e.Commit, s.cfg.CourseBase)
+		e.Base, e.Image = s.cfg.CourseBase, fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
 		if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Image, err))
 			continue
 		}
-		if e.Status == StatusReady && s.replaced != nil {
-			// Built before (someone else's environment of the same repository): move the projects now.
-			if err := s.replaced(ctx, e.Replaces, e.Image); err != nil {
+		if e.Status == StatusReady && s.ready != nil {
+			// Built before (another project with the same repository): the project follows now.
+			if err := s.ready(ctx, e); err != nil {
 				errs = append(errs, err)
-			} else {
-				e.Replaces = ""
 			}
 		}
 		if _, err := s.store.Save(ctx, e); err != nil {
 			errs = append(errs, err)
 		}
-		s.log.Infow("course image rebuilt on new base", "old", old, "new", e.Image, "status", e.Status)
+		s.log.Infow("project image rebuilt on new base", "owner", e.Owner, "image", e.Image, "status", e.Status)
 	}
 	return errors.Join(errs...)
 }

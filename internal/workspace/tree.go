@@ -165,7 +165,11 @@ func (s *Service) DeleteFromTree(ctx context.Context, node string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	return s.store.Delete(ctx, p.Slug)
+	if err := s.store.Delete(ctx, p.Slug); err != nil {
+		return err
+	}
+	s.forgetBuilds(ctx, p.Slug)
+	return nil
 }
 
 // TreeProjects lists every tree-managed project with what it used of its tree budgets in the current windows.

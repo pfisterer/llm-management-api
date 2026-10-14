@@ -20,12 +20,6 @@ type Member struct {
 	Role  string `json:"role" example:"member" enums:"member,manager"`
 }
 
-// Image is an environment stored with the project, e.g. the image of a course.
-type Image struct {
-	Name  string `json:"name" example:"Statistik WS26"`
-	Image string `json:"image" example:"registry.gpu.services.dhbw.cloud/envs/github-com-o-statistik:0123456789ab"`
-}
-
 // Limits on concurrent use. 0 = no limit, except GPUsPerPerson where 0 = no GPU.
 type Limits struct {
 	ServersPerPerson int     `json:"servers_per_person" example:"2"`
@@ -53,10 +47,12 @@ type Project struct {
 	Members     []Member `json:"members" gorm:"serializer:json"`
 	Profiles    []string `json:"profiles" gorm:"serializer:json" example:"cpu,pytorch"`
 	GPUClasses  []string `json:"gpu_classes" gorm:"serializer:json" example:"l4-3q"`
-	Images      []Image  `json:"images" gorm:"serializer:json"`
 	FreeImages  bool     `json:"free_images"` // W3: any image, with or without GPU (profiles free, free-gpu)
-	// KernelImage is the project's course image for the profile "CPU + GPU-Kernel" (10.12): the notebook and the GPU kernel run it instead of notebook-base. It must be derived from notebook-base (label BaseLabel); empty = notebook-base.
-	KernelImage string   `json:"kernel_image,omitempty" example:"ghcr.io/dozent/ml-kurs:2026"`
+	// ProjectImage is the image of the profiles "CPU + GPU-Kernel" and "Projekt-Image (GPU)" instead of notebook-base (docs/bauplan.md 10.12): a finished image derived from notebook-base (label BaseLabel), or, with ImageGitURL, the last successful build from that repository; empty = notebook-base.
+	ProjectImage string `json:"project_image,omitempty" example:"ghcr.io/dozent/ml-kurs:2026"`
+	// ImageGitURL builds ProjectImage from a public repository (requirements.txt, environment.yml, apt.txt, postBuild) on notebook-base, rebuilt on its new releases; ImageGitRef is a branch, tag or commit (empty = default branch).
+	ImageGitURL string   `json:"image_git_url,omitempty" example:"https://github.com/dozent/ml-kurs"`
+	ImageGitRef string   `json:"image_git_ref,omitempty" example:"main"`
 	Limits      Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
 	Budgets     []Budget `json:"budgets" gorm:"serializer:json"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.

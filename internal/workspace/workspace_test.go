@@ -37,13 +37,16 @@ func TestValidation(t *testing.T) {
 	for _, bad := range []Project{
 		{Slug: "Bad Name"},
 		{Slug: "ok", Members: []Member{{Token: "a@dhbw.de"}}},
-		{Slug: "ok", Profiles: []string{"nope"}},
 		{Slug: "ok", GPUClasses: []string{"h100"}},
 		{Slug: "ok", Budgets: []Budget{{Unit: "euro", Window: "30d", Amount: 1}}},
 	} {
 		if _, err := s.create(ctx, bad, "admin"); reason(err) == "" || strings.HasPrefix(reason(err), "ERROR") {
 			t.Errorf("%+v: want a refusal, got %v", bad, err)
 		}
+	}
+	// A profile the catalogue no longer has is dropped, not refused.
+	if p, err := s.create(ctx, Project{Slug: "alt", Profiles: []string{"cpu", "git-gpu"}}, "admin"); err != nil || len(p.Profiles) != 1 {
+		t.Fatalf("stale profile: %+v %v", p, err)
 	}
 	if _, err := s.create(ctx, Project{Slug: "pilot"}, "admin"); !strings.Contains(reason(err), "gibt es schon") {
 		t.Fatalf("duplicate: %v", err)
@@ -155,7 +158,37 @@ func TestForPerson(t *testing.T) {
 	}
 }
 
-func TestKernelImageMustDeriveFromBase(t *testing.T) {
+type fakeBuilder struct {
+	builds  map[string]ImageBuild
+	started int
+}
+
+func (f *fakeBuilder) BuildProjectImage(_ context.Context, slug, gitURL, _ string, rebuild bool) (ImageBuild, error) {
+	if strings.Contains(gitURL, "evil") {
+		return ImageBuild{}, errors.New("evil.example ist nicht zugelassen")
+	}
+	if b, ok := f.builds[slug]; ok && !rebuild {
+		return b, nil
+	}
+	f.started++
+	b := ImageBuild{Status: "building", Image: "reg/envs/" + slug + ":c-v1"}
+	f.builds[slug] = b
+	return b, nil
+}
+func (f *fakeBuilder) ProjectImageBuild(_ context.Context, slug string) (*ImageBuild, error) {
+	b, ok := f.builds[slug]
+	if !ok {
+		return nil, nil
+	}
+	return &b, nil
+}
+func (f *fakeBuilder) ProjectImageLog(context.Context, string) (string, error) { return "log", nil }
+func (f *fakeBuilder) ForgetProjectImage(_ context.Context, slug string) error {
+	delete(f.builds, slug)
+	return nil
+}
+
+func TestProjectImageFinished(t *testing.T) {
 	ctx := context.Background()
 	s := service()
 	checked := 0
@@ -171,40 +204,59 @@ func TestKernelImageMustDeriveFromBase(t *testing.T) {
 	})
 	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}}, "admin")
 	for image, want := range map[string]string{"ghcr.io/kurs/fremd:1": "nicht von", "ghcr.io/kurs/weg:1": "nicht abrufbar", "Kein Image": "kein Image-Name"} {
-		if _, err := s.Update(ctx, Project{Slug: "kurs", KernelImage: image}, "manager@dhbw.de", false); !strings.Contains(reason(err), want) {
+		if _, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: image}, "manager@dhbw.de", false); !strings.Contains(reason(err), want) {
 			t.Errorf("%s: %v", image, err)
 		}
 	}
-	out, err := s.Update(ctx, Project{Slug: "kurs", KernelImage: " ghcr.io/kurs/ml:1 "}, "manager@dhbw.de", false)
-	if err != nil || out.KernelImage != "ghcr.io/kurs/ml:1" {
+	out, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: " ghcr.io/kurs/ml:1 "}, "manager@dhbw.de", false)
+	if err != nil || out.ProjectImage != "ghcr.io/kurs/ml:1" {
 		t.Fatalf("derived image: %+v %v", out, err)
 	}
-	// Unchanged: not looked up again (the registry may be away); empty: back to notebook-base.
 	n := checked
-	if _, err := s.Update(ctx, Project{Slug: "kurs", KernelImage: "ghcr.io/kurs/ml:1"}, "manager@dhbw.de", false); err != nil || checked != n {
+	if _, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: "ghcr.io/kurs/ml:1"}, "manager@dhbw.de", false); err != nil || checked != n {
 		t.Errorf("unchanged image: %v, checked %d times", err, checked-n)
 	}
-	if out, err := s.Update(ctx, Project{Slug: "kurs"}, "manager@dhbw.de", false); err != nil || out.KernelImage != "" {
+	if out, err := s.Update(ctx, Project{Slug: "kurs"}, "manager@dhbw.de", false); err != nil || out.ProjectImage != "" {
 		t.Errorf("cleared: %+v %v", out, err)
 	}
 }
 
-func TestKernelImagesFollowRebuild(t *testing.T) {
+func TestProjectImageFromGit(t *testing.T) {
 	ctx := context.Background()
 	s := service()
-	past := time.Now().Add(-72 * time.Hour)
-	_, _ = s.create(ctx, Project{Slug: "a", KernelImage: "img:1"}, "admin")
-	_, _ = s.create(ctx, Project{Slug: "b", KernelImage: "img:1"}, "admin")
-	_, _ = s.create(ctx, Project{Slug: "alt", KernelImage: "old:1", EndsAt: &past}, "admin")
-	if imgs, err := s.KernelImages(ctx); err != nil || len(imgs) != 1 || imgs[0] != "img:1" {
-		t.Fatalf("images %v %v", imgs, err)
+	// A manager's update carries the members too (managers edit them).
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Members: mgr}, "admin")
+	if _, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://github.com/o/kurs"}, "a@dhbw.de", false); !strings.Contains(reason(err), "nicht eingerichtet") {
+		t.Fatalf("without builder: %v", err)
 	}
-	if err := s.ReplaceKernelImage(ctx, "img:1", "img:2"); err != nil {
-		t.Fatal(err)
+	f := &fakeBuilder{builds: map[string]ImageBuild{}}
+	s.SetImageBuilder(f)
+	if _, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://evil.example/o/kurs"}, "a@dhbw.de", false); !strings.Contains(reason(err), "nicht zugelassen") {
+		t.Fatalf("bad repository: %v", err)
 	}
-	for _, slug := range []string{"a", "b"} {
-		if p, _ := s.Get(ctx, slug); p.KernelImage != "img:2" {
-			t.Errorf("%s: %q", slug, p.KernelImage)
-		}
+	out, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://github.com/o/kurs", ProjectImage: "egal"}, "a@dhbw.de", false)
+	if err != nil || out.ProjectImage != "" || f.started != 1 {
+		t.Fatalf("building: %+v %v %d", out, err, f.started)
+	}
+	mine, _ := s.ForPerson(ctx, []string{"user:a@dhbw.de"}, "a@dhbw.de", false)
+	if len(mine) != 1 || mine[0].ImageBuild == nil || mine[0].ImageBuild.Status != "building" {
+		t.Fatalf("build state in the list: %+v", mine)
+	}
+	// The finished build becomes the project's image; one for another repository does not.
+	_ = s.ProjectImageBuilt(ctx, "kurs", "https://github.com/o/anders", "reg/envs/x:1")
+	_ = s.ProjectImageBuilt(ctx, "kurs", "https://github.com/o/kurs.git", "reg/envs/kurs:c-v1")
+	if p, _ := s.Get(ctx, "kurs"); p.ProjectImage != "reg/envs/kurs:c-v1" {
+		t.Fatalf("after build: %q", p.ProjectImage)
+	}
+	if imgs, _ := s.ProjectImages(ctx); len(imgs) != 1 || imgs[0] != "reg/envs/kurs:c-v1" {
+		t.Fatalf("images %v", imgs)
+	}
+	if _, err := s.RebuildProjectImage(ctx, "kurs"); err != nil || f.started != 2 {
+		t.Fatalf("rebuild: %v %d", err, f.started)
+	}
+	// Back to notebook-base: the builds are forgotten.
+	if out, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr}, "a@dhbw.de", false); err != nil || out.ProjectImage != "" || out.ImageGitURL != "" || len(f.builds) != 0 {
+		t.Fatalf("cleared: %+v %v %v", out, err, f.builds)
 	}
 }

@@ -1,24 +1,13 @@
 package gpu
 
-// buildScript clones the repository at the resolved commit and builds it with repo2docker from that checkout. A repository with a Dockerfile (binder/, .binder/, else the root) is built from it on whatever base it names — whether that runs is up to the repository; what a workspace pod may do is decided by the admission policy workspace-pods, not by its image (docs/bauplan.md, Stufe 4, W3). Repositories without a Dockerfile get repo2docker's own base plus our appendix.
-const buildScript = `set -euo pipefail
-git clone --quiet --no-checkout "$GIT_URL" /tmp/repo
-git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
-repo2docker --engine buildkit --no-run --push --user-id 1000 --user-name jovyan \
-  --appendix "$(cat /etc/r2d/appendix.Dockerfile)" --label "org.dhbw.git.url=$GIT_URL" --label "org.dhbw.git.branch=$GIT_BRANCH" \
-  --image-name "$IMAGE" /tmp/repo`
-
-// buildJob is the Kubernetes Job that builds one environment: repo2docker with
-// the BuildKit engine (image platform/repo2docker-buildkit) on a build node,
+// buildJob is the Kubernetes Job that builds one project image (projectImageScript, BuildKit in the
+// image platform/repo2docker-buildkit) on a build node,
 // BuildKit as root in the pod's own user namespace (hostUsers: false, nothing
 // privileged), push to Harbor with the robot account in BuilderSecret. Same as
 // aiaas-deployment/tests/env-build.sh. The namespace's NetworkPolicy limits the job to
 // the internet, Harbor and DNS.
 func buildJob(cfg Config, name, builder string, e Environment, slug string) map[string]any {
-	script := buildScript
-	if e.Base != "" {
-		script = courseScript
-	}
+	script := projectImageScript
 	gitURL, commit, branch, image := e.GitURL, e.Commit, e.Branch, e.Image
 	return map[string]any{
 		"apiVersion": "batch/v1",

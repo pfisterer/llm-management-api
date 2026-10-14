@@ -137,6 +137,8 @@ func (s *Server) Router() *gin.Engine {
 		w.GET("/catalog", s.requireWorkspace, s.getWorkspaceCatalog)
 		w.GET("/projects", s.listWorkspaceProjects)
 		w.PUT("/projects/:slug", s.updateWorkspaceProject)
+		w.POST("/projects/:slug/image/rebuild", s.rebuildProjectImage)
+		w.GET("/projects/:slug/image/log", s.getProjectImageLog)
 		w.DELETE("/projects/:slug", require(access.RoleAdmin), s.deleteWorkspaceProject)
 		w.GET("/storage", require(access.RoleAdmin), s.getWorkspaceStorage)
 		w.GET("/gpu-hours", s.getGPUHours)
@@ -144,13 +146,6 @@ func (s *Server) Router() *gin.Engine {
 
 	if s.gpu != nil {
 		g := v1.Group("/gpu", s.requireWorkspace)
-		g.GET("/environments", s.listEnvironments)
-		g.POST("/environments", s.createEnvironment)
-		g.GET("/environments/:id", s.getEnvironment)
-		g.DELETE("/environments/:id", s.deleteEnvironment)
-		g.GET("/environments/:id/log", s.getEnvironmentLog)
-		g.POST("/environments/:id/rebuild", s.rebuildEnvironment)
-		g.POST("/environments/:id/start", s.startEnvironment)
 		g.GET("/servers", s.listServers)
 		g.DELETE("/servers/:name", s.stopServer)
 	}

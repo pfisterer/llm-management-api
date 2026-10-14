@@ -183,10 +183,17 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			log.Warnw("storage reports not loaded", "error", err)
 		}
 		wsSvc.SetUsage(st.usage)
-		// Course images (KernelImage) are checked in their registry, anonymously like a node pulls them.
+		// Finished project images are checked in their registry, anonymously like a node pulls them; images from Git are built by the GPU part.
 		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
 		wsSvc.SetImageLabels(ociClient.Labels)
-		gpuSvc.SetImageReplaced(wsSvc.ReplaceKernelImage)
+		wsSvc.SetImageBuilder(gpuSvc)
+		gpuSvc.SetBuildReady(func(ctx context.Context, e gpu.Environment) error {
+			slug, ok := gpu.ProjectOf(e)
+			if !ok {
+				return nil
+			}
+			return wsSvc.ProjectImageBuilt(ctx, slug, e.GitURL, e.Image)
+		})
 		if gpuSvc.InferenceEnabled() {
 			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.
 			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {
@@ -319,14 +326,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 				wsSvc.Enforce(ctx, running, gpuSvc.EndServer, log)
 				purgeStorage(ctx, gpuSvc, wsSvc, pods, log)
-				// Course images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
-				if err := gpuSvc.RebaseCourseImages(ctx); err != nil {
-					log.Warnw("course images: rebuild on new base", "error", err)
+				// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
+				if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
+					log.Warnw("project images: rebuild on new base", "error", err)
 				}
-				if images, err := wsSvc.KernelImages(ctx); err != nil {
-					log.Warnw("course images: listing projects failed", "error", err)
+				if images, err := wsSvc.ProjectImages(ctx); err != nil {
+					log.Warnw("project images: listing projects failed", "error", err)
 				} else if err := gpuSvc.EnsurePrepull(ctx, images); err != nil {
-					log.Warnw("course images: prepull", "error", err)
+					log.Warnw("project images: prepull", "error", err)
 				}
 			}
 		}()

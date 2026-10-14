@@ -53,41 +53,7 @@ type Service struct {
 	now     func() time.Time
 	storage storageState
 	labels  ImageLabels
-}
-
-// ImageLabels reads an image's labels from its registry, for the check of course images; nil = no check.
-type ImageLabels func(ctx context.Context, image string) (map[string]string, error)
-
-// SetImageLabels adds the check of course images (KernelImage) to Update.
-func (s *Service) SetImageLabels(f ImageLabels) { s.labels = f }
-
-// BaseLabel marks notebook-base (dhbw-workspace-images) and every image derived from it; BaseVersions are the major versions a course image may be built on.
-const BaseLabel = "cloud.dhbw.base"
-
-var BaseVersions = []string{"notebook-v1"}
-
-var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:@-]+$`)
-
-// checkKernelImage refuses a course image that is not derived from notebook-base; an unchanged one is not checked again.
-func (s *Service) checkKernelImage(ctx context.Context, p *Project, cur string) error {
-	p.KernelImage = strings.TrimSpace(p.KernelImage)
-	if p.KernelImage == "" || p.KernelImage == cur {
-		return nil
-	}
-	if !imageRE.MatchString(p.KernelImage) {
-		return refuse("Kursimage %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.KernelImage)
-	}
-	if s.labels == nil {
-		return nil
-	}
-	labels, err := s.labels(ctx, p.KernelImage)
-	if err != nil {
-		return refuse("Kursimage %s ist nicht abrufbar (es muss öffentlich sein): %v", p.KernelImage, err)
-	}
-	if !slices.Contains(BaseVersions, labels[BaseLabel]) {
-		return refuse("Kursimage %s ist nicht von registry.gpu.services.dhbw.cloud/platform/notebook-base abgeleitet (Label %s fehlt). Für beliebige Images gibt es „Freies Image“.", p.KernelImage, BaseLabel)
-	}
-	return nil
+	builds  ImageBuilder
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.
@@ -122,6 +88,8 @@ type Mine struct {
 	Project
 	Role         string         `json:"role" enums:"member,manager,admin"`
 	BudgetStatus []BudgetStatus `json:"budget_status"`
+	// ImageBuild is the state of the project image's build from Git (ImageGitURL); nil = none.
+	ImageBuild *ImageBuild `json:"image_build,omitempty"`
 }
 
 // ForPerson lists the active projects the person belongs to; admins (all=true) get every project, with role "admin" where they are no member.
@@ -140,6 +108,11 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 			continue
 		}
 		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}}
+		if p.ImageGitURL != "" && s.builds != nil {
+			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
+				m.ImageBuild = b
+			}
+		}
 		if person != "" {
 			if st, err := s.BudgetStatus(ctx, p, person); err == nil {
 				m.BudgetStatus = st
@@ -174,19 +147,14 @@ func (s *Service) validate(p *Project) error {
 		}
 		p.Members[i] = m
 	}
-	for _, pr := range p.Profiles {
-		if _, ok := s.profile(pr); !ok {
-			return refuse("Profil %q gibt es nicht.", pr)
-		}
-	}
+	// Profiles the catalogue no longer has (e.g. "Umgebung aus Git", gone 14.10.2026) are dropped, not refused: the budget tree and old projects still carry them.
+	p.Profiles = slices.DeleteFunc(slices.Clone(p.Profiles), func(pr string) bool {
+		_, ok := s.profile(pr)
+		return !ok
+	})
 	for _, c := range p.GPUClasses {
 		if !slices.Contains(s.cfg.GPUClasses, c) {
 			return refuse("GPU-Klasse %q gibt es nicht.", c)
-		}
-	}
-	for _, im := range p.Images {
-		if strings.TrimSpace(im.Image) == "" {
-			return refuse("Image ohne Adresse.")
 		}
 	}
 	l := p.Limits
@@ -211,7 +179,7 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the images and the course image; everything else is kept.
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the project image; everything else is kept.
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
@@ -223,14 +191,14 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		// admins set how the project uses them.
 		keepTreeFields(&p, cur)
 	case !asAdmin:
-		desc, members, images, kernelImage := p.Description, p.Members, p.Images, p.KernelImage
+		desc, members, image, gitURL, gitRef := p.Description, p.Members, p.ProjectImage, p.ImageGitURL, p.ImageGitRef
 		p = cur
-		p.Description, p.Members, p.Images, p.KernelImage = desc, members, images, kernelImage
+		p.Description, p.Members, p.ProjectImage, p.ImageGitURL, p.ImageGitRef = desc, members, image, gitURL, gitRef
 	}
 	if err := s.validate(&p); err != nil {
 		return Project{}, err
 	}
-	if err := s.checkKernelImage(ctx, &p, cur.KernelImage); err != nil {
+	if err := s.applyProjectImage(ctx, &p, cur); err != nil {
 		return Project{}, err
 	}
 	if err := withinTree(p); err != nil {
@@ -240,7 +208,13 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	return p, s.store.Update(ctx, &p)
 }
 
-func (s *Service) Delete(ctx context.Context, slug string) error { return s.store.Delete(ctx, slug) }
+func (s *Service) Delete(ctx context.Context, slug string) error {
+	if err := s.store.Delete(ctx, slug); err != nil {
+		return err
+	}
+	s.forgetBuilds(ctx, slug)
+	return nil
+}
 
 // StartRequest is what the hub asks before it starts a server.
 type StartRequest struct {
@@ -330,37 +304,4 @@ func plural(n int, one, many string) string {
 		return one
 	}
 	return fmt.Sprintf(many, n)
-}
-
-// KernelImages are the course images of the projects people can start in now, for pulling them onto the nodes ahead of time.
-func (s *Service) KernelImages(ctx context.Context) ([]string, error) {
-	list, err := s.store.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, p := range list {
-		if p.KernelImage != "" && p.Active(s.now()) && !slices.Contains(out, p.KernelImage) {
-			out = append(out, p.KernelImage)
-		}
-	}
-	return out, nil
-}
-
-// ReplaceKernelImage moves every project from a course image to its rebuild on a new base (gpu.Service.RebaseCourseImages); no check again, the rebuild has the label by construction.
-func (s *Service) ReplaceKernelImage(ctx context.Context, old, new string) error {
-	list, err := s.store.List(ctx)
-	if err != nil {
-		return err
-	}
-	for _, p := range list {
-		if p.KernelImage != old {
-			continue
-		}
-		p.KernelImage, p.UpdatedBy = new, "course-image-rebuild"
-		if err := s.store.Update(ctx, &p); err != nil {
-			return err
-		}
-	}
-	return nil
 }

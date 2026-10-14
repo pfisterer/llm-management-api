@@ -19,9 +19,7 @@ const (
 	StatusFailed   Status = "failed"
 )
 
-// Environment is a Git repository at a commit, built into an image (Harbor
-// envs/<slug>:<commit>). Images are shared: two people adding the same
-// repository and commit get the same image, built once.
+// Environment is a project image built from a Git repository at a commit on notebook-base (Harbor envs/<slug>:<commit>-<base release>, docs/bauplan.md 10.12). Owner is "project:<slug>". Images are shared: two projects with the same repository and commit get the same image, built once.
 type Environment struct {
 	ID     uint   `json:"id" gorm:"primaryKey"`
 	Owner  string `json:"owner" gorm:"index;not null"`
@@ -31,10 +29,8 @@ type Environment struct {
 	Branch string `json:"branch"`
 	Commit string `json:"commit" gorm:"not null"`
 	Image  string `json:"image" gorm:"not null"`
-	// Base is the base image of a course image (built from requirements.txt and the like on notebook-base, docs/bauplan.md 10.12); empty = an ordinary environment built by repo2docker.
-	Base string `json:"base,omitempty"`
-	// Replaces is the image this one is rebuilt for on a new base: once the new one is ready, projects using the old one get the new one (see Service.RebaseCourseImages).
-	Replaces  string    `json:"-"`
+	// Base is the notebook-base release the image is built on; a newer one rebuilds it (Service.RebaseProjectImages).
+	Base      string    `json:"base,omitempty"`
 	Status    Status    `json:"status" gorm:"not null"`
 	JobName   string    `json:"-"`
 	Message   string    `json:"message,omitempty"`

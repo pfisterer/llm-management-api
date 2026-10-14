@@ -112,66 +112,124 @@ func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 	refs := func(context.Context, string) (gitRefs, error) {
 		return gitRefs{Refs: map[string]string{"refs/heads/main": "0123456789abcdef0123456789abcdef01234567"}, DefaultBranch: "main"}, nil
 	}
-	return newService(Config{Registry: "reg", JupyterURL: "https://hub"}, NewMemoryStore(), b, i, h, refs, zap.NewNop().Sugar()), b, i, h
+	return newService(Config{Registry: "reg", JupyterURL: "https://hub", CourseBase: "reg/platform/notebook-base:v1.1.0"}, NewMemoryStore(), b, i, h, refs, zap.NewNop().Sugar()), b, i, h
 }
 
-func TestCreateBuildsOnceAndShares(t *testing.T) {
-	s, b, i, h := testService()
+type fakeDaemonSets struct {
+	fakePods
+	cur  map[string]any
+	puts int
+}
+
+func (f *fakeDaemonSets) getDaemonSet(context.Context, string, string) (map[string]any, error) {
+	if f.cur == nil {
+		return nil, ErrNotFound
+	}
+	return f.cur, nil
+}
+
+func (f *fakeDaemonSets) putDaemonSet(_ context.Context, _, _ string, ds map[string]any, _ bool) error {
+	f.cur, f.puts = ds, f.puts+1
+	return nil
+}
+
+func TestProjectImageBuild(t *testing.T) {
+	s, b, i, _ := testService()
 	ctx := context.Background()
-	a, err := s.Create(ctx, "a@dhbw.de", "https://github.com/o/r", "", "", false)
-	if err != nil {
+	var ready []string
+	s.SetBuildReady(func(_ context.Context, e Environment) error {
+		slug, _ := ProjectOf(e)
+		ready = append(ready, slug+" "+e.Image)
+		return nil
+	})
+	got, err := s.BuildProjectImage(ctx, "kurs", "https://github.com/o/kurs", "", false)
+	if err != nil || got.Status != "building" || got.Image != "reg/envs/github-com-o-kurs:0123456789ab-v1.1.0" {
+		t.Fatalf("build %+v %v", got, err)
+	}
+	if len(b.created) != 1 || len(b.created[0]) > 63 || strings.Contains(b.created[0], ".") {
+		t.Fatalf("jobs %v", b.created)
+	}
+	// Saving again with the same repository keeps the build; the job's success hands the image over.
+	if _, err := s.BuildProjectImage(ctx, "kurs", "https://github.com/o/kurs.git", "", false); err != nil || len(b.created) != 1 {
+		t.Fatalf("same repository: %v, jobs %v", err, b.created)
+	}
+	b.status[b.created[0]] = jobStatus{Succeeded: 1}
+	st, err := s.ProjectImageBuild(ctx, "kurs")
+	if err != nil || st.Status != "ready" || len(ready) != 1 || ready[0] != "kurs "+got.Image {
+		t.Fatalf("after job %+v %v, ready %v", st, err, ready)
+	}
+	// Another project with the same repository and commit: the image exists, no second build.
+	i.have["github-com-o-kurs:0123456789ab-v1.1.0"] = true
+	other, err := s.BuildProjectImage(ctx, "zweiter", "https://github.com/o/kurs", "main", false)
+	if err != nil || other.Status != "ready" || len(b.created) != 1 {
+		t.Fatalf("shared image %+v %v %v", other, err, b.created)
+	}
+	// A failed build shows the script's own refusal; rebuild builds the same commit again.
+	b.log = "Cloning\ndhbw: Das Repository hat ein Dockerfile.\n"
+	delete(i.have, "github-com-o-r:0123456789ab-v1.1.0")
+	f, _ := s.BuildProjectImage(ctx, "dritter", "https://github.com/o/r", "", false)
+	b.status[b.created[len(b.created)-1]] = jobStatus{Failed: 1}
+	if st, _ := s.ProjectImageBuild(ctx, "dritter"); st.Status != "failed" || st.Message != "Das Repository hat ein Dockerfile." {
+		t.Fatalf("failed %+v", st)
+	}
+	n := len(b.created)
+	if r, err := s.BuildProjectImage(ctx, "dritter", "https://github.com/o/r", "", true); err != nil || r.Status != "building" || r.Image != f.Image || len(b.created) != n {
+		// The fake keeps one job per name, so the forced rebuild reuses the name.
+		t.Fatalf("rebuild %+v %v %d", r, err, len(b.created))
+	}
+	if envs, _ := s.store.List(ctx, projectOwner("dritter")); len(envs) != 1 {
+		t.Fatalf("older builds kept: %d", len(envs))
+	}
+	if err := s.ForgetProjectImage(ctx, "dritter"); err != nil {
 		t.Fatal(err)
 	}
-	if a.Status != StatusBuilding || a.Image != "reg/envs/github-com-o-r:0123456789ab" || a.Branch != "main" || a.Name != "r" {
-		t.Fatalf("unexpected %+v", a)
-	}
-	// Same repository and commit for someone else: joins the running build.
-	bb, err := s.Create(ctx, "b@dhbw.de", "https://github.com/o/r", "main", "", false)
-	if err != nil || bb.Status != StatusBuilding || len(b.created) != 1 {
-		t.Fatalf("second create %+v %v, jobs %v", bb, err, b.created)
-	}
-	if _, err := s.Start(ctx, a, "a@dhbw.de", false, ""); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("start before ready: %v", err)
-	}
-	b.status[a.JobName] = jobStatus{Succeeded: 1}
-	got, err := s.Get(ctx, a.ID, "a@dhbw.de", false)
-	if err != nil || got.Status != StatusReady {
-		t.Fatalf("after build %+v %v", got, err)
-	}
-	if _, err := s.Get(ctx, a.ID, "b@dhbw.de", false); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("foreign get: %v", err)
-	}
-	u, err := s.Start(ctx, got, "a@dhbw.de", true, "kurs")
-	if err != nil || !strings.HasPrefix(u, "https://hub/user/a@dhbw.de/r-") {
-		t.Fatalf("start %q %v", u, err)
-	}
-	opts := h.started[ServerName(got)]
-	if opts["profile"] != "git-gpu" || opts["image--unlisted-choice"] != got.Image || opts["project"] != "kurs" {
-		t.Fatalf("hub options %v", opts)
-	}
-	// Image already in Harbor: no build at all.
-	i.have["github-com-o-other:0123456789ab"] = true
-	c, err := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "Mein Kurs", false)
-	if err != nil || c.Status != StatusReady || len(b.created) != 1 || c.Name != "Mein Kurs" {
-		t.Fatalf("existing image %+v %v %v", c, err, b.created)
+	if st, _ := s.ProjectImageBuild(ctx, "dritter"); st != nil {
+		t.Fatalf("forgotten build still there: %+v", st)
 	}
 }
 
-func TestFailedBuild(t *testing.T) {
+func TestProjectImagesRebuiltOnNewBase(t *testing.T) {
 	s, b, _, _ := testService()
 	ctx := context.Background()
-	e, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/r", "", "", false)
-	b.status[e.JobName] = jobStatus{Failed: 1}
-	list, err := s.List(ctx, "a@dhbw.de")
-	if err != nil || len(list) != 1 || list[0].Status != StatusFailed || list[0].Message == "" {
-		t.Fatalf("%+v %v", list, err)
+	var ready []string
+	s.SetBuildReady(func(_ context.Context, e Environment) error {
+		ready = append(ready, e.Image)
+		return nil
+	})
+	first, _ := s.BuildProjectImage(ctx, "kurs", "https://github.com/o/kurs", "", false)
+	b.status[b.created[0]] = jobStatus{Succeeded: 1}
+	if err := s.RebaseProjectImages(ctx); err != nil || len(b.created) != 1 || len(ready) != 1 {
+		t.Fatalf("same base: %v, jobs %v, ready %v", err, b.created, ready)
 	}
-	// The build script's own refusal becomes the message.
-	b.log = "Cloning\ndhbw: Das Dockerfile nutzt ein Basis-Image, das hier nicht erlaubt ist: python:3.12\ndhbw: Erlaubt sind …\n"
-	e2, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "", false)
-	b.status[e2.JobName] = jobStatus{Failed: 1}
-	got, _ := s.Get(ctx, e2.ID, "a@dhbw.de", false)
-	if !strings.HasPrefix(got.Message, "Das Dockerfile nutzt ein Basis-Image") {
-		t.Fatalf("message: %q", got.Message)
+	s.cfg.CourseBase = "reg/platform/notebook-base:v1.2.0"
+	if err := s.RebaseProjectImages(ctx); err != nil || len(b.created) != 2 {
+		t.Fatalf("new base: %v, jobs %v", err, b.created)
+	}
+	b.status[b.created[1]] = jobStatus{Succeeded: 1}
+	_ = s.RebaseProjectImages(ctx)
+	if len(ready) != 2 || ready[1] != "reg/envs/github-com-o-kurs:0123456789ab-v1.2.0" || ready[1] == first.Image {
+		t.Fatalf("rebuild not handed over: %v", ready)
+	}
+}
+
+func TestEnsurePrepull(t *testing.T) {
+	s, _, _, _ := testService()
+	ctx := context.Background()
+	f := &fakeDaemonSets{}
+	s.pods = f
+	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/b:1", "ghcr.io/k/a:1", "ghcr.io/k/a:1", ""}); err != nil || f.puts != 1 {
+		t.Fatalf("create: %v %d", err, f.puts)
+	}
+	spec := f.cur["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	inits := spec["initContainers"].([]any)
+	if len(inits) != 3 || inits[0].(map[string]any)["image"] != s.cfg.CourseBase || inits[1].(map[string]any)["image"] != "ghcr.io/k/a:1" {
+		t.Fatalf("init containers %v", inits)
+	}
+	f.cur["metadata"].(map[string]any)["resourceVersion"] = "7"
+	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/a:1", "ghcr.io/k/b:1"}); err != nil || f.puts != 1 {
+		t.Fatalf("unchanged list changed the DaemonSet: %v %d", err, f.puts)
+	}
+	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/a:1"}); err != nil || f.puts != 2 || f.cur["metadata"].(map[string]any)["resourceVersion"] != "7" {
+		t.Fatalf("update: %v %d %v", err, f.puts, f.cur["metadata"])
 	}
 }

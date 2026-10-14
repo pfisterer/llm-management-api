@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
@@ -169,7 +170,7 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 //
 //	@ID				updateWorkspaceProject
 //	@Summary		Change a workspace project
-//	@Description	Admins change everything; the project's managers only the description, the members and the images.
+//	@Description	Admins change everything; the project's managers only the description, the members and the project image (project_image, or image_git_url and image_git_ref to build it from Git).
 //	@Tags			workspaces
 //	@Accept			json
 //	@Produce		json
@@ -205,6 +206,75 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// manager lets admins and the project's managers through.
+func (s *Server) manager(c *gin.Context, slug string) bool {
+	cl := caller(c)
+	if cl.Role.AtLeast(access.RoleAdmin) {
+		return true
+	}
+	cur, err := s.ws.Get(c.Request.Context(), slug)
+	if s.workspaceError(c, err) {
+		return false
+	}
+	if cur.RoleOf(cl.Tokens) != workspace.RoleManager {
+		abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
+		return false
+	}
+	return true
+}
+
+// rebuildProjectImage godoc
+//
+//	@ID				rebuildProjectImage
+//	@Summary		Build a project image from Git again
+//	@Description	Resolves the project's ref again (a branch's newest commit) and builds it on notebook-base; a failed commit is built anew. The project keeps its image until the build is ready.
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string	true	"short name"
+//	@Success		200		{object}	workspace.ImageBuild
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		403		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/image/rebuild [post]
+func (s *Server) rebuildProjectImage(c *gin.Context) {
+	slug := c.Param("slug")
+	if !s.manager(c, slug) {
+		return
+	}
+	b, err := s.ws.RebuildProjectImage(c.Request.Context(), slug)
+	if s.workspaceError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, b)
+}
+
+// getProjectImageLog godoc
+//
+//	@ID				getProjectImageLog
+//	@Summary		Build log of a project image from Git
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string	true	"short name"
+//	@Success		200		{object}	BuildLogResponse
+//	@Failure		403		{object}	ErrorResponse
+//	@Failure		404		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/image/log [get]
+func (s *Server) getProjectImageLog(c *gin.Context) {
+	slug := c.Param("slug")
+	if !s.manager(c, slug) {
+		return
+	}
+	log, err := s.ws.ProjectImageLog(c.Request.Context(), slug)
+	if errors.Is(err, gpu.ErrNotFound) {
+		err = workspace.ErrNotFound
+	}
+	if s.workspaceError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, BuildLogResponse{Log: log})
 }
 
 // deleteWorkspaceProject godoc
