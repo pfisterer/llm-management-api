@@ -19,6 +19,20 @@ func TestEnsureWorkspaceKey(t *testing.T) {
 	if err != nil || ws != WorkspaceKey("master", p.UserID(), "t-ws") || f.keyBy(ws)["team_id"] != "t-a" {
 		t.Fatalf("default pool: %v %v", err, f.keyBy(ws)["team_id"])
 	}
+	// The key list names the workspace project of a workspace key.
+	u, err := svc.Usage(ctx, p, grant(poolA, poolB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, k := range u.Keys {
+		if k.Workspace == "t-ws" && k.Project == "t-a" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("workspace key not named: %+v", u.Keys)
+	}
 	if _, err := svc.EnsureWorkspaceKey(ctx, p, grant(), "master", "t-ws"); !errors.Is(err, ErrNotEligible) {
 		t.Fatalf("without a pool: %v", err)
 	}

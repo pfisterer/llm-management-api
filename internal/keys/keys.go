@@ -121,6 +121,9 @@ type KeyView struct {
 	Chat           bool     `json:"chat"`
 	Project        string   `json:"project" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
 	ProjectName    string   `json:"project_name" example:"Machine Learning WWI23SEB"`
+	// Workspace is the workspace project whose servers use the key (the key of a person's workspaces, see EnsureWorkspaceKey), WorkspaceName its name; empty for every other key.
+	Workspace     string `json:"workspace,omitempty" example:"t-f5fbea5b-c451-4d95-83a7-a008e3376a1e"`
+	WorkspaceName string `json:"workspace_name,omitempty" example:"Workspace-Testprojekt"`
 	Spend          float64  `json:"spend"`
 	Budget         *float64 `json:"budget"`
 	BudgetDuration *string  `json:"budget_duration"`
@@ -279,6 +282,9 @@ func view(keys []litellm.Key, pools []Pool) ([]KeyView, int) {
 		}
 		v := KeyView{ID: k.Token, Name: shownName(alias), Chat: isChatAlias(alias), Project: k.Team(), ProjectName: names[k.Team()], Spend: k.Spend,
 			Budget: k.MaxBudget, BudgetDuration: k.BudgetDuration, ResetAt: k.BudgetResetAt}
+		if ws, ok := strings.CutPrefix(v.Name, workspaceAlias("")); ok && !v.Chat {
+			v.Workspace = ws
+		}
 		if v.Chat {
 			v.Name = "DHBW-Chat (automatisch)"
 		} else {

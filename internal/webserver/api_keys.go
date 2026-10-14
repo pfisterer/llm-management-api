@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -73,7 +74,23 @@ func (s *Server) getUsage(c *gin.Context) {
 		s.upstreamError(c, "usage", err)
 		return
 	}
+	s.nameWorkspaceKeys(c.Request.Context(), u.Keys)
 	c.JSON(http.StatusOK, u)
+}
+
+// nameWorkspaceKeys gives the workspace keys the name of their workspace project.
+func (s *Server) nameWorkspaceKeys(ctx context.Context, views []keys.KeyView) {
+	if s.ws == nil {
+		return
+	}
+	for i := range views {
+		if views[i].Workspace == "" {
+			continue
+		}
+		if p, err := s.ws.Get(ctx, views[i].Workspace); err == nil {
+			views[i].WorkspaceName = p.Name
+		}
+	}
 }
 
 // listKeys godoc
@@ -96,6 +113,7 @@ func (s *Server) listKeys(c *gin.Context) {
 		s.upstreamError(c, "list keys", err)
 		return
 	}
+	s.nameWorkspaceKeys(c.Request.Context(), u.Keys)
 	c.JSON(http.StatusOK, u.Keys)
 }
 
