@@ -73,13 +73,15 @@ type Project struct {
 	// StorageGB is the project's workspace storage in GB, from the budget tree: one volume for the homes of its members and their shared folder (StoragePVCPrefix); 0 = no volume, servers then start with an empty home that is lost when they end.
 	StorageGB int `json:"storage_gb" gorm:"column:storage_gb"`
 	// DeleteAt is the day the budget tree deletes the project with its workspace storage (its end plus a grace period); nil = not planned.
-	DeleteAt  *time.Time `json:"delete_at,omitempty" gorm:"column:delete_at"`
-	EndsAt    *time.Time `json:"ends_at,omitempty"`   // after this day nobody can start in the project
-	TreeNode  string     `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
-	CreatedBy string     `json:"created_by,omitempty"`
-	UpdatedBy string     `json:"updated_by,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	DeleteAt *time.Time `json:"delete_at,omitempty" gorm:"column:delete_at"`
+	EndsAt   *time.Time `json:"ends_at,omitempty"` // after this day nobody can start in the project
+	// NoWorkspaces: the tree gives the project no workspace resources (LLM tokens only, docs/bauplan.md 8.14); it is then not offered for servers.
+	NoWorkspaces bool      `json:"no_workspaces,omitempty" gorm:"column:no_workspaces"`
+	TreeNode     string    `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
+	CreatedBy    string    `json:"created_by,omitempty"`
+	UpdatedBy    string    `json:"updated_by,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (Project) TableName() string { return "workspace_projects" }

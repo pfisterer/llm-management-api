@@ -199,7 +199,7 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if role == "" && all {
 			role = "admin"
 		}
-		if role == "" || (!all && !p.Active(s.now())) {
+		if role == "" || (!all && !p.Active(s.now())) || p.NoWorkspaces {
 			continue
 		}
 		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}}

@@ -166,7 +166,11 @@ func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler)
 		Profiles: []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "gpu", Name: "GPU", GPU: true}},
 	}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
 	if _, err := ws.UpsertFromTree(context.Background(), "p_1", workspace.TreeProject{Name: "Kurs", Members: []workspace.Member{{Token: "user:member@dhbw.de"}},
-		GPUsByClass: map[string]int{"l4-3q": 2}, LLMMTokens: 80}); err != nil {
+		GPUsByClass: map[string]int{"l4-3q": 2}, LLMMTokens: 80, Workspaces: true}); err != nil {
+		t.Fatal(err)
+	}
+	// LLM tokens only: no workspace project, so it adds nothing to workspace_projects and is not offered to the hub.
+	if _, err := ws.UpsertFromTree(context.Background(), "p_llm", workspace.TreeProject{Name: "Nur LLM", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 10}); err != nil {
 		t.Fatal(err)
 	}
 	g, err := gpu.NewForTest(gpu.Config{JupyterURL: "https://jupyter"})
@@ -180,13 +184,13 @@ func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler)
 	return acc, ws, h
 }
 
-// The tokens of a project are the LLM; without them there is none, also for an admin.
+// The tokens of a project are the LLM (summed over the projects, the LLM-only one included); without them there is none, also for an admin. Only the project with workspace resources counts as a workspace project.
 func TestLLMFromProjects(t *testing.T) {
 	_, _, h := llmServer(t)
 	var me MeResponse
 	code, body := do(t, h, "GET", "/v1/me", "member@dhbw.de", nil)
 	_ = json.Unmarshal(body, &me)
-	if code != 200 || me.Role != access.RoleUser || me.LLMMTokens != 80 || me.ChatURL != "https://chat" || me.WorkspaceProjects != 1 || me.JupyterURL == "" {
+	if code != 200 || me.Role != access.RoleUser || me.LLMMTokens != 90 || me.ChatURL != "https://chat" || me.WorkspaceProjects != 1 || me.JupyterURL == "" {
 		t.Fatalf("member: %d %s", code, body)
 	}
 	if code, body := do(t, h, "GET", "/v1/usage", "member@dhbw.de", nil); code != 200 {

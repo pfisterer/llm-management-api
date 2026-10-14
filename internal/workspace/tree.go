@@ -34,6 +34,8 @@ type TreeProject struct {
 	StorageGB int `json:"storage_gb" example:"50"`
 	// DeleteAt is the day the tree deletes the project (its end plus a grace period), for the warnings; nil = not planned.
 	DeleteAt *time.Time `json:"delete_at,omitempty"`
+	// Workspaces tells whether the project holds anything of the tree's area workspaces; one with LLM tokens only is no workspace project (docs/bauplan.md 8.14).
+	Workspaces bool `json:"workspaces"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -134,6 +136,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	p.LLMRPM, p.LLMTPM, p.LLMModels = tp.LLMRPM, tp.LLMTPM, cleanModels(tp.LLMModels)
 	p.StorageGB = max(tp.StorageGB, 0)
 	p.DeleteAt = tp.DeleteAt
+	p.NoWorkspaces = !tp.Workspaces
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
