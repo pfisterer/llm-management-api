@@ -332,6 +332,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		return fmt.Errorf("ALIAS_PROBES: %w", err)
 	}
 	classifier := classify.NewService(aliases, thresholds, classifyStore, cfg.LiteLLMGatewayURL, cfg.LiteLLMMasterKey, log)
+	if gpuSvc != nil {
+		// The model catalogue shows what the alias classification found out about a model (docs/bauplan.md 10.16).
+		gpuSvc.SetModelCategory(func(ctx context.Context, model string) ([]string, string, bool) {
+			r, ok := classifier.Known(ctx, model)
+			return r.Aliases, r.Reason, ok
+		})
+	}
 
 	servers := []*http.Server{
 		{Addr: cfg.Bind, Handler: srv.Router(), ReadHeaderTimeout: 10 * time.Second},

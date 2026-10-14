@@ -21,12 +21,14 @@ type CatalogModel struct {
 	Model string   `json:"model" example:"Qwen/Qwen3-8B-AWQ"` // Hugging Face repository, also the served name
 	Args  []string `json:"args" gorm:"serializer:json"`       // vLLM arguments after --model and --port
 	// Resources of the replica's container; empty = 1 CPU, 3–5 GiB, 1 GPU.
-	CPU         string    `json:"cpu,omitempty" example:"2"`
-	MemoryReq   string    `json:"memory_request,omitempty" example:"8Gi"`
-	MemoryLimit string    `json:"memory_limit,omitempty" example:"12Gi"`
-	MinGB       float64   `json:"min_gb"` // GPU memory it needs; nodes with less are not offered it
-	UpdatedAt   time.Time `json:"updated_at"`
-	UpdatedBy   string    `json:"updated_by"`
+	CPU         string  `json:"cpu,omitempty" example:"2"`
+	MemoryReq   string  `json:"memory_request,omitempty" example:"8Gi"`
+	MemoryLimit string  `json:"memory_limit,omitempty" example:"12Gi"`
+	MinGB       float64 `json:"min_gb"` // GPU memory it needs; nodes with less are not offered it
+	// Category is what it is for, as stated: chat, code, fast or general. The measured one (ModelState.Category) wins once the model has run.
+	Category  string    `json:"category" enums:"chat,code,fast,general"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
 }
 
 func (CatalogModel) TableName() string { return "inference_models" }
@@ -227,6 +229,8 @@ func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 		return &ErrFleet{"Modell: ein Hugging-Face-Repository wie Qwen/Qwen3-8B-AWQ."}
 	case m.MinGB < 0:
 		return &ErrFleet{"GPU-Speicher darf nicht negativ sein."}
+	case m.Category != "" && m.Category != "chat" && m.Category != "code" && m.Category != "fast" && m.Category != "general":
+		return &ErrFleet{"Kategorie: chat, code, fast oder general."}
 	}
 	for _, q := range []string{m.CPU, m.MemoryReq, m.MemoryLimit} {
 		if q != "" && !quantityPattern.MatchString(q) {
@@ -305,6 +309,27 @@ type ModelState struct {
 	Waiting  int    `json:"waiting"` // for a GPU (a workspace has it)
 	Restarts int    `json:"restarts"`
 	Problem  string `json:"problem,omitempty"` // the last failure, e.g. CrashLoopBackOff: Error
+	// Category measured by the alias classification (code before chat before fast) once the model ran; empty before. Reason says why.
+	Category string `json:"category,omitempty" enums:"chat,code,fast"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// ModelCategory is the alias classification of a served model name: its aliases and why; false when nothing is known yet.
+type ModelCategory func(ctx context.Context, model string) (aliases []string, reason string, ok bool)
+
+// SetModelCategory sets where measured categories come from (the alias classification).
+func (s *Service) SetModelCategory(f ModelCategory) { s.category = f }
+
+// bestCategory is the best of a model's aliases: code before chat before fast.
+func bestCategory(aliases []string) string {
+	for _, c := range []struct{ alias, cat string }{{"code", "code"}, {"chat-default", "chat"}, {"chat-fast", "fast"}} {
+		for _, a := range aliases {
+			if a == c.alias {
+				return c.cat
+			}
+		}
+	}
+	return ""
 }
 
 // ModelCatalog is the catalogue page: the models with their state, the tier defaults and the tiers.
@@ -325,6 +350,13 @@ func (s *Service) ModelCatalog(ctx context.Context) (ModelCatalog, error) {
 	}
 	for _, m := range models {
 		out.Models = append(out.Models, m)
+		if s.category != nil {
+			if aliases, reason, ok := s.category(ctx, m.Model); ok {
+				st := out.States[m.Key]
+				st.Category, st.Reason = bestCategory(aliases), reason
+				out.States[m.Key] = st
+			}
+		}
 	}
 	sort.Slice(out.Models, func(i, j int) bool { return out.Models[i].Key < out.Models[j].Key })
 	out.TierModels = tiers
@@ -360,8 +392,9 @@ func (m CatalogModel) fitsNode(gb float64) bool { return gb == 0 || m.MinGB <= g
 
 // ModelChoice is a catalogue model as the GPU page offers it at a node.
 type ModelChoice struct {
-	Key   string  `json:"key"`
-	MinGB float64 `json:"min_gb"`
+	Key      string  `json:"key"`
+	MinGB    float64 `json:"min_gb"`
+	Category string  `json:"category,omitempty"` // measured, else stated
 }
 
 // ModelChoices are the catalogue's models for the GPU page.
@@ -372,7 +405,13 @@ func (s *Service) ModelChoices(ctx context.Context) []ModelChoice {
 	}
 	out := make([]ModelChoice, 0, len(models))
 	for k, m := range models {
-		out = append(out, ModelChoice{Key: k, MinGB: m.MinGB})
+		c := ModelChoice{Key: k, MinGB: m.MinGB, Category: m.Category}
+		if s.category != nil {
+			if aliases, _, ok := s.category(ctx, m.Model); ok && bestCategory(aliases) != "" {
+				c.Category = bestCategory(aliases)
+			}
+		}
+		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out

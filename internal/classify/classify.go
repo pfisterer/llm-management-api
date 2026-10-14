@@ -124,6 +124,25 @@ func (s *Service) Many(ctx context.Context, models []string) map[string][]string
 	return out
 }
 
+// Known is what is known about a model without measuring it: the inventory's members, else a stored measurement of the current thresholds. ok=false when the model was never measured.
+func (s *Service) Known(ctx context.Context, model string) (Result, bool) {
+	var fixed []string
+	for name, def := range s.aliases {
+		if slices.Contains(def.Members, model) {
+			fixed = append(fixed, name)
+		}
+	}
+	if len(fixed) > 0 {
+		slices.Sort(fixed)
+		return Result{Aliases: fixed, Source: "inventar", Reason: "fest eingetragen"}, true
+	}
+	cached, ok, err := s.store.Get(ctx, model)
+	if err != nil || !ok || cached.Stamp != s.thresholds.Stamp() {
+		return Result{}, false
+	}
+	return cached, true
+}
+
 // One returns the assignment of one model, measuring it if necessary.
 func (s *Service) One(ctx context.Context, model string) (Result, error) {
 	var fixed []string
