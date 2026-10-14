@@ -140,6 +140,7 @@ func LoadConfig() (Config, error) {
 		InferenceAPIKey:    envconf.String("GPU_INFERENCE_API_KEY", ""),
 		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", "inference"),
 		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", "jupyterhub"),
+		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", "notebooks"), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
 	}
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
 	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")

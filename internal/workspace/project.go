@@ -10,14 +10,18 @@ import (
 
 // Roles in a project.
 const (
-	RoleMember  = "member"
+	RoleReader  = "reader"  // uses the project; its shared folder (project-shared) only reads
+	RoleMember  = "member"  // uses the project and writes its shared folder
 	RoleManager = "manager" // edits members, images and the description; sees the project's usage
 )
+
+// roleRank orders the roles: a person with several matching tokens gets the highest.
+var roleRank = map[string]int{RoleReader: 1, RoleMember: 2, RoleManager: 3}
 
 // Member is a person or a group, as a role-provider token (user:a@dhbw.de, group:wwi23seb).
 type Member struct {
 	Token string `json:"token" example:"group:wwi23seb"`
-	Role  string `json:"role" example:"member" enums:"member,manager"`
+	Role  string `json:"role" example:"member" enums:"reader,member,manager"`
 }
 
 // Limits on concurrent use. 0 = no limit, except GPUsPerPerson where 0 = no GPU.
@@ -88,16 +92,17 @@ func (p Project) Active(t time.Time) bool {
 	return p.EndsAt == nil || !t.After(p.EndsAt.Add(24*time.Hour))
 }
 
-// RoleOf is the person's role in the project ("" = not a member); manager wins over member.
+// RoleOf is the person's role in the project ("" = not a member): the highest of the tokens that match (manager over member over reader).
 func (p Project) RoleOf(tokens []string) string {
 	role := ""
 	for _, m := range p.Members {
 		for _, t := range tokens {
-			if m.Token == t {
-				if m.Role == RoleManager {
-					return RoleManager
-				}
-				role = RoleMember
+			r := m.Role
+			if r == "" {
+				r = RoleMember
+			}
+			if m.Token == t && roleRank[r] > roleRank[role] {
+				role = r
 			}
 		}
 	}

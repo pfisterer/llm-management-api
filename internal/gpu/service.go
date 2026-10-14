@@ -47,7 +47,13 @@ type Service struct {
 	servers servers
 	refs    refResolver
 	pods    podLister
+	k8s     kubeDoer // kernel pods (kernels.go); nil in tests without them
 	log     *zap.SugaredLogger
+	// kernelCheck decides whether a person may start one more GPU kernel (SetKernelCheck).
+	kernelCheck func(ctx context.Context, o *KernelOwner) error
+	// whoami is the hub user of a token (kernels.go: the server's own token); cached in tokens.
+	whoami func(ctx context.Context, token string) (string, error)
+	tokens tokenCache
 	// ready is told when a project image build is ready, so the project uses it.
 	ready func(ctx context.Context, e Environment) error
 	// bases are the current bases of the projects' environments at their release (SetBases).
@@ -61,9 +67,12 @@ func New(cfg Config, store Store, log *zap.SugaredLogger) (*Service, error) {
 		return nil, err
 	}
 	git := newGitClient()
-	s := newService(cfg, store, k, newRegistry(cfg.Registry), newHub(cfg.JupyterURL, cfg.JupyterAPIToken),
+	h := newHub(cfg.JupyterURL, cfg.JupyterAPIToken)
+	s := newService(cfg, store, k, newRegistry(cfg.Registry), h,
 		func(ctx context.Context, u string) (gitRefs, error) { return fetchRefs(ctx, git, u) }, log)
+	s.whoami = h.whoami
 	s.pods = k
+	s.k8s = k
 	return s, nil
 }
 

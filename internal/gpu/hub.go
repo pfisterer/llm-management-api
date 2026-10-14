@@ -115,3 +115,30 @@ func (h *hub) stopServer(ctx context.Context, user, server string, remove bool) 
 	}
 	return err
 }
+
+// whoami is the JupyterHub user a token belongs to (any token may identify itself at /hub/api/user), e.g. the API token of a person's server.
+func (h *hub) whoami(ctx context.Context, token string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.base+"/hub/api/user", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "token "+token)
+	resp, err := h.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("jupyterhub: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return "", ErrNotFound
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("jupyterhub: /user %d", resp.StatusCode)
+	}
+	var u struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil || u.Name == "" {
+		return "", ErrNotFound
+	}
+	return u.Name, nil
+}

@@ -288,3 +288,42 @@ func TestProjectImageFromGit(t *testing.T) {
 		t.Fatalf("cleared: %+v %v %v", out, err, f.builds)
 	}
 }
+
+// A GPU kernel of a running "CPU + GPU-Kernel" server is no new server, but its GPU counts.
+func TestCheckKernelStart(t *testing.T) {
+	ctx := context.Background()
+	me := []string{"user:a@dhbw.de"}
+	s := service(Running{Server: "jupyter-a", Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, CPU: 0.5, RAMGB: 2})
+	_, _ = s.create(ctx, Project{Slug: "split", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{SplitProfile},
+		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 1, CPUPerPerson: 4, RAMGBPerPerson: 8, GPUsPerPerson: 1}}, "admin")
+	kernel := StartRequest{Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, Kernel: true, CPU: 1, RAMGB: 2, GPUs: 1}
+	if got := reason(s.CheckStart(ctx, me, kernel)); got != "" {
+		t.Errorf("kernel next to its server refused: %s", got)
+	}
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, Server: "jupyter-a-2", CPU: 0.5, RAMGB: 2})); !strings.Contains(got, "Server") {
+		t.Errorf("second server allowed: %q", got)
+	}
+	busy := service(Running{Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, CPU: 0.5, RAMGB: 2},
+		Running{Server: "", Person: "a@dhbw.de", Project: "split", Profile: "gpu-kernel", GPUClass: "l4-3q", CPU: 1, RAMGB: 2, GPUs: 1})
+	_, _ = busy.create(ctx, Project{Slug: "split", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{SplitProfile},
+		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 1, CPUPerPerson: 4, RAMGBPerPerson: 8, GPUsPerPerson: 1}}, "admin")
+	if got := reason(busy.CheckStart(ctx, me, kernel)); !strings.Contains(got, "GPU") {
+		t.Errorf("second GPU kernel allowed: %q", got)
+	}
+}
+
+// The highest role of the matching tokens counts: a course group as reader, its tutors as members.
+func TestRoleOf(t *testing.T) {
+	p := Project{Members: []Member{{Token: "group:wwi23seb", Role: RoleReader}, {Token: "user:tutor@dhbw.de", Role: RoleMember}, {Token: "user:prof@dhbw.de", Role: RoleManager}, {Token: "user:alt@dhbw.de"}}}
+	for tokens, want := range map[string]string{
+		"group:wwi23seb":                    RoleReader,
+		"group:wwi23seb user:tutor@dhbw.de": RoleMember,
+		"user:prof@dhbw.de group:wwi23seb":  RoleManager,
+		"user:alt@dhbw.de":                  RoleMember,
+		"user:x@dhbw.de":                    "",
+	} {
+		if got := p.RoleOf(strings.Fields(tokens)); got != want {
+			t.Errorf("%s: %q, want %q", tokens, got, want)
+		}
+	}
+}

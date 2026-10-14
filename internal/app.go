@@ -196,6 +196,15 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		if err := wsSvc.MigrateProfiles(context.Background()); err != nil {
 			log.Warnw("workspace profiles not migrated", "error", err)
 		}
+		// A GPU kernel counts like a GPU server against the project's limits and budgets (docs/bauplan.md 6.2).
+		gpuSvc.SetKernelCheck(func(ctx context.Context, o *gpu.KernelOwner) error {
+			err := wsSvc.CheckStart(ctx, accessSvc.Who(ctx, o.Person).Tokens, workspace.StartRequest{Person: o.Person, Project: o.Project, Profile: gpu.SplitProfile, Kernel: true, CPU: 1, RAMGB: 2e9 / (1 << 30), GPUs: 1})
+			var refusal *workspace.Refusal
+			if errors.As(err, &refusal) {
+				return &gpu.KernelRefused{Reason: refusal.Reason}
+			}
+			return err
+		})
 		gpuSvc.SetBuildReady(func(ctx context.Context, e gpu.Environment) error {
 			slug, ok := gpu.ProjectOf(e)
 			if !ok {
@@ -297,7 +306,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
 		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc,
 			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Workspaces: wsSvc, SelfServiceURL: cfg.SelfServiceURL,
-			Keys: keySvc, Quota: quota, MasterKey: cfg.LiteLLMMasterKey, Gateway: cfg.LiteLLMGatewayURL, APIURL: cfg.APIURL, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+			Keys: keySvc, Quota: quota, MasterKey: cfg.LiteLLMMasterKey, Gateway: cfg.LiteLLMGatewayURL, APIURL: cfg.APIURL, Kernels: gpuSvc, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
@@ -35,7 +36,9 @@ type GPUHubOptions struct {
 	MasterKey string
 	Gateway   string // LiteLLM inference gateway inside the cluster, asked for the key's models
 	APIURL    string // the LLM API as people reach it, e.g. https://api.llm.services.dhbw.cloud/v1
-	Log       *zap.SugaredLogger
+	// GPU kernels (/gpu/kernels): the notebook servers of "CPU + GPU-Kernel" ask here for their kernel pods, with their own hub token instead of the shared one. nil = routes off.
+	Kernels *gpu.Service
+	Log     *zap.SugaredLogger
 }
 
 // HubProject is a project as the hub needs it for its profile list.
@@ -49,6 +52,8 @@ type HubProject struct {
 	ImageLabel   string `json:"image_label,omitempty"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
+	// SharedReadOnly: the person only reads the project's shared folder (role reader); the hub mounts it read-only, the GPU kernel pod follows the server.
+	SharedReadOnly bool `json:"shared_read_only"`
 	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
 	EndsAt   *time.Time `json:"ends_at,omitempty"`
 	DeleteAt *time.Time `json:"delete_at,omitempty"`
@@ -93,7 +98,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			for _, m := range mine {
-				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: o.Workspaces.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: o.Workspaces.ImageLabel(m.Project), StorageGB: m.StorageGB, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
+				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: o.Workspaces.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: o.Workspaces.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}
@@ -127,6 +132,9 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				abort(c, http.StatusInternalServerError, "internal", "Start konnte nicht geprüft werden.")
 			}
 		})
+	}
+	if o.Kernels != nil {
+		kernelRoutes(r, o)
 	}
 	if o.Usage != nil && o.Project != nil {
 		// The output of `juicefs quota list` from the hourly CronJob workspace-storage-usage (tasks/juicefs.yaml), as text: parsing stays here, the job stays a one-liner. Booked as the day's home sizes (the largest of the day counts) and kept for the admins' storage view.

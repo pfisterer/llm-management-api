@@ -34,6 +34,8 @@ type Config struct {
 	InferenceNamespace string // inference
 
 	WorkspaceNamespace string // jupyterhub: where the workspace pods run whose usage is booked
+
+	Kernels KernelConfig // GPU kernel pods of "CPU + GPU-Kernel" (kernels.go)
 }
 
 func (c Config) Validate() error {

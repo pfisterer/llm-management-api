@@ -91,7 +91,7 @@ func (s *Service) profile(slug string) (Profile, bool) {
 // Mine is a project with the person's role in it and its budgets as far as used (by the person for budgets per person).
 type Mine struct {
 	Project
-	Role         string         `json:"role" enums:"member,manager,admin"`
+	Role         string         `json:"role" enums:"reader,member,manager,admin"`
 	BudgetStatus []BudgetStatus `json:"budget_status"`
 	// ImageBuild is the state of the project image's build from Git (ImageGitURL); nil = none.
 	ImageBuild *ImageBuild `json:"image_build,omitempty"`
@@ -147,8 +147,8 @@ func (s *Service) validate(p *Project) error {
 		if m.Role == "" {
 			m.Role = RoleMember
 		}
-		if m.Role != RoleMember && m.Role != RoleManager {
-			return refuse("Rolle %q unbekannt (member, manager).", m.Role)
+		if roleRank[m.Role] == 0 {
+			return refuse("Rolle %q unbekannt (reader, member, manager).", m.Role)
 		}
 		p.Members[i] = m
 	}
@@ -231,6 +231,8 @@ type StartRequest struct {
 	CPU     float64 `json:"cpu"`
 	RAMGB   float64 `json:"ram_gb"`
 	GPUs    float64 `json:"gpus"`
+	// Kernel: a GPU kernel of a running "CPU + GPU-Kernel" server (no new server, so the limit on servers does not apply).
+	Kernel bool `json:"-"`
 }
 
 // CheckStart decides whether a person may start a profile in a project now. The reason of a refusal is shown in JupyterHub.
@@ -273,7 +275,7 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	var servers int
 	var cpu, ram, gpus, classGPUs float64
 	for _, x := range running {
-		if x.Server == r.Server || x.Project != p.Slug {
+		if (!r.Kernel && x.Server == r.Server) || x.Project != p.Slug {
 			continue
 		}
 		if x.GPUClass == pr.GPUClass {
@@ -291,7 +293,7 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	}
 	l := p.Limits
 	switch {
-	case l.ServersPerPerson > 0 && servers >= l.ServersPerPerson:
+	case !r.Kernel && l.ServersPerPerson > 0 && servers >= l.ServersPerPerson:
 		return refuse("Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Server zuerst beenden.", p.Name, plural(l.ServersPerPerson, "ist 1 Server", "sind %d Server"), servers)
 	case l.CPUPerPerson > 0 && cpu+r.CPU > l.CPUPerPerson+1e-9:
 		return refuse("Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Server bräuchte %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)

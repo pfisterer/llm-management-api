@@ -126,9 +126,11 @@ type podInfo struct {
 		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Spec struct {
-		NodeName        string            `json:"nodeName"`
-		NodeSelector    map[string]string `json:"nodeSelector"`
-		SchedulingGates []struct {
+		ActiveDeadlineSeconds int64             `json:"activeDeadlineSeconds"`
+		Priority              int32             `json:"priority"`
+		NodeName              string            `json:"nodeName"`
+		NodeSelector          map[string]string `json:"nodeSelector"`
+		SchedulingGates       []struct {
 			Name string `json:"name"`
 		} `json:"schedulingGates"`
 		Containers []struct {
