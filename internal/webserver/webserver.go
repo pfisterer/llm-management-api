@@ -115,6 +115,7 @@ func (s *Server) Router() *gin.Engine {
 		fa.GET("/package", s.getFleetPackage)
 		fa.DELETE("/package", require(access.RoleAdmin), s.deleteFleetPackage)
 		fa.GET("/readme", s.getFleetReadme)
+		fa.PUT("/model", s.setFleetModel)
 		fa.POST("/:serial/block", s.blockMachine)
 		fa.POST("/:serial/unblock", s.unblockMachine)
 		fa.DELETE("/:serial", s.forgetMachine)

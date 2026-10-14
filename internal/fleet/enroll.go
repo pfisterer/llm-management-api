@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"regexp"
 	"slices"
@@ -98,6 +100,7 @@ type Service struct {
 	scripts *Scripts
 	now     func() time.Time
 	extra   []ExtraSites
+	size    ModelSize
 }
 
 // ExtraSites lists sites that are no enrolled machines but come and go like them (the GPU cluster's vLLM replicas). They are reported with Fleet=true, so the discovery job deregisters one as soon as it is no longer listed.
@@ -107,8 +110,11 @@ type ExtraSites func(ctx context.Context) ([]Site, error)
 func (s *Service) AddSites(src ExtraSites) { s.extra = append(s.extra, src) }
 
 func NewService(cfg Config, wg WireGuard, store Store, scripts *Scripts) *Service {
-	return &Service{cfg: cfg, wg: wg, store: store, scripts: scripts, now: func() time.Time { return time.Now().UTC() }}
+	return &Service{cfg: cfg, wg: wg, store: store, scripts: scripts, now: func() time.Time { return time.Now().UTC() }, size: OllamaRegistry(&http.Client{})}
 }
+
+// SetModelSize replaces the lookup of a model's size (tests; nil = no check).
+func (s *Service) SetModelSize(f ModelSize) { s.size = f }
 
 func (s *Service) Config() Config       { return s.cfg }
 func (s *Service) Scripts() *Scripts    { return s.scripts }
@@ -260,8 +266,12 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (EnrollResponse
 		if v, ok := req["pkgVersion"].(string); ok {
 			mine.PkgVersion = truncate(v, 32)
 		}
+		// Why the machine could not pull or load its model, empty when it could; scripts from before send nothing and leave it.
+		if v, ok := req["modelError"].(string); ok {
+			mine.ModelError = truncate(strings.TrimSpace(v), 300)
+		}
 
-		a := s.cfg.assignment(profile, serial)
+		a := s.cfg.assignment(profile, serial, mine.ModelOverride)
 		mine.Profile, mine.Model, mine.Weight, mine.Gate, mine.Enabled = a.Profile, a.Model, a.Weight, a.Gate, a.Enabled
 		mine.LastSeen = &now
 
@@ -382,6 +392,59 @@ func (s *Service) Forget(ctx context.Context, serial string) error {
 		return ErrPeerNotFound
 	}
 	return err
+}
+
+// ErrBadModel is a model name Ollama cannot have.
+var ErrBadModel = errors.New("invalid model name")
+
+var modelNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$`)
+
+// SetModel sets the model of the given machines (empty = back to their profile's). The assignment shown changes at once; a machine pulls the model at its next enrolment (reenrollSeconds). A model the Ollama registry does not have is refused (ErrUnknownModel), and so is one larger than the memory limit of any of the machines (*MisfitError) — a rough check, the machine's own load reports the rest. Unknown serials are skipped; ErrPeerNotFound when none is known.
+func (s *Service) SetModel(ctx context.Context, serials []string, model string) (int, error) {
+	model = strings.TrimSpace(model)
+	if model != "" && !modelNameRE.MatchString(model) {
+		return 0, ErrBadModel
+	}
+	size := int64(-1)
+	if model != "" && s.size != nil {
+		var err error
+		if size, err = s.size(ctx, model); err != nil {
+			return 0, err
+		}
+	}
+	n := 0
+	err := s.store.Update(ctx, func(peers []Peer) ([]Peer, []string, error) {
+		var changed []Peer
+		var misfits []string
+		for _, p := range peers {
+			if !slices.Contains(serials, p.Serial) {
+				continue
+			}
+			profile, ok := s.cfg.profileFor(p.RAMMb)
+			a := s.cfg.assignment(profile, p.Serial, model)
+			if ok && size > 0 && a.WiredLimitMb > 0 && size/(1<<20)+kvReserveMb > int64(a.WiredLimitMb) {
+				misfits = append(misfits, fmt.Sprintf("%s (%d GB)", p.Name, a.WiredLimitMb/1024))
+				continue
+			}
+			p.ModelOverride = model
+			p.ModelError = "" // a new attempt
+			if ok {
+				p.Model = a.Model
+			} else if model != "" {
+				p.Model = model
+			}
+			changed = append(changed, p)
+		}
+		if len(misfits) > 0 {
+			return nil, nil, &MisfitError{Model: model, SizeGB: float64(size) / (1 << 30), Machines: misfits}
+		}
+		n = len(changed)
+		return changed, nil, nil
+	})
+	if err == nil && n == 0 {
+		return 0, ErrPeerNotFound
+	}
+	return n, err
 }
 
 // SetBlocked blocks or unblocks a machine.

@@ -280,3 +280,59 @@ func TestMobileconfig(t *testing.T) {
 		t.Fatalf("mobileconfig:\n%s", s)
 	}
 }
+
+func TestSetModel(t *testing.T) {
+	ctx := context.Background()
+	svc, st, _ := testService(t, nil)
+	sizes := map[string]int64{"qwen3.5:9b": 7 << 30, "qwen3.6:35b-a3b": 23 << 30}
+	svc.SetModelSize(func(_ context.Context, m string) (int64, error) {
+		if n, ok := sizes[m]; ok {
+			return n, nil
+		}
+		return 0, ErrUnknownModel
+	})
+	_, _ = svc.Enroll(ctx, mac("SERIAL0001", key1, "a", 49152))
+	_, _ = svc.Enroll(ctx, mac("SERIAL0002", key2, "b", 24000))
+	if _, err := svc.SetModel(ctx, []string{"SERIAL0001"}, "typo:9b"); !errors.Is(err, ErrUnknownModel) {
+		t.Errorf("unknown model accepted: %v", err)
+	}
+	// 23 GB do not fit the 14 GB limit of the small class: nothing is set, the misfit is named.
+	var misfit *MisfitError
+	if _, err := svc.SetModel(ctx, []string{"SERIAL0001", "SERIAL0002"}, "qwen3.6:35b-a3b"); !errors.As(err, &misfit) || len(misfit.Machines) != 1 || !strings.HasSuffix(misfit.Machines[0], "(14 GB)") {
+		t.Errorf("misfit: %v", err)
+	}
+	if peers, _ := st.List(ctx); peers[0].ModelOverride != "" {
+		t.Errorf("set despite a misfit")
+	}
+	if _, err := svc.SetModel(ctx, []string{"SERIAL0001"}, "no spaces allowed"); !errors.Is(err, ErrBadModel) {
+		t.Errorf("bad name accepted: %v", err)
+	}
+	if _, err := svc.SetModel(ctx, []string{"NOPE"}, "qwen3.5:9b"); !errors.Is(err, ErrPeerNotFound) {
+		t.Errorf("unknown serial: %v", err)
+	}
+	// Set for both: shown at once, and the next enrolment hands it out.
+	if n, err := svc.SetModel(ctx, []string{"SERIAL0001", "SERIAL0002", "NOPE"}, "qwen3.5:9b"); err != nil || n != 2 {
+		t.Fatalf("set: %d %v", n, err)
+	}
+	peers, _ := st.List(ctx)
+	if peers[0].Model != "qwen3.5:9b" || peers[1].ModelOverride != "qwen3.5:9b" {
+		t.Errorf("not stored: %+v", peers)
+	}
+	failed := mac("SERIAL0002", key2, "b", 24000)
+	failed["modelError"] = "pull: file does not exist"
+	r, _ := svc.Enroll(ctx, failed)
+	if r.Profile.Model != "qwen3.5:9b" || r.Profile.Name != "s" || r.Profile.Context != 16384 {
+		t.Errorf("enrolment: %+v", r.Profile)
+	}
+	if peers, _ := st.List(ctx); peers[1].ModelError != "pull: file does not exist" {
+		t.Errorf("model error not kept")
+	}
+	// Back to the profile: a new attempt, the error goes.
+	_, _ = svc.SetModel(ctx, []string{"SERIAL0002"}, "")
+	if peers, _ := st.List(ctx); peers[1].ModelError != "" {
+		t.Errorf("model error stays")
+	}
+	if r, _ := svc.Enroll(ctx, mac("SERIAL0002", key2, "b", 24000)); r.Profile.Model != "small" {
+		t.Errorf("profile model not back: %+v", r.Profile)
+	}
+}

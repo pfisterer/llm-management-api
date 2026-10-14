@@ -144,8 +144,8 @@ type Assignment struct {
 	Enabled      bool
 }
 
-// assignment applies the per-serial override on top of the profile.
-func (c Config) assignment(p Profile, serial string) Assignment {
+// assignment applies the per-serial override of the inventory and then the model an admin set (modelOverride, empty = none) on top of the profile.
+func (c Config) assignment(p Profile, serial, modelOverride string) Assignment {
 	a := Assignment{Profile: p.Name, Model: p.Model, Context: p.Context, WiredLimitMb: p.WiredLimitMb,
 		Weight: p.Weight, Gate: "idle-only", Enabled: true}
 	if a.Weight == 0 {
@@ -170,6 +170,9 @@ func (c Config) assignment(p Profile, serial string) Assignment {
 		if o.Enabled != nil {
 			a.Enabled = *o.Enabled
 		}
+	}
+	if modelOverride != "" {
+		a.Model = modelOverride
 	}
 	return a
 }

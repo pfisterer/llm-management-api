@@ -3,6 +3,7 @@ package webserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -252,6 +253,58 @@ func (s *Server) setBlocked(c *gin.Context, blocked bool) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// FleetModelRequest sets the model of one or more machines.
+type FleetModelRequest struct {
+	Serials []string `json:"serials" binding:"required,min=1"`
+	// Ollama model name; empty = back to the profile's model.
+	Model string `json:"model" example:"qwen3.6:35b-a3b"`
+}
+
+// FleetModelResponse is how many machines got the model.
+type FleetModelResponse struct {
+	Changed int `json:"changed"`
+}
+
+// setFleetModel godoc
+//
+//	@ID				setFleetModel
+//	@Summary		Set the model of machines
+//	@Description	The model wins over the machine's profile (by memory). A machine pulls it at its next enrolment, within reenrollSeconds; context and memory limit stay the profile's. An empty model returns the machines to their profile's.
+//	@Tags			fleet
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body		FleetModelRequest	true	"machines and model"
+//	@Success		200		{object}	FleetModelResponse
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		404		{object}	ErrorResponse
+//	@Router			/v1/fleet/model [put]
+func (s *Server) setFleetModel(c *gin.Context) {
+	var req FleetModelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+		return
+	}
+	n, err := s.fleet.SetModel(c.Request.Context(), req.Serials, req.Model)
+	var misfit *fleet.MisfitError
+	switch {
+	case errors.As(err, &misfit):
+		abort(c, http.StatusBadRequest, "model_too_large", fmt.Sprintf("%s ist %.1f GB groß und passt nicht in die Speichergrenze von %s. Diese Maschinen abwählen oder ein kleineres Modell nehmen.", misfit.Model, misfit.SizeGB, strings.Join(misfit.Machines, ", ")))
+	case errors.Is(err, fleet.ErrUnknownModel):
+		abort(c, http.StatusBadRequest, "unknown_model", "Dieses Modell gibt es im Ollama-Register nicht. Name und Tag prüfen (z. B. qwen3.5:9b).")
+	case errors.Is(err, fleet.ErrBadModel):
+		abort(c, http.StatusBadRequest, "invalid_model", "Kein gültiger Modellname.")
+	case errors.Is(err, fleet.ErrPeerNotFound):
+		abort(c, http.StatusNotFound, "not_found", "Maschine nicht gefunden.")
+	case errors.Is(err, fleet.ErrRegistry):
+		abort(c, http.StatusBadGateway, "registry", "Das Ollama-Register ist nicht erreichbar, die Größe des Modells lässt sich nicht prüfen. Später erneut versuchen.")
+	case err != nil:
+		s.internalError(c, "set fleet model", err)
+	default:
+		c.JSON(http.StatusOK, FleetModelResponse{Changed: n})
+	}
 }
 
 // forgetMachine godoc

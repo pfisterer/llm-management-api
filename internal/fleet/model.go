@@ -43,6 +43,11 @@ type Peer struct {
 	Scripts    string `json:"scripts"`
 	PkgVersion string `json:"pkgVersion"`
 
+	// ModelOverride is the model an admin set for this machine in the portal; it wins over the profile and the inventory's overrides. Empty = the profile's.
+	ModelOverride string `json:"modelOverride" gorm:"column:model_override"`
+	// ModelError is why the machine could not pull or load its model, as it reported; empty when it could.
+	ModelError string `json:"modelError" gorm:"column:model_error"`
+
 	// The effective assignment (profile + overrides) at the last enrolment.
 	Profile string  `json:"profile"`
 	Model   string  `json:"model"`
