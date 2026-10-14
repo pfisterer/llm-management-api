@@ -75,6 +75,8 @@ gpu:
   # Empty: newest tag of <registry>/platform/repo2docker-buildkit.
   builderImage: ""
   builderSecret: harbor-envs-builder
+  # notebook-base at its release (<registry>/platform/notebook-base:v1.1.0): base of course images built from Git, rebuilt on a new release; also pulled onto the CPU and GPU nodes ahead of time (DaemonSet kernel-image-prepull in the workspace namespace, needs get/create/update on daemonsets there). Empty = no course images from Git.
+  courseBaseImage: ""
   gitHosts: [github.com, gitlab.com]
   jupyterhubUrl: ""
   # vLLM replicas of the inference pool, reported to the discovery job as sites (GET /fleet/sites). Empty url = off. The key is gpu-inference-api-key in the existing secret; the ServiceAccount behind gpu-kube-token needs get/list on pods in the namespace.

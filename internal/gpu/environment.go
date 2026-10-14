@@ -23,14 +23,18 @@ const (
 // envs/<slug>:<commit>). Images are shared: two people adding the same
 // repository and commit get the same image, built once.
 type Environment struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Owner     string    `json:"owner" gorm:"index;not null"`
-	Name      string    `json:"name" gorm:"not null"`
-	GitURL    string    `json:"git_url" gorm:"not null"`
-	Ref       string    `json:"ref"`
-	Branch    string    `json:"branch"`
-	Commit    string    `json:"commit" gorm:"not null"`
-	Image     string    `json:"image" gorm:"not null"`
+	ID     uint   `json:"id" gorm:"primaryKey"`
+	Owner  string `json:"owner" gorm:"index;not null"`
+	Name   string `json:"name" gorm:"not null"`
+	GitURL string `json:"git_url" gorm:"not null"`
+	Ref    string `json:"ref"`
+	Branch string `json:"branch"`
+	Commit string `json:"commit" gorm:"not null"`
+	Image  string `json:"image" gorm:"not null"`
+	// Base is the base image of a course image (built from requirements.txt and the like on notebook-base, docs/bauplan.md 10.12); empty = an ordinary environment built by repo2docker.
+	Base string `json:"base,omitempty"`
+	// Replaces is the image this one is rebuilt for on a new base: once the new one is ready, projects using the old one get the new one (see Service.RebaseCourseImages).
+	Replaces  string    `json:"-"`
 	Status    Status    `json:"status" gorm:"not null"`
 	JobName   string    `json:"-"`
 	Message   string    `json:"message,omitempty"`

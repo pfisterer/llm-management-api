@@ -53,6 +53,8 @@ type Service struct {
 	refs    refResolver
 	pods    podLister
 	log     *zap.SugaredLogger
+	// replaced is told when a course image rebuilt on a new base is ready (old, new), so projects can follow it.
+	replaced func(ctx context.Context, old, new string) error
 }
 
 // New connects to the GPU cluster's APIs.
@@ -121,7 +123,10 @@ func (s *Service) normaliseRepo(raw string) (string, string, error) {
 
 // Create adds an environment for owner: resolve the ref, reuse the image if it
 // exists, otherwise start a build.
-func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string) (Environment, error) {
+func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string, course bool) (Environment, error) {
+	if course && s.cfg.CourseBase == "" {
+		return Environment{}, fmt.Errorf("%w: Kursimages aus Git sind hier nicht eingerichtet", ErrInvalidRepo)
+	}
 	canonical, slug, err := s.normaliseRepo(gitURL)
 	if err != nil {
 		return Environment{}, err
@@ -141,8 +146,12 @@ func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string) (
 	if strings.TrimSpace(name) == "" {
 		name = pathBase(canonical)
 	}
-	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit,
-		Image: fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)}
+	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit}
+	if course {
+		e.Base = s.cfg.CourseBase
+		tag = courseTag(commit, e.Base)
+	}
+	e.Image = fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
 	if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 		return Environment{}, err
 	}
@@ -151,10 +160,12 @@ func (s *Service) Create(ctx context.Context, owner, gitURL, ref, name string) (
 
 func pathBase(u string) string { return u[strings.LastIndex(u, "/")+1:] }
 
+// jobName is a Job name (at most 63 characters, no dots) for an image: the slug shortened to fit the tag.
 func jobName(slug, tag string) string {
+	tag = strings.ReplaceAll(tag, ".", "-")
 	s := slug
-	if len(s) > 40 {
-		s = strings.TrimRight(s[:40], "-")
+	if n := 63 - len("env-") - 1 - len(tag); len(s) > min(40, n) {
+		s = strings.TrimRight(s[:min(40, n)], "-")
 	}
 	return "env-" + s + "-" + tag
 }
@@ -186,7 +197,7 @@ func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug,
 		}
 		builder = b
 	}
-	job := buildJob(s.cfg, e.JobName, builder, e.GitURL, e.Commit, e.Branch, e.Image, slug)
+	job := buildJob(s.cfg, e.JobName, builder, *e, slug)
 	err := s.builds.createJob(ctx, s.cfg.BuildNamespace, job)
 	if errors.Is(err, errAlreadyExists) {
 		// Someone else builds the same repository and commit: share the job.
@@ -218,8 +229,18 @@ func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 		return e
 	case st.Succeeded > 0:
 		e.Status, e.Message = StatusReady, ""
+		if e.Replaces != "" && s.replaced != nil {
+			if err := s.replaced(ctx, e.Replaces, e.Image); err != nil {
+				s.log.Warnw("course image: projects not moved to the rebuilt image", "old", e.Replaces, "new", e.Image, "error", err)
+				return e
+			}
+			e.Replaces = ""
+		}
 	case st.Failed > 0:
 		e.Status, e.Message = StatusFailed, "Build fehlgeschlagen, Details im Build-Log."
+		if e.Replaces != "" {
+			e.Message = "Neubau auf dem neuen Basis-Image fehlgeschlagen, Projekte nutzen weiter " + e.Replaces + "; Details im Build-Log."
+		}
 		// A refusal of the build script itself (lines starting with "dhbw: ", e.g. a base image that is not allowed) is the better message.
 		if log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, e.JobName, 50); err == nil {
 			for _, line := range strings.Split(log, "\n") {

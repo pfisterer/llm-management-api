@@ -186,6 +186,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// Course images (KernelImage) are checked in their registry, anonymously like a node pulls them.
 		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
 		wsSvc.SetImageLabels(ociClient.Labels)
+		gpuSvc.SetImageReplaced(wsSvc.ReplaceKernelImage)
 		if gpuSvc.InferenceEnabled() {
 			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines.
 			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {
@@ -318,6 +319,15 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 				wsSvc.Enforce(ctx, running, gpuSvc.EndServer, log)
 				purgeStorage(ctx, gpuSvc, wsSvc, pods, log)
+				// Course images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
+				if err := gpuSvc.RebaseCourseImages(ctx); err != nil {
+					log.Warnw("course images: rebuild on new base", "error", err)
+				}
+				if images, err := wsSvc.KernelImages(ctx); err != nil {
+					log.Warnw("course images: listing projects failed", "error", err)
+				} else if err := gpuSvc.EnsurePrepull(ctx, images); err != nil {
+					log.Warnw("course images: prepull", "error", err)
+				}
 			}
 		}()
 	}

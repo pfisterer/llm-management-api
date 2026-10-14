@@ -14,8 +14,12 @@ repo2docker --engine buildkit --no-run --push --user-id 1000 --user-name jovyan 
 // privileged), push to Harbor with the robot account in BuilderSecret. Same as
 // aiaas-deployment/tests/env-build.sh. The namespace's NetworkPolicy limits the job to
 // the internet, Harbor and DNS.
-func buildJob(cfg Config, name, builder, gitURL, commit, branch, image, slug string) map[string]any {
+func buildJob(cfg Config, name, builder string, e Environment, slug string) map[string]any {
 	script := buildScript
+	if e.Base != "" {
+		script = courseScript
+	}
+	gitURL, commit, branch, image := e.GitURL, e.Commit, e.Branch, e.Image
 	return map[string]any{
 		"apiVersion": "batch/v1",
 		"kind":       "Job",
@@ -43,6 +47,7 @@ func buildJob(cfg Config, name, builder, gitURL, commit, branch, image, slug str
 							map[string]any{"name": "GIT_COMMIT", "value": commit},
 							map[string]any{"name": "GIT_BRANCH", "value": branch},
 							map[string]any{"name": "IMAGE", "value": image},
+							map[string]any{"name": "BASE_IMAGE", "value": e.Base},
 							map[string]any{"name": "DOCKER_CONFIG", "value": "/docker-config"},
 							map[string]any{"name": "R2D_BUILDKIT_CACHE", "value": cfg.Registry + "/" + cfg.EnvsProject + "/buildcache:" + slug},
 						},

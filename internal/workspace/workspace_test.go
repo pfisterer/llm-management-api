@@ -188,3 +188,23 @@ func TestKernelImageMustDeriveFromBase(t *testing.T) {
 		t.Errorf("cleared: %+v %v", out, err)
 	}
 }
+
+func TestKernelImagesFollowRebuild(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	past := time.Now().Add(-72 * time.Hour)
+	_, _ = s.create(ctx, Project{Slug: "a", KernelImage: "img:1"}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "b", KernelImage: "img:1"}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "alt", KernelImage: "old:1", EndsAt: &past}, "admin")
+	if imgs, err := s.KernelImages(ctx); err != nil || len(imgs) != 1 || imgs[0] != "img:1" {
+		t.Fatalf("images %v %v", imgs, err)
+	}
+	if err := s.ReplaceKernelImage(ctx, "img:1", "img:2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"a", "b"} {
+		if p, _ := s.Get(ctx, slug); p.KernelImage != "img:2" {
+			t.Errorf("%s: %q", slug, p.KernelImage)
+		}
+	}
+}

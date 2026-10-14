@@ -130,6 +130,7 @@ spec:
             - {name: GPU_ENVS_PROJECT, value: {{ .Values.gpu.envsProject | quote }}}
             - {name: GPU_BUILDER_IMAGE, value: {{ .Values.gpu.builderImage | quote }}}
             - {name: GPU_BUILDER_SECRET, value: {{ .Values.gpu.builderSecret | quote }}}
+            - {name: GPU_COURSE_BASE_IMAGE, value: {{ .Values.gpu.courseBaseImage | quote }}}
             - {name: GPU_GIT_HOSTS, value: {{ join "," .Values.gpu.gitHosts | quote }}}
             - {name: JUPYTERHUB_URL, value: {{ required "gpu.jupyterhubUrl is required" .Values.gpu.jupyterhubUrl | quote }}}
             - name: JUPYTERHUB_API_TOKEN

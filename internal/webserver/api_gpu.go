@@ -27,6 +27,8 @@ type EnvironmentRequest struct {
 	// Branch, tag or commit; empty = default branch.
 	Ref  string `json:"ref" example:"main"`
 	Name string `json:"name" example:"Statistik-Kurs"`
+	// Course builds a course image: requirements.txt, environment.yml, apt.txt and postBuild on notebook-base, for the profile CPU + GPU-Kernel (a project's kernel_image); rebuilt by itself when notebook-base gets a new release.
+	Course bool `json:"course" example:"false"`
 }
 
 // StartRequest starts a JupyterHub server for an environment.
@@ -126,7 +128,7 @@ func (s *Server) createEnvironment(c *gin.Context) {
 		abort(c, http.StatusBadRequest, "invalid", "Die Git-URL ist Pflicht.")
 		return
 	}
-	e, err := s.gpu.Create(c.Request.Context(), caller(c).Email, req.GitURL, req.Ref, req.Name)
+	e, err := s.gpu.Create(c.Request.Context(), caller(c).Email, req.GitURL, req.Ref, req.Name, req.Course)
 	if err != nil {
 		s.gpuError(c, "create environment", err)
 		return

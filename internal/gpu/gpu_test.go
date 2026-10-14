@@ -118,7 +118,7 @@ func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 func TestCreateBuildsOnceAndShares(t *testing.T) {
 	s, b, i, h := testService()
 	ctx := context.Background()
-	a, err := s.Create(ctx, "a@dhbw.de", "https://github.com/o/r", "", "")
+	a, err := s.Create(ctx, "a@dhbw.de", "https://github.com/o/r", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestCreateBuildsOnceAndShares(t *testing.T) {
 		t.Fatalf("unexpected %+v", a)
 	}
 	// Same repository and commit for someone else: joins the running build.
-	bb, err := s.Create(ctx, "b@dhbw.de", "https://github.com/o/r", "main", "")
+	bb, err := s.Create(ctx, "b@dhbw.de", "https://github.com/o/r", "main", "", false)
 	if err != nil || bb.Status != StatusBuilding || len(b.created) != 1 {
 		t.Fatalf("second create %+v %v, jobs %v", bb, err, b.created)
 	}
@@ -151,7 +151,7 @@ func TestCreateBuildsOnceAndShares(t *testing.T) {
 	}
 	// Image already in Harbor: no build at all.
 	i.have["github-com-o-other:0123456789ab"] = true
-	c, err := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "Mein Kurs")
+	c, err := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "Mein Kurs", false)
 	if err != nil || c.Status != StatusReady || len(b.created) != 1 || c.Name != "Mein Kurs" {
 		t.Fatalf("existing image %+v %v %v", c, err, b.created)
 	}
@@ -160,7 +160,7 @@ func TestCreateBuildsOnceAndShares(t *testing.T) {
 func TestFailedBuild(t *testing.T) {
 	s, b, _, _ := testService()
 	ctx := context.Background()
-	e, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/r", "", "")
+	e, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/r", "", "", false)
 	b.status[e.JobName] = jobStatus{Failed: 1}
 	list, err := s.List(ctx, "a@dhbw.de")
 	if err != nil || len(list) != 1 || list[0].Status != StatusFailed || list[0].Message == "" {
@@ -168,7 +168,7 @@ func TestFailedBuild(t *testing.T) {
 	}
 	// The build script's own refusal becomes the message.
 	b.log = "Cloning\ndhbw: Das Dockerfile nutzt ein Basis-Image, das hier nicht erlaubt ist: python:3.12\ndhbw: Erlaubt sind …\n"
-	e2, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "")
+	e2, _ := s.Create(ctx, "a@dhbw.de", "https://github.com/o/other", "", "", false)
 	b.status[e2.JobName] = jobStatus{Failed: 1}
 	got, _ := s.Get(ctx, e2.ID, "a@dhbw.de", false)
 	if !strings.HasPrefix(got.Message, "Das Dockerfile nutzt ein Basis-Image") {

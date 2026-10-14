@@ -331,3 +331,36 @@ func plural(n int, one, many string) string {
 	}
 	return fmt.Sprintf(many, n)
 }
+
+// KernelImages are the course images of the projects people can start in now, for pulling them onto the nodes ahead of time.
+func (s *Service) KernelImages(ctx context.Context) ([]string, error) {
+	list, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range list {
+		if p.KernelImage != "" && p.Active(s.now()) && !slices.Contains(out, p.KernelImage) {
+			out = append(out, p.KernelImage)
+		}
+	}
+	return out, nil
+}
+
+// ReplaceKernelImage moves every project from a course image to its rebuild on a new base (gpu.Service.RebaseCourseImages); no check again, the rebuild has the label by construction.
+func (s *Service) ReplaceKernelImage(ctx context.Context, old, new string) error {
+	list, err := s.store.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range list {
+		if p.KernelImage != old {
+			continue
+		}
+		p.KernelImage, p.UpdatedBy = new, "course-image-rebuild"
+		if err := s.store.Update(ctx, &p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
