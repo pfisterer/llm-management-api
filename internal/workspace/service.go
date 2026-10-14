@@ -35,6 +35,43 @@ type GPUClass struct {
 	Nodes    int     `json:"nodes"`
 	GPUs     float64 `json:"gpus"` // GPUs of its ready nodes right now
 	Products string  `json:"products,omitempty"`
+	// Replaces is the id from before pools this class took over; the tree renames its resources once.
+	Replaces string `json:"replaces,omitempty"`
+}
+
+// RenameGPUClass moves every project from an old class id to a new one: its classes, GPUs per class and budgets. For the switch to pools and tiers; idempotent.
+func (s *Service) RenameGPUClass(ctx context.Context, old, new string) (int, error) {
+	list, err := s.store.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range list {
+		changed := false
+		for i, c := range p.GPUClasses {
+			if c == old {
+				p.GPUClasses[i], changed = new, true
+			}
+		}
+		p.GPUClasses = slices.Compact(slices.Sorted(slices.Values(p.GPUClasses)))
+		if v, ok := p.GPUsByClass[old]; ok {
+			delete(p.GPUsByClass, old)
+			p.GPUsByClass[new] = max(p.GPUsByClass[new], v)
+			changed = true
+		}
+		for i := range p.Budgets {
+			if p.Budgets[i].GPUClass == old {
+				p.Budgets[i].GPUClass, changed = new, true
+			}
+		}
+		if changed {
+			if err := s.store.Update(ctx, &p); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, nil
 }
 
 // Base is a base of the projects' environments (dhbw-workspace-images at its release): a project runs it, or an image built on it from Git.

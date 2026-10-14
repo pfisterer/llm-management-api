@@ -149,7 +149,7 @@ func LoadConfig() (Config, error) {
 		InferenceAPIKey:    envconf.String("GPU_INFERENCE_API_KEY", ""),
 		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", "inference"),
 		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", "jupyterhub"),
-		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", "notebooks"), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
+		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", ""), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
 	}
 	// GPU administration: {"enabled": true, "reserveCPU": 1, "reserveMemoryGi": 2, "legacy": {"l4-3q": {"pool": "allgemein", "tier": "klein"}}}.
 	if raw := envconf.String("GPU_FLEET", ""); raw != "" {

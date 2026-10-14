@@ -21,7 +21,7 @@ import (
 
 // KernelConfig is how kernel pods are built; zero values take the defaults.
 type KernelConfig struct {
-	Queue string // Kueue LocalQueue in the hub's namespace; default notebooks
+	Queue string // Kueue LocalQueue in the hub's namespace for kernels without GPU (NoGPU)
 	NoGPU bool   // kernels without a GPU (staging, which has none)
 }
 
@@ -194,6 +194,10 @@ func (s *Service) KernelOwnerAt(ctx context.Context, ip string) (*KernelOwner, e
 func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelRequest) (string, error) {
 	if err := validKernelRequest(o, &r); err != nil {
 		return "", err
+	}
+	if o.GPUClass == "" && !s.cfg.Kernels.NoGPU {
+		// A server started before GPU classes, or without one chosen.
+		return "", &KernelRefused{"Für diesen Server ist keine GPU-Klasse gewählt. Bitte den Server neu starten."}
 	}
 	if s.kernelCheck != nil {
 		if err := s.kernelCheck(ctx, o); err != nil {
@@ -417,15 +421,12 @@ func (s *Service) KernelOverview(ctx context.Context, o *KernelOwner) (KernelOve
 	return out, nil
 }
 
-// kernelQueue is the LocalQueue of the server's GPU class, else the configured one (staging without GPUs, servers from before classes).
+// kernelQueue is the LocalQueue of the server's GPU class, or the configured one without GPUs (staging).
 func (s *Service) kernelQueue(o *KernelOwner) string {
-	if o.GPUClass != "" && !s.cfg.Kernels.NoGPU {
-		return "gpu-" + o.GPUClass
-	}
-	if s.cfg.Kernels.Queue != "" {
+	if s.cfg.Kernels.NoGPU {
 		return s.cfg.Kernels.Queue
 	}
-	return "notebooks"
+	return "gpu-" + o.GPUClass
 }
 
 func holdsGPU(p podInfo) bool {

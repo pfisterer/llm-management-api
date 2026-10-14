@@ -83,9 +83,9 @@ gpu:
     namespace: inference
   # GPU administration (pools, tiers, node assignments; docs in the AI service's README): {enabled, reserveCPU, reserveMemoryGi, legacy: {<class>: {pool, tier}}}. The ServiceAccount needs patch on nodes, get/list/create/update on Kueue resourceflavors and clusterqueues, and on localqueues in the workspace namespace. Empty = off.
   fleet: {}
-  # GPU kernel pods of "CPU + GPU-Kernel", created for the notebook servers (POST /gpu/kernels on the hub listener): the Kueue LocalQueue in the workspace namespace, and noGPU for a cluster without GPUs (kernels then run on the CPU, for tests). The ServiceAccount needs create/delete on pods and read on Kueue workloads and pendingworkloads there, and list on pods cluster-wide.
+  # GPU kernel pods of "CPU + GPU-Kernel", created for the notebook servers (POST /gpu/kernels on the hub listener), in the queue of the server's GPU class; noGPU for a cluster without GPUs (kernels then run on the CPU in queue, for tests). The ServiceAccount needs create/delete on pods and read on Kueue workloads and pendingworkloads there, and list on pods cluster-wide.
   kernels:
-    queue: notebooks
+    queue: ""
     noGPU: false
   # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSet kernel-image-prepull in the workspace namespace, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
   workspaces: {}

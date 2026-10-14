@@ -189,11 +189,27 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			if err := gpuSvc.SeedFleet(context.Background()); err != nil {
 				return fmt.Errorf("gpu fleet: %w", err)
 			}
+			// The class ids from before pools (l4-3q) become pool-tier: projects and booked usage follow once; the tree renames its resources when it sees "replaces" in the catalogue.
+			for _, old := range gpuSvc.AdoptedIDs() {
+				nw := gpuSvc.AdoptedClass(old)
+				n, err := wsSvc.RenameGPUClass(context.Background(), old, nw)
+				if err != nil {
+					return fmt.Errorf("rename GPU class %s: %w", old, err)
+				}
+				if r, ok := st.usage.(interface {
+					RenameGPUClass(ctx context.Context, old, new string) error
+				}); ok {
+					if err := r.RenameGPUClass(context.Background(), old, nw); err != nil {
+						return fmt.Errorf("rename GPU class %s in usage: %w", old, err)
+					}
+				}
+				log.Infow("GPU class renamed", "from", old, "to", nw, "projects", n)
+			}
 			wsSvc.SetGPUClasses(func(ctx context.Context) ([]workspace.GPUClass, error) {
 				classes, err := gpuSvc.GPUClasses(ctx)
 				out := make([]workspace.GPUClass, 0, len(classes))
 				for _, c := range classes {
-					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products})
+					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces})
 				}
 				return out, err
 			})

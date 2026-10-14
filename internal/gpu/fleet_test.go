@@ -76,7 +76,7 @@ func fleetTestService() (*Service, *fakeFleetKube) {
 	k := &fakeFleetKube{patches: map[string]map[string]any{}, objects: map[string]map[string]any{},
 		nodes: []nodeInfo{gpuNode("gpu-1", "l4-3q", "NVIDIA-L4-3Q", "3072", "1"), gpuNode("gpu-2", "l40s-12q", "NVIDIA-L40S-12Q", "12288", "1"), gpuNode("gpu-3", "", "NVIDIA-H100", "81920", "1")}}
 	s.pods = k
-	s.SetFleet(NewMemoryFleetStore(), FleetConfig{ReserveCPU: 1, ReserveMemoryGi: 2, Legacy: map[string]LegacyClass{"l4-3q": {Pool: "allgemein", Tier: "klein"}}})
+	s.SetFleet(NewMemoryFleetStore(), FleetConfig{ReserveCPU: 1, ReserveMemoryGi: 2, Adopt: map[string]LegacyClass{"l4-3q": {Pool: "allgemein", Tier: "klein"}}})
 	return s, k
 }
 
@@ -90,19 +90,22 @@ func TestReconcileFleet(t *testing.T) {
 		t.Fatal(err)
 	}
 	nodes, _ := s.GPUNodes(ctx)
-	if nodes[0].Class != "l4-3q" || nodes[0].Assignment == nil || nodes[0].Assignment.UpdatedBy != "adopted" {
+	if nodes[0].Class != "allgemein-klein" || nodes[0].Assignment == nil || nodes[0].Assignment.UpdatedBy != "adopted" {
 		t.Fatalf("legacy node adopted: %+v", nodes[0])
 	}
 	// gpu-2 carries a class nobody knows: it loses the label until an admin assigns it; gpu-3 is new.
 	if _, has := k.nodes[1].Metadata.Labels[labelClass]; has || nodes[1].Assignment != nil || nodes[2].SuggestedTier != "gross" || nodes[1].SuggestedTier != "mittel" {
 		t.Fatalf("unknown and new nodes: %+v %+v %v", nodes[1], nodes[2], k.nodes[1].Metadata.Labels)
 	}
-	cq := k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-l4-3q"]
+	if k.nodes[0].Metadata.Labels[labelClass] != "allgemein-klein" {
+		t.Errorf("adopted node relabelled: %v", k.nodes[0].Metadata.Labels)
+	}
+	cq := k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-klein"]
 	b, _ := json.Marshal(cq)
 	if !strings.Contains(string(b), `"nominalQuota":"7"`) || !strings.Contains(string(b), `"nominalQuota":"22Gi"`) || !strings.Contains(string(b), `{"name":"nvidia.com/gpu","nominalQuota":"1"}`) {
-		t.Errorf("queue of l4-3q: %s", b)
+		t.Errorf("queue of allgemein-klein: %s", b)
 	}
-	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-l4-3q"] == nil || k.objects["/apis/kueue.x-k8s.io/v1beta2/resourceflavors/l4-3q"] == nil {
+	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-allgemein-klein"] == nil || k.objects["/apis/kueue.x-k8s.io/v1beta2/resourceflavors/allgemein-klein"] == nil {
 		t.Errorf("flavor and local queue: %v", k.objects)
 	}
 
@@ -118,7 +121,7 @@ func TestReconcileFleet(t *testing.T) {
 		t.Errorf("assigned node: %v", k.nodes[1].Metadata.Labels)
 	}
 	classes, _ := s.GPUClasses(ctx)
-	if len(classes) != 2 || classes[0].ID != "allgemein-mittel" || classes[0].Name != "Allgemein · mittel" || classes[0].GPUs != 1 || classes[0].Products != "NVIDIA-L40S-12Q" {
+	if len(classes) != 2 || classes[0].ID != "allgemein-klein" || classes[0].Replaces != "l4-3q" || classes[1].ID != "allgemein-mittel" || classes[1].Name != "Allgemein · mittel" || classes[1].GPUs != 1 || classes[1].Products != "NVIDIA-L40S-12Q" {
 		t.Errorf("classes: %+v", classes)
 	}
 	// Nothing changed: nothing is written.

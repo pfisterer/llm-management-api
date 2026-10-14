@@ -386,3 +386,15 @@ func (s *GormStore) PruneGPUHours(ctx context.Context, before time.Time) error {
 	}
 	return db.Where("hour < ?", before).Delete(&GPUHourPerson{}).Error
 }
+
+// RenameGPUClass moves the booked rows from an old class id to a new one (the switch to pools and tiers); idempotent.
+func (s *GormStore) RenameGPUClass(ctx context.Context, old, new string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, table := range []string{"workspace_usage_daily", "gpu_usage_hourly", "gpu_usage_hourly_person"} {
+			if err := tx.Exec("UPDATE "+table+" SET gpu_class = ? WHERE gpu_class = ?", new, old).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

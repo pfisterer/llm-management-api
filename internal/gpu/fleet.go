@@ -57,11 +57,12 @@ type Pool struct {
 
 func (Pool) TableName() string { return "gpu_pools" }
 
-// GPUClass is a combination of pool and tier: one Kueue queue, one pair of tree resources (ws-gpus-<id>, ws-gpu-hours-<id>). The id is pool-tier, except for the classes from before pools (l4-3q), which keep theirs so that nothing stored has to change.
+// GPUClass is a combination of pool and tier: one Kueue queue, one pair of tree resources (ws-gpus-<id>, ws-gpu-hours-<id>). The id is pool-tier. Replaces is the id of a class from before pools this one took over (the tree renames its resources once).
 type GPUClass struct {
 	ID        string    `json:"id" gorm:"primaryKey" example:"allgemein-mittel"`
 	Pool      string    `json:"pool" gorm:"uniqueIndex:gpu_class_pool_tier"`
 	Tier      string    `json:"tier" gorm:"uniqueIndex:gpu_class_pool_tier"`
+	Replaces  string    `json:"replaces,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -220,8 +221,8 @@ func (g *GormFleetStore) DeleteAssignment(ctx context.Context, node string) erro
 type FleetConfig struct {
 	ReserveCPU      float64 `json:"reserveCPU"`      // cores per node kept for the system
 	ReserveMemoryGi float64 `json:"reserveMemoryGi"` // GiB per node kept for the system
-	// Legacy maps the class ids from before pools to their pool and tier ({"l4-3q": {"allgemein", "klein"}}): seeded once, and nodes labelled with them are assigned on first sight.
-	Legacy map[string]LegacyClass `json:"legacy"`
+	// Adopt maps the class ids from before pools to their pool and tier ({"l4-3q": {"allgemein", "klein"}}): their nodes are assigned on first sight, and the class pool-tier replaces the old id (projects, usage, tree). Only for the switch; empty afterwards.
+	Adopt map[string]LegacyClass `json:"adopt"`
 }
 
 type LegacyClass struct {
@@ -259,7 +260,7 @@ func (s *Service) SeedFleet(ctx context.Context) error {
 		have[p.ID] = true
 	}
 	want := []string{DefaultPool}
-	for _, l := range s.fleetCfg.Legacy {
+	for _, l := range s.fleetCfg.Adopt {
 		want = append(want, l.Pool)
 	}
 	for _, id := range want {
@@ -271,18 +272,35 @@ func (s *Service) SeedFleet(ctx context.Context) error {
 			have[id] = true
 		}
 	}
-	ids := make([]string, 0, len(s.fleetCfg.Legacy))
-	for id := range s.fleetCfg.Legacy {
-		ids = append(ids, id)
+	classes, err := s.fleet.Classes(ctx)
+	if err != nil {
+		return err
 	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		l := s.fleetCfg.Legacy[id]
-		if err := s.fleet.SaveClass(ctx, GPUClass{ID: id, Pool: l.Pool, Tier: l.Tier, CreatedAt: time.Now()}); err != nil {
-			return err
+	for _, old := range s.AdoptedIDs() {
+		l := s.fleetCfg.Adopt[old]
+		if classFor(classes, l.Pool, l.Tier) == "" {
+			if err := s.fleet.SaveClass(ctx, GPUClass{ID: l.Pool + "-" + l.Tier, Pool: l.Pool, Tier: l.Tier, Replaces: old, CreatedAt: time.Now()}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// AdoptedIDs are the old class ids being taken over, sorted.
+func (s *Service) AdoptedIDs() []string {
+	ids := make([]string, 0, len(s.fleetCfg.Adopt))
+	for id := range s.fleetCfg.Adopt {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// AdoptedClass is the class that replaces an old id.
+func (s *Service) AdoptedClass(old string) string {
+	l := s.fleetCfg.Adopt[old]
+	return l.Pool + "-" + l.Tier
 }
 
 // ClassInfo is a GPU class as the catalogue, the hub and the admin page show it.
@@ -296,6 +314,7 @@ type ClassInfo struct {
 	Nodes    int     `json:"nodes"`              // assigned nodes, ready or not
 	GPUs     float64 `json:"gpus"`               // GPUs of the ready, schedulable assigned nodes
 	Products string  `json:"products,omitempty"` // GPU types of its nodes, e.g. "NVIDIA-L40S-12Q"
+	Replaces string  `json:"replaces,omitempty"` // the id from before pools this class took over
 }
 
 // GPUClasses lists every class ever created (a class without nodes stays: projects may hold its resources), with its current nodes.
@@ -318,7 +337,7 @@ func (s *Service) GPUClasses(ctx context.Context) ([]ClassInfo, error) {
 	nodes, _ := s.GPUNodes(ctx)
 	out := make([]ClassInfo, 0, len(classes))
 	for _, c := range classes {
-		ci := ClassInfo{ID: c.ID, Pool: c.Pool, PoolName: poolName[c.Pool], Tier: c.Tier}
+		ci := ClassInfo{ID: c.ID, Pool: c.Pool, PoolName: poolName[c.Pool], Tier: c.Tier, Replaces: c.Replaces}
 		if ci.PoolName == "" {
 			ci.PoolName = c.Pool
 		}
@@ -591,9 +610,9 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// adoptLegacyNodes assigns nodes that carry a legacy class label and have no assignment yet: the nodes from before the GPU administration keep what they were.
+// adoptLegacyNodes assigns nodes that carry an old class label and have no assignment yet: the nodes from before the GPU administration keep what they were.
 func (s *Service) adoptLegacyNodes(ctx context.Context, k nodeLister) error {
-	if len(s.fleetCfg.Legacy) == 0 {
+	if len(s.fleetCfg.Adopt) == 0 {
 		return nil
 	}
 	raw, err := k.listNodes(ctx, "dhbw.cloud/node-type=gpu")
@@ -605,7 +624,7 @@ func (s *Service) adoptLegacyNodes(ctx context.Context, k nodeLister) error {
 		return err
 	}
 	for _, n := range raw {
-		l, ok := s.fleetCfg.Legacy[n.Metadata.Labels[labelClass]]
+		l, ok := s.fleetCfg.Adopt[n.Metadata.Labels[labelClass]]
 		if !ok || slices.ContainsFunc(assigned, func(a NodeAssignment) bool { return a.Node == n.Metadata.Name }) {
 			continue
 		}

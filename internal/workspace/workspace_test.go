@@ -354,3 +354,21 @@ func TestCheckStartClass(t *testing.T) {
 		}
 	}
 }
+
+// The switch to pools and tiers: a project's old class id becomes the new one everywhere, once.
+func TestRenameGPUClass(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	_, _ = s.create(ctx, Project{Slug: "alt", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"gpu"}, GPUClasses: []string{"l4-3q"},
+		GPUsByClass: map[string]int{"l4-3q": 2}, Budgets: []Budget{{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "30d", Amount: 10}}, Limits: Limits{GPUsPerPerson: 1}}, "admin")
+	if n, err := s.RenameGPUClass(ctx, "l4-3q", "allgemein-klein"); err != nil || n != 1 {
+		t.Fatalf("renamed %d, %v", n, err)
+	}
+	p, _ := s.store.Get(ctx, "alt")
+	if !slices.Equal(p.GPUClasses, []string{"allgemein-klein"}) || p.GPUsByClass["allgemein-klein"] != 2 || len(p.GPUsByClass) != 1 || p.Budgets[0].GPUClass != "allgemein-klein" {
+		t.Errorf("project after rename: %+v", p)
+	}
+	if n, _ := s.RenameGPUClass(ctx, "l4-3q", "allgemein-klein"); n != 0 {
+		t.Errorf("second rename changed %d projects", n)
+	}
+}
