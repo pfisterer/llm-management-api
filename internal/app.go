@@ -187,6 +187,15 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
 		wsSvc.SetImageLabels(ociClient.Labels)
 		wsSvc.SetImageBuilder(gpuSvc)
+		var bases []string
+		for _, b := range wsCfg.Bases {
+			bases = append(bases, b.Image)
+		}
+		gpuSvc.SetBases(bases)
+		// The profiles went into CPU, CPU + GPU-Kernel and GPU on 14.10.2026: stored projects follow once.
+		if err := wsSvc.MigrateProfiles(context.Background()); err != nil {
+			log.Warnw("workspace profiles not migrated", "error", err)
+		}
 		gpuSvc.SetBuildReady(func(ctx context.Context, e gpu.Environment) error {
 			slug, ok := gpu.ProjectOf(e)
 			if !ok {

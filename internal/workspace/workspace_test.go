@@ -3,13 +3,15 @@ package workspace
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
 var catalog = Config{
-	Profiles:   []Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "pytorch", Name: "PyTorch", GPUClass: "l4-3q"}, {Slug: "git-cpu", Name: "Git"}},
+	Profiles:   []Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "gpu", Name: "GPU", GPUClass: "l4-3q"}, {Slug: SplitProfile, Name: "CPU + GPU-Kernel", GPUClass: "l4-3q"}},
+	Bases:      []Base{{ID: "python", Name: "Python", Image: "reg/platform/base-python:v2"}, {ID: "pytorch", Name: "PyTorch", Image: "reg/platform/base-pytorch:v2", Default: true}, {ID: "tensorflow", Name: "TensorFlow", Image: "reg/platform/base-tensorflow:v2"}},
 	GPUClasses: []string{"l4-3q"},
 }
 
@@ -45,7 +47,7 @@ func TestValidation(t *testing.T) {
 		}
 	}
 	// A profile the catalogue no longer has is dropped, not refused.
-	if p, err := s.create(ctx, Project{Slug: "alt", Profiles: []string{"cpu", "git-gpu"}}, "admin"); err != nil || len(p.Profiles) != 1 {
+	if p, err := s.create(ctx, Project{Slug: "alt", Profiles: []string{"cpu", "nope", "git-gpu", "tensorflow"}}, "admin"); err != nil || !slices.Equal(p.Profiles, []string{"cpu", "gpu"}) {
 		t.Fatalf("stale profile: %+v %v", p, err)
 	}
 	if _, err := s.create(ctx, Project{Slug: "pilot"}, "admin"); !strings.Contains(reason(err), "gibt es schon") {
@@ -58,7 +60,7 @@ func TestManagerMayOnlyChangeMembersImagesDescription(t *testing.T) {
 	s := service()
 	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Limits: Limits{ServersPerPerson: 1}}, "admin")
 	out, err := s.Update(ctx, Project{Slug: "kurs", Description: "neu", Members: []Member{{Token: "group:wwi23seb"}},
-		Profiles: []string{"cpu", "pytorch"}, Limits: Limits{ServersPerPerson: 9}}, "manager@dhbw.de", false)
+		Profiles: []string{"cpu", "gpu"}, Limits: Limits{ServersPerPerson: 9}}, "manager@dhbw.de", false)
 	if err != nil || out.Description != "neu" || len(out.Members) != 1 || out.Members[0].Role != RoleMember || len(out.Profiles) != 1 || out.Limits.ServersPerPerson != 1 {
 		t.Fatalf("manager update: %+v %v", out, err)
 	}
@@ -69,14 +71,14 @@ func TestCheckStart(t *testing.T) {
 	me := []string{"user:a@dhbw.de", "group:wwi23seb"}
 	running := []Running{
 		{Server: "jupyter-a", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 1, RAMGB: 4},
-		{Server: "jupyter-b-gpu", Person: "b@dhbw.de", Project: "kurs", Profile: "pytorch", GPUClass: "l4-3q", CPU: 1, RAMGB: 2, GPUs: 1},
+		{Server: "jupyter-b-gpu", Person: "b@dhbw.de", Project: "kurs", Profile: "gpu", GPUClass: "l4-3q", CPU: 1, RAMGB: 2, GPUs: 1},
 		{Server: "jupyter-a-other", Person: "a@dhbw.de", Project: "anders", Profile: "cpu", CPU: 8, RAMGB: 30},
 	}
 	s := service(running...)
 	yesterday := time.Now().Add(-48 * time.Hour)
-	_, _ = s.create(ctx, Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:wwi23seb"}}, Profiles: []string{"cpu", "pytorch"},
+	_, _ = s.create(ctx, Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:wwi23seb"}}, Profiles: []string{"cpu", "gpu"},
 		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 2, RAMGBPerPerson: 8, GPUsPerPerson: 1}, GPUsByClass: map[string]int{"l4-3q": 1}}, "admin")
-	_, _ = s.create(ctx, Project{Slug: "cpu-only", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu", "pytorch"}}, "admin")
+	_, _ = s.create(ctx, Project{Slug: "cpu-only", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu", "gpu"}}, "admin")
 	_, _ = s.create(ctx, Project{Slug: "alt", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, EndsAt: &yesterday}, "admin")
 
 	cases := []struct {
@@ -89,13 +91,12 @@ func TestCheckStart(t *testing.T) {
 		{"unknown project", StartRequest{Person: "a@dhbw.de", Project: "x", Profile: "cpu"}, "gibt es nicht"},
 		{"not a member", StartRequest{Person: "c@dhbw.de", Project: "cpu-only", Profile: "cpu"}, "Kein Mitglied"},
 		{"ended", StartRequest{Person: "a@dhbw.de", Project: "alt", Profile: "cpu"}, "abgelaufen"},
-		{"profile not allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "git-cpu"}, "nicht freigegeben"},
-		{"free images not allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: FreeProfile}, "nicht freigegeben"},
-		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "pytorch", GPUs: 1}, "keine GPUs"},
+		{"profile not allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: SplitProfile}, "nicht freigegeben"},
+		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "gpu", GPUs: 1}, "keine GPUs"},
 		{"cores per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 1.5}, "Kerne"},
 		{"memory per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", RAMGB: 5}, "Speicher"},
-		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "pytorch", GPUs: 1}, "GPUs der Klasse l4-3q"},
-		{"own restart does not count", StartRequest{Person: "b@dhbw.de", Project: "kurs", Profile: "pytorch", GPUs: 1, Server: "jupyter-b-gpu"}, ""},
+		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1}, "GPUs der Klasse l4-3q"},
+		{"own restart does not count", StartRequest{Person: "b@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1, Server: "jupyter-b-gpu"}, ""},
 	}
 	for _, c := range cases {
 		tokens := me
@@ -109,19 +110,6 @@ func TestCheckStart(t *testing.T) {
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
-	}
-	// Free images where the project allows them.
-	_, _ = s.create(ctx, Project{Slug: "frei", Members: []Member{{Token: "user:a@dhbw.de"}}, FreeImages: true}, "admin")
-	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei", Profile: FreeProfile, CPU: 0.25, RAMGB: 1})); got != "" {
-		t.Fatalf("free image: %q", got)
-	}
-	// With a GPU: the project's GPU class and GPUs per person count as for the GPU profiles.
-	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei", Profile: FreeGPUProfile, GPUs: 1})); !strings.Contains(got, "keine GPUs") {
-		t.Fatalf("free image with GPU, project without GPUs: %q", got)
-	}
-	_, _ = s.create(ctx, Project{Slug: "frei-gpu", Members: []Member{{Token: "user:a@dhbw.de"}}, FreeImages: true, Limits: Limits{GPUsPerPerson: 1}}, "admin")
-	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "frei-gpu", Profile: FreeGPUProfile, GPUs: 1})); !strings.Contains(got, "l4-3q") {
-		t.Fatalf("free image with GPU, class not granted: %q", got)
 	}
 	// Server limit: two running servers of a in kurs.
 	s2 := service(Running{Server: "s1", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"}, Running{Server: "s2", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"},
@@ -161,9 +149,11 @@ func TestForPerson(t *testing.T) {
 type fakeBuilder struct {
 	builds  map[string]ImageBuild
 	started int
+	bases   []string
 }
 
-func (f *fakeBuilder) BuildProjectImage(_ context.Context, slug, gitURL, _ string, rebuild bool) (ImageBuild, error) {
+func (f *fakeBuilder) BuildProjectImage(_ context.Context, slug, base, gitURL, _ string, rebuild bool) (ImageBuild, error) {
+	f.bases = append(f.bases, base)
 	if strings.Contains(gitURL, "evil") {
 		return ImageBuild{}, errors.New("evil.example ist nicht zugelassen")
 	}
@@ -203,21 +193,59 @@ func TestProjectImageFinished(t *testing.T) {
 		return nil, errors.New("not found")
 	})
 	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}}, "admin")
-	for image, want := range map[string]string{"ghcr.io/kurs/fremd:1": "nicht von", "ghcr.io/kurs/weg:1": "nicht abrufbar", "Kein Image": "kein Image-Name"} {
+	for image, want := range map[string]string{"ghcr.io/kurs/weg:1": "nicht abrufbar", "Kein Image": "kein Image-Name"} {
 		if _, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: image}, "manager@dhbw.de", false); !strings.Contains(reason(err), want) {
 			t.Errorf("%s: %v", image, err)
 		}
 	}
-	out, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: " ghcr.io/kurs/ml:1 "}, "manager@dhbw.de", false)
-	if err != nil || out.ProjectImage != "ghcr.io/kurs/ml:1" {
+	// Any image is taken; one not derived from a base runs without the GPU kernel.
+	out, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: "ghcr.io/kurs/fremd:1"}, "manager@dhbw.de", false)
+	if err != nil || out.ProjectImage != "ghcr.io/kurs/fremd:1" || out.Derived() || s.EffectiveImage(out) != "ghcr.io/kurs/fremd:1" {
+		t.Fatalf("foreign image: %+v %v", out, err)
+	}
+	out, err = s.Update(ctx, Project{Slug: "kurs", ProjectImage: " ghcr.io/kurs/ml:1 "}, "manager@dhbw.de", false)
+	if err != nil || out.ProjectImage != "ghcr.io/kurs/ml:1" || !out.Derived() {
 		t.Fatalf("derived image: %+v %v", out, err)
 	}
 	n := checked
 	if _, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: "ghcr.io/kurs/ml:1"}, "manager@dhbw.de", false); err != nil || checked != n {
 		t.Errorf("unchanged image: %v, checked %d times", err, checked-n)
 	}
-	if out, err := s.Update(ctx, Project{Slug: "kurs"}, "manager@dhbw.de", false); err != nil || out.ProjectImage != "" {
+	if out, err := s.Update(ctx, Project{Slug: "kurs"}, "manager@dhbw.de", false); err != nil || out.ProjectImage != "" || s.EffectiveImage(out) != "reg/platform/base-pytorch:v2" || s.ImageLabel(out) != "PyTorch" {
 		t.Errorf("cleared: %+v %v", out, err)
+	}
+	if _, err := s.Update(ctx, Project{Slug: "kurs", ImageBase: "cobol"}, "manager@dhbw.de", false); !strings.Contains(reason(err), "Basis") {
+		t.Errorf("unknown base: %v", err)
+	}
+}
+
+func TestSplitProfileNeedsDerivedImage(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	me := []string{"user:a@dhbw.de"}
+	_, _ = s.create(ctx, Project{Slug: "fremd", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu", SplitProfile}, ProjectImage: "ghcr.io/x/y:1"}, "admin")
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "fremd", Profile: SplitProfile})); !strings.Contains(got, "Basen") {
+		t.Fatalf("split with a foreign image: %q", got)
+	}
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "fremd", Profile: "cpu"})); got != "" {
+		t.Fatalf("cpu with a foreign image: %q", got)
+	}
+}
+
+func TestMigrateProfiles(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	st := s.store
+	_ = st.Create(ctx, &Project{Slug: "tf", Profiles: []string{"cpu", "tensorflow", "cpu-gpukernel"}})
+	_ = st.Create(ctx, &Project{Slug: "both", Profiles: []string{"pytorch", "tensorflow", "git-cpu"}})
+	if err := s.MigrateProfiles(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.Get(ctx, "tf"); !slices.Equal(p.Profiles, []string{"cpu", "gpu", SplitProfile}) || p.ImageBase != "tensorflow" {
+		t.Errorf("tf: %+v", p)
+	}
+	if p, _ := s.Get(ctx, "both"); !slices.Equal(p.Profiles, []string{"gpu", "cpu"}) || p.ImageBase != "" {
+		t.Errorf("both: %+v", p)
 	}
 }
 
@@ -235,8 +263,8 @@ func TestProjectImageFromGit(t *testing.T) {
 	if _, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://evil.example/o/kurs"}, "a@dhbw.de", false); !strings.Contains(reason(err), "nicht zugelassen") {
 		t.Fatalf("bad repository: %v", err)
 	}
-	out, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://github.com/o/kurs", ProjectImage: "egal"}, "a@dhbw.de", false)
-	if err != nil || out.ProjectImage != "" || f.started != 1 {
+	out, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageBase: "tensorflow", ImageGitURL: "https://github.com/o/kurs", ProjectImage: "egal"}, "a@dhbw.de", false)
+	if err != nil || out.ProjectImage != "" || f.started != 1 || f.bases[len(f.bases)-1] != "reg/platform/base-tensorflow:v2" || s.ImageLabel(out) != "TensorFlow + github.com/o/kurs" {
 		t.Fatalf("building: %+v %v %d", out, err, f.started)
 	}
 	mine, _ := s.ForPerson(ctx, []string{"user:a@dhbw.de"}, "a@dhbw.de", false)

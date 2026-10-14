@@ -163,7 +163,7 @@ func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler)
 	t.Helper()
 	acc := accessFor(t, &roleprovider.Mock{Memberships: map[string][]string{"root@dhbw.de": {"group:root_uni"}}}, []string{"group:root_uni"}, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{
-		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "pytorch", Name: "PyTorch", GPUClass: "l4-3q"}},
+		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "gpu", Name: "GPU", GPUClass: "l4-3q"}},
 		GPUClasses: []string{"l4-3q"},
 	}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
 	if _, err := ws.UpsertFromTree(context.Background(), "p_1", workspace.TreeProject{Name: "Kurs", Members: []workspace.Member{{Token: "user:member@dhbw.de"}},

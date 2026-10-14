@@ -40,12 +40,13 @@ type GPUHubOptions struct {
 
 // HubProject is a project as the hub needs it for its profile list.
 type HubProject struct {
-	Slug       string   `json:"slug"`
-	Name       string   `json:"name"`
-	Profiles   []string `json:"profiles"`
-	FreeImages bool     `json:"free_images"`
-	// ProjectImage replaces notebook-base in "CPU + GPU-Kernel" and "Projekt-Image (GPU)"; empty = notebook-base.
+	Slug     string   `json:"slug"`
+	Name     string   `json:"name"`
+	Profiles []string `json:"profiles"`
+	// ProjectImage is what the project's servers run in every profile (its environment); ImageDerived = built on a base (JupyterLab, VS Code, GPU kernel), else it runs as it is, without "CPU + GPU-Kernel"; ImageLabel names it in the start form.
 	ProjectImage string `json:"project_image,omitempty"`
+	ImageDerived bool   `json:"image_derived"`
+	ImageLabel   string `json:"image_label,omitempty"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
 	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
@@ -92,7 +93,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				return
 			}
 			for _, m := range mine {
-				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, FreeImages: m.FreeImages, ProjectImage: m.ProjectImage, StorageGB: m.StorageGB, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
+				resp.Projects = append(resp.Projects, HubProject{Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: o.Workspaces.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: o.Workspaces.ImageLabel(m.Project), StorageGB: m.StorageGB, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
 		}

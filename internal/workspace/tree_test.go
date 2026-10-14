@@ -27,7 +27,7 @@ func TestUpsertFromTree(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 	p, _ := s.Get(ctx, st.Slug)
-	if !p.Managed() || !slices.Contains(p.Profiles, "pytorch") || !slices.Contains(p.Profiles, "cpu") || p.Limits.GPUsPerPerson != 1 || p.GPUsByClass["l4-3q"] != 4 || len(p.Budgets) != 2 || p.LLMRPM != 120 || p.LLMTPM != 400000 || !slices.Equal(p.LLMModels, []string{"all-proxy-models", "code"}) {
+	if !p.Managed() || !slices.Contains(p.Profiles, "gpu") || !slices.Contains(p.Profiles, "cpu") || p.Limits.GPUsPerPerson != 1 || p.GPUsByClass["l4-3q"] != 4 || len(p.Budgets) != 2 || p.LLMRPM != 120 || p.LLMTPM != 400000 || !slices.Equal(p.LLMModels, []string{"all-proxy-models", "code"}) {
 		t.Fatalf("created project = %+v", p)
 	}
 	if pools, _ := s.LLMPoolsFor(ctx, []string{"group:k"}); len(pools) != 1 || pools[0].RPM != 120 || pools[0].TPM != 400000 || !slices.Equal(pools[0].Models, []string{"all-proxy-models", "code"}) {

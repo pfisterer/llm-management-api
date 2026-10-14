@@ -47,14 +47,16 @@ type Project struct {
 	Members     []Member `json:"members" gorm:"serializer:json"`
 	Profiles    []string `json:"profiles" gorm:"serializer:json" example:"cpu,pytorch"`
 	GPUClasses  []string `json:"gpu_classes" gorm:"serializer:json" example:"l4-3q"`
-	FreeImages  bool     `json:"free_images"` // W3: any image, with or without GPU (profiles free, free-gpu)
-	// ProjectImage is the image of the profiles "CPU + GPU-Kernel" and "Projekt-Image (GPU)" instead of notebook-base (docs/bauplan.md 10.12): a finished image derived from notebook-base (label BaseLabel), or, with ImageGitURL, the last successful build from that repository; empty = notebook-base.
+	// The project's environment, run by every profile but the free images (docs/bauplan.md 10.12; Service.EffectiveImage): ImageBase is the chosen base (Config.Bases, empty = the default). ProjectImage is a finished image derived from a base (label BaseLabel), or, with ImageGitURL, the last successful build from that repository on ImageBase; empty = the base itself.
+	ImageBase    string `json:"image_base,omitempty" example:"pytorch"`
 	ProjectImage string `json:"project_image,omitempty" example:"ghcr.io/dozent/ml-kurs:2026"`
-	// ImageGitURL builds ProjectImage from a public repository (requirements.txt, environment.yml, apt.txt, postBuild) on notebook-base, rebuilt on its new releases; ImageGitRef is a branch, tag or commit (empty = default branch).
-	ImageGitURL string   `json:"image_git_url,omitempty" example:"https://github.com/dozent/ml-kurs"`
-	ImageGitRef string   `json:"image_git_ref,omitempty" example:"main"`
-	Limits      Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
-	Budgets     []Budget `json:"budgets" gorm:"serializer:json"`
+	// ImageGitURL builds ProjectImage from a public repository (requirements.txt, environment.yml, apt.txt, postBuild) on ImageBase, rebuilt on its new releases; ImageGitRef is a branch, tag or commit (empty = default branch).
+	ImageGitURL string `json:"image_git_url,omitempty" example:"https://github.com/dozent/ml-kurs"`
+	ImageGitRef string `json:"image_git_ref,omitempty" example:"main"`
+	// ImageDerived tells whether an existing ProjectImage is derived from a base (label BaseLabel, looked up on saving). Any image may be the project's; one that is not derived runs as it is (its own jupyterhub-singleuser), without the GPU kernel (Derived).
+	ImageDerived bool     `json:"image_derived,omitempty"`
+	Limits       Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
+	Budgets      []Budget `json:"budgets" gorm:"serializer:json"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
 	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
 	// LLMMTokens is the project's LLM tokens per 30 days in millions, from the budget tree: one pool (a LiteLLM team) that all members draw from together, not an amount per member.
@@ -102,19 +104,14 @@ func (p Project) RoleOf(tokens []string) string {
 	return role
 }
 
-// FreeProfile and FreeGPUProfile are the hub profiles for any image (W3), without and with a GPU; they are allowed through FreeImages, not through Profiles. The GPU one needs a GPU class of the project as well (its class is the first of the catalogue, see Service.profile).
-const (
-	FreeProfile    = "free"
-	FreeGPUProfile = "free-gpu"
-)
+// SplitProfile is "CPU + GPU-Kernel": the notebook on a CPU node, GPU kernels in their own pods from the same image, which only an image derived from a base can do (Derived).
+const SplitProfile = "cpu-gpukernel"
 
 // Allows tells whether the project lets a profile be started.
-func (p Project) Allows(profile string) bool {
-	if profile == FreeProfile || profile == FreeGPUProfile {
-		return p.FreeImages
-	}
-	return slices.Contains(p.Profiles, profile)
-}
+func (p Project) Allows(profile string) bool { return slices.Contains(p.Profiles, profile) }
+
+// Derived tells whether the project's environment is a base or built on one — with JupyterLab, VS Code and the GPU kernel —, rather than an image that runs as it is.
+func (p Project) Derived() bool { return p.ImageGitURL != "" || p.ProjectImage == "" || p.ImageDerived }
 
 // AllowsGPUClass tells whether GPUs of a class may be used.
 func (p Project) AllowsGPUClass(class string) bool { return slices.Contains(p.GPUClasses, class) }

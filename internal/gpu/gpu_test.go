@@ -105,6 +105,8 @@ func (f *fakeHub) startServer(_ context.Context, _, server string, o map[string]
 }
 func (f *fakeHub) stopServer(context.Context, string, string, bool) error { return nil }
 
+const testBase = "reg/platform/base-pytorch:v2.0.0"
+
 func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 	b := &fakeBuilds{status: map[string]jobStatus{}}
 	i := &fakeImages{have: map[string]bool{}}
@@ -112,7 +114,9 @@ func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 	refs := func(context.Context, string) (gitRefs, error) {
 		return gitRefs{Refs: map[string]string{"refs/heads/main": "0123456789abcdef0123456789abcdef01234567"}, DefaultBranch: "main"}, nil
 	}
-	return newService(Config{Registry: "reg", JupyterURL: "https://hub", CourseBase: "reg/platform/notebook-base:v1.1.0"}, NewMemoryStore(), b, i, h, refs, zap.NewNop().Sugar()), b, i, h
+	s := newService(Config{Registry: "reg", JupyterURL: "https://hub"}, NewMemoryStore(), b, i, h, refs, zap.NewNop().Sugar())
+	s.SetBases([]string{"reg/platform/base-python:v2.0.0", testBase})
+	return s, b, i, h
 }
 
 type fakeDaemonSets struct {
@@ -142,15 +146,15 @@ func TestProjectImageBuild(t *testing.T) {
 		ready = append(ready, slug+" "+e.Image)
 		return nil
 	})
-	got, err := s.BuildProjectImage(ctx, "kurs", "https://github.com/o/kurs", "", false)
-	if err != nil || got.Status != "building" || got.Image != "reg/envs/github-com-o-kurs:0123456789ab-v1.1.0" {
+	got, err := s.BuildProjectImage(ctx, "kurs", testBase, "https://github.com/o/kurs", "", false)
+	if err != nil || got.Status != "building" || got.Image != "reg/envs/github-com-o-kurs:0123456789ab-pytorch-v2.0.0" {
 		t.Fatalf("build %+v %v", got, err)
 	}
 	if len(b.created) != 1 || len(b.created[0]) > 63 || strings.Contains(b.created[0], ".") {
 		t.Fatalf("jobs %v", b.created)
 	}
 	// Saving again with the same repository keeps the build; the job's success hands the image over.
-	if _, err := s.BuildProjectImage(ctx, "kurs", "https://github.com/o/kurs.git", "", false); err != nil || len(b.created) != 1 {
+	if _, err := s.BuildProjectImage(ctx, "kurs", testBase, "https://github.com/o/kurs.git", "", false); err != nil || len(b.created) != 1 {
 		t.Fatalf("same repository: %v, jobs %v", err, b.created)
 	}
 	b.status[b.created[0]] = jobStatus{Succeeded: 1}
@@ -159,21 +163,21 @@ func TestProjectImageBuild(t *testing.T) {
 		t.Fatalf("after job %+v %v, ready %v", st, err, ready)
 	}
 	// Another project with the same repository and commit: the image exists, no second build.
-	i.have["github-com-o-kurs:0123456789ab-v1.1.0"] = true
-	other, err := s.BuildProjectImage(ctx, "zweiter", "https://github.com/o/kurs", "main", false)
+	i.have["github-com-o-kurs:0123456789ab-pytorch-v2.0.0"] = true
+	other, err := s.BuildProjectImage(ctx, "zweiter", testBase, "https://github.com/o/kurs", "main", false)
 	if err != nil || other.Status != "ready" || len(b.created) != 1 {
 		t.Fatalf("shared image %+v %v %v", other, err, b.created)
 	}
 	// A failed build shows the script's own refusal; rebuild builds the same commit again.
 	b.log = "Cloning\ndhbw: Das Repository hat ein Dockerfile.\n"
-	delete(i.have, "github-com-o-r:0123456789ab-v1.1.0")
-	f, _ := s.BuildProjectImage(ctx, "dritter", "https://github.com/o/r", "", false)
+	delete(i.have, "github-com-o-r:0123456789ab-pytorch-v2.0.0")
+	f, _ := s.BuildProjectImage(ctx, "dritter", testBase, "https://github.com/o/r", "", false)
 	b.status[b.created[len(b.created)-1]] = jobStatus{Failed: 1}
 	if st, _ := s.ProjectImageBuild(ctx, "dritter"); st.Status != "failed" || st.Message != "Das Repository hat ein Dockerfile." {
 		t.Fatalf("failed %+v", st)
 	}
 	n := len(b.created)
-	if r, err := s.BuildProjectImage(ctx, "dritter", "https://github.com/o/r", "", true); err != nil || r.Status != "building" || r.Image != f.Image || len(b.created) != n {
+	if r, err := s.BuildProjectImage(ctx, "dritter", testBase, "https://github.com/o/r", "", true); err != nil || r.Status != "building" || r.Image != f.Image || len(b.created) != n {
 		// The fake keeps one job per name, so the forced rebuild reuses the name.
 		t.Fatalf("rebuild %+v %v %d", r, err, len(b.created))
 	}
@@ -196,18 +200,18 @@ func TestProjectImagesRebuiltOnNewBase(t *testing.T) {
 		ready = append(ready, e.Image)
 		return nil
 	})
-	first, _ := s.BuildProjectImage(ctx, "kurs", "https://github.com/o/kurs", "", false)
+	first, _ := s.BuildProjectImage(ctx, "kurs", testBase, "https://github.com/o/kurs", "", false)
 	b.status[b.created[0]] = jobStatus{Succeeded: 1}
 	if err := s.RebaseProjectImages(ctx); err != nil || len(b.created) != 1 || len(ready) != 1 {
 		t.Fatalf("same base: %v, jobs %v, ready %v", err, b.created, ready)
 	}
-	s.cfg.CourseBase = "reg/platform/notebook-base:v1.2.0"
+	s.SetBases([]string{"reg/platform/base-pytorch:v2.1.0"})
 	if err := s.RebaseProjectImages(ctx); err != nil || len(b.created) != 2 {
 		t.Fatalf("new base: %v, jobs %v", err, b.created)
 	}
 	b.status[b.created[1]] = jobStatus{Succeeded: 1}
 	_ = s.RebaseProjectImages(ctx)
-	if len(ready) != 2 || ready[1] != "reg/envs/github-com-o-kurs:0123456789ab-v1.2.0" || ready[1] == first.Image {
+	if len(ready) != 2 || ready[1] != "reg/envs/github-com-o-kurs:0123456789ab-pytorch-v2.1.0" || ready[1] == first.Image {
 		t.Fatalf("rebuild not handed over: %v", ready)
 	}
 }
@@ -222,7 +226,7 @@ func TestEnsurePrepull(t *testing.T) {
 	}
 	spec := f.cur["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 	inits := spec["initContainers"].([]any)
-	if len(inits) != 3 || inits[0].(map[string]any)["image"] != s.cfg.CourseBase || inits[1].(map[string]any)["image"] != "ghcr.io/k/a:1" {
+	if len(inits) != 4 || inits[0].(map[string]any)["image"] != "ghcr.io/k/a:1" || inits[2].(map[string]any)["image"] != "reg/platform/base-python:v2.0.0" {
 		t.Fatalf("init containers %v", inits)
 	}
 	f.cur["metadata"].(map[string]any)["resourceVersion"] = "7"

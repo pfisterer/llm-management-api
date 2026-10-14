@@ -20,7 +20,7 @@ import (
 func treeServer(t *testing.T) (http.Handler, *workspace.Service) {
 	t.Helper()
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{
-		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "pytorch", Name: "PyTorch", GPUClass: "l4-3q"}},
+		Profiles:   []workspace.Profile{{Slug: "cpu", Name: "CPU"}, {Slug: "gpu", Name: "GPU", GPUClass: "l4-3q"}},
 		GPUClasses: []string{"l4-3q"},
 	}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
 	return New(Options{DevMode: true, DevAuthUser: testDevUser, Workspaces: ws, TreeToken: "tree-secret", Log: zap.NewNop().Sugar()}).Router(), ws

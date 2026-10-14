@@ -75,15 +75,13 @@ gpu:
   # Empty: newest tag of <registry>/platform/repo2docker-buildkit.
   builderImage: ""
   builderSecret: harbor-envs-builder
-  # notebook-base at its release (<registry>/platform/notebook-base:v1.1.0): base of course images built from Git, rebuilt on a new release; also pulled onto the CPU and GPU nodes ahead of time (DaemonSet kernel-image-prepull in the workspace namespace, needs get/create/update on daemonsets there). Empty = no course images from Git.
-  courseBaseImage: ""
   gitHosts: [github.com, gitlab.com]
   jupyterhubUrl: ""
   # vLLM replicas of the inference pool, reported to the discovery job as sites (GET /fleet/sites). Empty url = off. The key is gpu-inference-api-key in the existing secret; the ServiceAccount behind gpu-kube-token needs get/list on pods in the namespace.
   inference:
     url: ""
     namespace: inference
-  # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...]}; empty = no catalogue. The projects themselves come only from the budget tree.
+  # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSet kernel-image-prepull in the workspace namespace, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
   workspaces: {}
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:

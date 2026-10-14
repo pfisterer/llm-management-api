@@ -20,14 +20,14 @@ func TestBudgets(t *testing.T) {
 		{Day: day(5), Project: "kurs", Person: "a@dhbw.de", Profile: "cpu", VCPUHours: 10},
 		{Day: day(20), Project: "kurs", Person: "a@dhbw.de", Profile: "cpu", VCPUHours: 30},
 		{Day: day(40), Project: "kurs", Person: "a@dhbw.de", Profile: "cpu", VCPUHours: 100},
-		{Day: day(1), Project: "kurs", Person: "b@dhbw.de", Profile: "pytorch", GPUClass: "l4-3q", GPUHours: 4},
+		{Day: day(1), Project: "kurs", Person: "b@dhbw.de", Profile: "gpu", GPUClass: "l4-3q", GPUHours: 4},
 		{Day: day(1), Project: "anders", Person: "a@dhbw.de", Profile: "cpu", VCPUHours: 500},
 	})
 	s := service()
 	s.now = func() time.Time { return now }
 	s.SetUsage(u)
 	created := now.AddDate(0, -2, 0)
-	p := Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:k"}}, Profiles: []string{"cpu", "pytorch"}, GPUClasses: []string{"l4-3q"},
+	p := Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "group:k"}}, Profiles: []string{"cpu", "gpu"}, GPUClasses: []string{"l4-3q"},
 		Limits: Limits{GPUsPerPerson: 1}, CreatedAt: created, Budgets: []Budget{
 			{Unit: "vcpu_hours", Window: "24h", Amount: 5, PerPerson: true},
 			{Unit: "vcpu_hours", Window: "7d", Amount: 20, PerPerson: true},
@@ -64,7 +64,7 @@ func TestBudgets(t *testing.T) {
 	s.Enforce(ctx, []RunningServer{
 		{Running: Running{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"}, ServerName: ""},
 		{Running: Running{Person: "a@dhbw.de", Project: "kurs", Profile: "gpu-kernel"}, ServerName: "k"},
-		{Running: Running{Person: "b@dhbw.de", Project: "kurs", Profile: "pytorch"}, ServerName: "gpu"},
+		{Running: Running{Person: "b@dhbw.de", Project: "kurs", Profile: "gpu"}, ServerName: "gpu"},
 		{Running: Running{Person: "a@dhbw.de", Project: "anders", Profile: "cpu"}, ServerName: "x"},
 	}, func(_ context.Context, person, server string) error {
 		stopped = append(stopped, person+"/"+server)

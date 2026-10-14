@@ -14,7 +14,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// Project images from Git (docs/bauplan.md 10.12): the image of a project's "CPU + GPU-Kernel" and "Projekt-Image (GPU)". Built from a Git repository the way Binder reads it — apt.txt, environment.yml, requirements.txt, postBuild, in binder/ or .binder/ if there is one — but on notebook-base (Config.CourseBase) instead of repo2docker's own base, so the result has everything the profiles need and the label cloud.dhbw.base. A repository with a Dockerfile is refused: such an image is built by its owners and entered in the project as a finished image.
+// Project images from Git (docs/bauplan.md 10.12): the environment of a project's servers in every profile. Built from a Git repository the way Binder reads it — apt.txt, environment.yml, requirements.txt, postBuild, in binder/ or .binder/ if there is one — on the base the project chose (dhbw-workspace-images: Python, PyTorch, TensorFlow), so the result has everything the profiles need and the label cloud.dhbw.base. A repository with a Dockerfile is refused: such an image is built by its owners and entered in the project as a finished image.
 
 // projectImageScript is the build job's script: it writes the Dockerfile from the repository's files and builds it with BuildKit.
 const projectImageScript = `set -euo pipefail
@@ -61,13 +61,36 @@ buildctl-daemonless.sh build --progress=plain --frontend dockerfile.v0 --local c
 
 var tagUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
-// projectImageTag is the tag of a project image: the commit and the release of its base, so a new base is a new image.
+// projectImageTag is the tag of a project image: the commit, its base and the base's release, so another base or a new release is a new image (0123456789ab-pytorch-v2.0.0).
 func projectImageTag(commit, base string) string {
-	v := base[strings.LastIndex(base, ":")+1:]
-	if i := strings.LastIndex(base, "@"); i >= 0 {
-		v = strings.TrimPrefix(base[i+1:], "sha256:")[:12]
+	repo, v := splitImage(base)
+	name := strings.TrimPrefix(repo[strings.LastIndex(repo, "/")+1:], "base-")
+	return commit[:12] + "-" + tagUnsafe.ReplaceAllString(name+"-"+v, "-")
+}
+
+// splitImage splits an image into its repository and its tag (or digest without "sha256:").
+func splitImage(image string) (string, string) {
+	if i := strings.LastIndex(image, "@"); i >= 0 {
+		return image[:i], strings.TrimPrefix(image[i+1:], "sha256:")
 	}
-	return commit[:12] + "-" + tagUnsafe.ReplaceAllString(v, "-")
+	if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+		return image[:i], image[i+1:]
+	}
+	return image, "latest"
+}
+
+// SetBases sets the current bases of the projects' environments at their release: what a newer release of a base rebuilds to (RebaseProjectImages), and what is pulled onto the nodes (EnsurePrepull).
+func (s *Service) SetBases(images []string) { s.bases = slices.Clone(images) }
+
+// currentBase is the current release of the base an image was built on; false when that base is no longer offered.
+func (s *Service) currentBase(base string) (string, bool) {
+	repo, _ := splitImage(base)
+	for _, b := range s.bases {
+		if r, _ := splitImage(b); r == repo {
+			return b, true
+		}
+	}
+	return "", false
 }
 
 // projectOwner is the owner of a project's image builds.
@@ -92,8 +115,8 @@ func buildOf(e Environment) workspace.ImageBuild {
 	return workspace.ImageBuild{Status: string(e.Status), Image: e.Image, Commit: e.Commit, Branch: e.Branch, Message: e.Message, UpdatedAt: e.UpdatedAt}
 }
 
-// BuildProjectImage builds the project's image from a repository: an unchanged repository and ref keep the current build unless rebuild is set, which resolves the ref again (a branch's newest commit) and builds a failed image anew. Older builds of the project are forgotten; their images stay in Harbor until its retention removes them.
-func (s *Service) BuildProjectImage(ctx context.Context, slug, gitURL, ref string, rebuild bool) (workspace.ImageBuild, error) {
+// BuildProjectImage builds the project's image from a repository on base: an unchanged base, repository and ref keep the current build unless rebuild is set, which resolves the ref again (a branch's newest commit) and builds a failed image anew. Older builds of the project are forgotten; their images stay in Harbor until its retention removes them.
+func (s *Service) BuildProjectImage(ctx context.Context, slug, base, gitURL, ref string, rebuild bool) (workspace.ImageBuild, error) {
 	cur, err := s.latest(ctx, slug)
 	if err != nil {
 		return workspace.ImageBuild{}, err
@@ -103,10 +126,10 @@ func (s *Service) BuildProjectImage(ctx context.Context, slug, gitURL, ref strin
 		return workspace.ImageBuild{}, err
 	}
 	ref = strings.TrimSpace(ref)
-	if cur != nil && !rebuild && cur.GitURL == canonical && cur.Ref == ref {
+	if cur != nil && !rebuild && cur.GitURL == canonical && cur.Ref == ref && cur.Base == base {
 		return buildOf(s.refresh(ctx, *cur)), nil
 	}
-	e, err := s.create(ctx, projectOwner(slug), canonical, ref, slug)
+	e, err := s.create(ctx, projectOwner(slug), base, canonical, ref, slug)
 	if err != nil {
 		return workspace.ImageBuild{}, err
 	}
@@ -167,11 +190,8 @@ func (s *Service) ForgetProjectImage(ctx context.Context, slug string) error {
 	return s.forgetOthers(ctx, slug, 0)
 }
 
-// RebaseProjectImages rebuilds the project images that are on an older base than Config.CourseBase, and follows the builds under way: a ready one hands its image to its project (SetBuildReady). Run periodically.
+// RebaseProjectImages rebuilds the project images whose base has a newer release (SetBases), and follows the builds under way: a ready one hands its image to its project (SetBuildReady). Run periodically.
 func (s *Service) RebaseProjectImages(ctx context.Context) error {
-	if s.cfg.CourseBase == "" {
-		return nil
-	}
 	envs, err := s.store.List(ctx, "")
 	if err != nil {
 		return err
@@ -182,12 +202,13 @@ func (s *Service) RebaseProjectImages(ctx context.Context) error {
 			continue
 		}
 		e = s.refresh(ctx, e)
-		if e.Base == s.cfg.CourseBase || e.Status == StatusBuilding {
+		base, ok := s.currentBase(e.Base)
+		if !ok || e.Base == base || e.Status == StatusBuilding {
 			continue
 		}
 		slug := slugOf(e.Image)
-		tag := projectImageTag(e.Commit, s.cfg.CourseBase)
-		e.Base, e.Image = s.cfg.CourseBase, fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
+		tag := projectImageTag(e.Commit, base)
+		e.Base, e.Image = base, fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
 		if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Image, err))
 			continue
@@ -267,23 +288,23 @@ func (k *kube) putDaemonSet(ctx context.Context, ns, name string, ds map[string]
 	return k.do(ctx, http.MethodPut, "/apis/apps/v1/namespaces/"+ns+"/daemonsets/"+name, ds, nil)
 }
 
-// EnsurePrepull keeps the DaemonSet PrepullName at the given images plus notebook-base; it changes it only when the list changed.
+// EnsurePrepull keeps the DaemonSet PrepullName at the bases plus the given images; it changes it only when the list changed.
 func (s *Service) EnsurePrepull(ctx context.Context, images []string) error {
 	ds, ok := s.pods.(daemonSets)
-	if !ok || s.cfg.CourseBase == "" {
+	if !ok || len(s.bases) == 0 {
 		return nil
 	}
 	ns := s.cfg.WorkspaceNamespace
 	if ns == "" {
 		ns = "jupyterhub"
 	}
-	list := []string{s.cfg.CourseBase}
-	for _, img := range images {
+	var list []string
+	for _, img := range append(slices.Clone(s.bases), images...) {
 		if img = strings.TrimSpace(img); img != "" && !slices.Contains(list, img) {
 			list = append(list, img)
 		}
 	}
-	slices.Sort(list[1:])
+	slices.Sort(list)
 	want := prepullDaemonSet(ns, list)
 	cur, err := ds.getDaemonSet(ctx, ns, PrepullName)
 	if errors.Is(err, ErrNotFound) {

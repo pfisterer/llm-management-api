@@ -24,7 +24,6 @@ type Config struct {
 	BuilderImage  string // optional; default: newest tag of platform/repo2docker-buildkit
 	BuilderSecret string // pull/push secret in BuildNamespace (harbor-envs-builder)
 	GitHosts      []string
-	CourseBase    string // notebook-base at its release (registry/platform/notebook-base:v1.1.0): base of course images; empty = no course images from Git
 
 	JupyterURL      string // https://jupyter.gpu.services.dhbw.cloud
 	JupyterAPIToken string // token of the hub service gpu-management-api

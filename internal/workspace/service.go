@@ -21,6 +21,15 @@ type Profile struct {
 type Config struct {
 	Profiles   []Profile `json:"profiles"`
 	GPUClasses []string  `json:"gpuClasses"`
+	Bases      []Base    `json:"bases"`
+}
+
+// Base is a base of the projects' environments (dhbw-workspace-images at its release): a project runs it, or an image built on it from Git.
+type Base struct {
+	ID      string `json:"id" example:"pytorch"`
+	Name    string `json:"name" example:"PyTorch"`
+	Image   string `json:"image" example:"registry.gpu.services.dhbw.cloud/platform/base-pytorch:v2.0.0"`
+	Default bool   `json:"default,omitempty"`
 }
 
 // Running is a running (or waiting) workspace pod, for the limits on concurrent use.
@@ -67,14 +76,10 @@ func NewService(store Store, cfg Config, running func(ctx context.Context) ([]Ru
 func (s *Service) SetBudgetCheck(b BudgetCheck) { s.budget = b }
 
 func (s *Service) Catalog() Config {
-	return Config{Profiles: s.cfg.Profiles, GPUClasses: s.cfg.GPUClasses}
+	return Config{Profiles: s.cfg.Profiles, GPUClasses: s.cfg.GPUClasses, Bases: s.cfg.Bases}
 }
 
 func (s *Service) profile(slug string) (Profile, bool) {
-	if slug == FreeGPUProfile && len(s.cfg.GPUClasses) > 0 {
-		// Any image with a GPU runs on the hub's GPU queue, which is the first class (docs/bauplan.md 6.6).
-		return Profile{Slug: FreeGPUProfile, GPUClass: s.cfg.GPUClasses[0]}, true
-	}
 	for _, p := range s.cfg.Profiles {
 		if p.Slug == slug {
 			return p, true
@@ -147,11 +152,12 @@ func (s *Service) validate(p *Project) error {
 		}
 		p.Members[i] = m
 	}
-	// Profiles the catalogue no longer has (e.g. "Umgebung aus Git", gone 14.10.2026) are dropped, not refused: the budget tree and old projects still carry them.
-	p.Profiles = slices.DeleteFunc(slices.Clone(p.Profiles), func(pr string) bool {
-		_, ok := s.profile(pr)
-		return !ok
-	})
+	p.Profiles = s.knownProfiles(p.Profiles)
+	if p.ImageBase != "" {
+		if _, ok := s.base(p.ImageBase); !ok {
+			return refuse("Basis %q gibt es nicht.", p.ImageBase)
+		}
+	}
 	for _, c := range p.GPUClasses {
 		if !slices.Contains(s.cfg.GPUClasses, c) {
 			return refuse("GPU-Klasse %q gibt es nicht.", c)
@@ -179,7 +185,7 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the project image; everything else is kept.
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the environment (base, project image); everything else is kept.
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
@@ -191,9 +197,9 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		// admins set how the project uses them.
 		keepTreeFields(&p, cur)
 	case !asAdmin:
-		desc, members, image, gitURL, gitRef := p.Description, p.Members, p.ProjectImage, p.ImageGitURL, p.ImageGitRef
+		desc, members, base, image, gitURL, gitRef := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef
 		p = cur
-		p.Description, p.Members, p.ProjectImage, p.ImageGitURL, p.ImageGitRef = desc, members, image, gitURL, gitRef
+		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef = desc, members, base, image, gitURL, gitRef
 	}
 	if err := s.validate(&p); err != nil {
 		return Project{}, err
@@ -247,6 +253,9 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	}
 	if !p.Allows(r.Profile) {
 		return refuse("Profil %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
+	}
+	if r.Profile == SplitProfile && !p.Derived() {
+		return refuse("„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", p.Name)
 	}
 	pr, _ := s.profile(r.Profile)
 	if r.GPUs > 0 {
