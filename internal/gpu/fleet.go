@@ -51,7 +51,7 @@ func suggestTier(gb float64) string {
 type Pool struct {
 	ID        string    `json:"id" gorm:"primaryKey" example:"allgemein"`
 	Name      string    `json:"name" example:"Allgemein"`
-	Lend      bool      `json:"lend"` // idle GPUs of this pool may be used by the other pools of the tier (not yet in effect)
+	Lend      bool      `json:"lend"` // idle GPUs of this pool may be used by the other pools of the tier
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -317,6 +317,7 @@ type ClassInfo struct {
 	GPUs     float64 `json:"gpus"`               // GPUs of the ready, schedulable assigned nodes
 	Products string  `json:"products,omitempty"` // GPU types of its nodes, e.g. "NVIDIA-L40S-12Q"
 	Replaces string  `json:"replaces,omitempty"` // the id from before pools this class took over
+	Lends    bool    `json:"lends"`              // its pool lends idle GPUs to the other pools of the tier
 }
 
 // GPUClasses lists every class ever created (a class without nodes stays: projects may hold its resources), with its current nodes.
@@ -332,14 +333,15 @@ func (s *Service) GPUClasses(ctx context.Context) ([]ClassInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	poolName := map[string]string{}
+	poolName, lends := map[string]string{}, map[string]bool{}
 	for _, p := range pools {
 		poolName[p.ID] = p.Name
+		lends[p.ID] = p.Lend
 	}
 	nodes, _ := s.GPUNodes(ctx)
 	out := make([]ClassInfo, 0, len(classes))
 	for _, c := range classes {
-		ci := ClassInfo{ID: c.ID, Pool: c.Pool, PoolName: poolName[c.Pool], Tier: c.Tier, Replaces: c.Replaces}
+		ci := ClassInfo{ID: c.ID, Pool: c.Pool, PoolName: poolName[c.Pool], Tier: c.Tier, Replaces: c.Replaces, Lends: lends[c.Pool]}
 		if ci.PoolName == "" {
 			ci.PoolName = c.Pool
 		}

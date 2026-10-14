@@ -219,7 +219,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				classes, err := gpuSvc.GPUClasses(ctx)
 				out := make([]workspace.GPUClass, 0, len(classes))
 				for _, c := range classes {
-					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces})
+					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces, Lends: c.Lends})
 				}
 				return out, err
 			})

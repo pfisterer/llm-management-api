@@ -37,6 +37,8 @@ type GPUClass struct {
 	Products string  `json:"products,omitempty"`
 	// Replaces is the id from before pools this class took over; the tree renames its resources once.
 	Replaces string `json:"replaces,omitempty"`
+	// Lends: its pool lends idle GPUs to the other pools of the tier.
+	Lends bool `json:"lends"`
 }
 
 // RenameGPUClass moves every project from an old class id to a new one: its classes, GPUs per class and budgets. For the switch to pools and tiers; idempotent.
