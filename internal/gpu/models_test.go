@@ -18,7 +18,7 @@ func TestModelCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	cat, _ := s.ModelCatalog(ctx)
-	if len(cat.Models) != 2 || cat.TierModels["mittel"] != "medium" || cat.Models[0].Key != "medium" || cat.Models[0].CPU != "2" || cat.Models[0].MemoryLimit != "12Gi" {
+	if len(cat.Models) != 2 || cat.TierModels["medium"] != "medium" || cat.Models[0].Key != "medium" || cat.Models[0].CPU != "2" || cat.Models[0].MemoryLimit != "12Gi" {
 		t.Fatalf("seeded catalogue: %+v", cat)
 	}
 	// A second start does not overwrite what admins changed.
@@ -36,7 +36,7 @@ func TestModelCatalog(t *testing.T) {
 		"port":       s.SaveModel(ctx, CatalogModel{Key: "x", Model: "a/b", Args: []string{"--port", "9"}}),
 		"quantity":   s.SaveModel(ctx, CatalogModel{Key: "x", Model: "a/b", MemoryReq: "lots"}),
 		"tier":       s.SetTierModel(ctx, "riesig", "small"),
-		"tier model": s.SetTierModel(ctx, "klein", "nope"),
+		"tier model": s.SetTierModel(ctx, "small", "nope"),
 		"in use":     s.DeleteModel(ctx, "medium"),
 	} {
 		if !errors.As(err, &refused) {
@@ -44,8 +44,8 @@ func TestModelCatalog(t *testing.T) {
 		}
 	}
 
-	// The gap filler of gpu-2 (tier mittel) runs the catalogue's version.
-	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "allgemein", Tier: "mittel"})
+	// The gap filler of gpu-2 (tier medium) runs the catalogue's version.
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium"})
 	_ = s.ReconcileFleet(ctx)
 	if err := s.ReconcileGapFillers(ctx); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestModelCatalog(t *testing.T) {
 		t.Errorf("gap filler from the catalogue: %s", dep)
 	}
 	// Without a tier default and no choice at the node, no gap filler.
-	_ = s.SetTierModel(ctx, "mittel", "")
+	_ = s.SetTierModel(ctx, "medium", "")
 	_ = s.ReconcileGapFillers(ctx)
 	if _, ok := k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-2"]; ok {
 		t.Errorf("gap filler without a model kept")

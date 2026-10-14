@@ -15,17 +15,17 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// GPU administration (docs/bauplan.md 10.13): the tree grants GPUs not by hardware but by pool and tier. A pool is who the GPUs are for ("allgemein", or GPUs bought for one group); a tier is how large they are (klein, mittel, groß by GPU memory). An admin assigns every GPU node to a pool and a tier; the service then labels the node and keeps a Kueue flavor, ClusterQueue and LocalQueue per combination (a GPU class). New and temporary GPUs of an existing combination need nothing in the tree; only a new combination brings two new tree resources (GPUs at once, GPU hours), which the tree learns from the catalogue.
+// GPU administration (docs/bauplan.md 10.13): the tree grants GPUs not by hardware but by pool and tier. A pool is who the GPUs are for ("general", or GPUs bought for one group); a tier is how large they are (small, medium, large by GPU memory). An admin assigns every GPU node to a pool and a tier; the service then labels the node and keeps a Kueue flavor, ClusterQueue and LocalQueue per combination (a GPU class). New and temporary GPUs of an existing combination need nothing in the tree; only a new combination brings two new tree resources (GPUs at once, GPU hours), which the tree learns from the catalogue.
 
 // Tier is a size class of GPUs.
 type Tier struct {
-	ID    string  `json:"id" example:"mittel"`
-	Name  string  `json:"name" example:"mittel"`
+	ID    string  `json:"id" example:"medium"`
+	Name  string  `json:"name" example:"medium"`
 	MinGB float64 `json:"min_gb"` // a node is suggested this tier from this much GPU memory on
 }
 
 // Tiers are fixed: they are what people ask for ("a GPU with more memory"), not what we happen to own.
-var Tiers = []Tier{{ID: "klein", Name: "klein", MinGB: 0}, {ID: "mittel", Name: "mittel", MinGB: 8}, {ID: "gross", Name: "groß", MinGB: 32}}
+var Tiers = []Tier{{ID: "small", Name: "small", MinGB: 0}, {ID: "medium", Name: "medium", MinGB: 8}, {ID: "large", Name: "large", MinGB: 32}}
 
 func tierByID(id string) (Tier, bool) {
 	for _, t := range Tiers {
@@ -49,17 +49,17 @@ func suggestTier(gb float64) string {
 
 // Pool is who a set of GPUs is for.
 type Pool struct {
-	ID        string    `json:"id" gorm:"primaryKey" example:"allgemein"`
-	Name      string    `json:"name" example:"Allgemein"`
+	ID        string    `json:"id" gorm:"primaryKey" example:"general"`
+	Name      string    `json:"name" example:"General"`
 	Lend      bool      `json:"lend"` // idle GPUs of this pool may be used by the other pools of the tier
 	CreatedAt time.Time `json:"created_at"`
 }
 
 func (Pool) TableName() string { return "gpu_pools" }
 
-// GPUClass is a combination of pool and tier: one Kueue queue, one pair of tree resources (ws-gpus-<id>, ws-gpu-hours-<id>). The id is pool-tier. Replaces is the id of a class from before pools this one took over (the tree renames its resources once).
+// GPUClass is a combination of pool and tier: one Kueue queue, one pair of tree resources (ws-gpus-<id>, ws-gpu-hours-<id>). The id is pool-tier. Replaces is the id this class had before (a pool or a tier renamed); the tree renames its resources once.
 type GPUClass struct {
-	ID        string    `json:"id" gorm:"primaryKey" example:"allgemein-mittel"`
+	ID        string    `json:"id" gorm:"primaryKey" example:"general-medium"`
 	Pool      string    `json:"pool" gorm:"uniqueIndex:gpu_class_pool_tier"`
 	Tier      string    `json:"tier" gorm:"uniqueIndex:gpu_class_pool_tier"`
 	Replaces  string    `json:"replaces,omitempty"`
@@ -217,23 +217,16 @@ func (g *GormFleetStore) DeleteAssignment(ctx context.Context, node string) erro
 	return g.db.WithContext(ctx).Delete(&NodeAssignment{}, "node = ?", node).Error
 }
 
-// FleetConfig: what the GPU nodes give to workloads besides the system's share, and the classes from before pools.
+// FleetConfig: what the GPU nodes give to workloads besides the system's share, and the gap fillers.
 type FleetConfig struct {
 	ReserveCPU      float64 `json:"reserveCPU"`      // cores per node kept for the system
 	ReserveMemoryGi float64 `json:"reserveMemoryGi"` // GiB per node kept for the system
-	// Adopt maps the class ids from before pools to their pool and tier ({"l4-3q": {"allgemein", "klein"}}): their nodes are assigned on first sight, and the class pool-tier replaces the old id (projects, usage, tree). Only for the switch; empty afterwards.
-	Adopt map[string]LegacyClass `json:"adopt"`
 	// Inference: the gap fillers on the GPU nodes (gapfill.go); empty image = off.
 	Inference InferenceConfig `json:"inference"`
 }
 
-type LegacyClass struct {
-	Pool string `json:"pool"`
-	Tier string `json:"tier"`
-}
-
 // DefaultPool is the pool every GPU is in unless it is bought for someone.
-const DefaultPool = "allgemein"
+const DefaultPool = "general"
 
 var poolIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]{1,19}$`)
 
@@ -248,7 +241,7 @@ func (s *Service) SetFleet(store FleetStore, cfg FleetConfig) { s.fleet, s.fleet
 // FleetEnabled tells whether the GPU administration is on.
 func (s *Service) FleetEnabled() bool { return s.fleet != nil }
 
-// SeedFleet creates the default pool and the legacy classes; run once at the start.
+// SeedFleet creates the default pool; run once at the start.
 func (s *Service) SeedFleet(ctx context.Context) error {
 	if s.fleet == nil {
 		return nil
@@ -261,58 +254,20 @@ func (s *Service) SeedFleet(ctx context.Context) error {
 	for _, p := range pools {
 		have[p.ID] = true
 	}
-	want := []string{DefaultPool}
-	for _, l := range s.fleetCfg.Adopt {
-		want = append(want, l.Pool)
+	if have[DefaultPool] {
+		return nil
 	}
-	for _, id := range want {
-		if !have[id] {
-			name := strings.ToUpper(id[:1]) + id[1:]
-			if err := s.fleet.SavePool(ctx, Pool{ID: id, Name: name, CreatedAt: time.Now()}); err != nil {
-				return err
-			}
-			have[id] = true
-		}
-	}
-	classes, err := s.fleet.Classes(ctx)
-	if err != nil {
-		return err
-	}
-	for _, old := range s.AdoptedIDs() {
-		l := s.fleetCfg.Adopt[old]
-		if classFor(classes, l.Pool, l.Tier) == "" {
-			if err := s.fleet.SaveClass(ctx, GPUClass{ID: l.Pool + "-" + l.Tier, Pool: l.Pool, Tier: l.Tier, Replaces: old, CreatedAt: time.Now()}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// AdoptedIDs are the old class ids being taken over, sorted.
-func (s *Service) AdoptedIDs() []string {
-	ids := make([]string, 0, len(s.fleetCfg.Adopt))
-	for id := range s.fleetCfg.Adopt {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-// AdoptedClass is the class that replaces an old id.
-func (s *Service) AdoptedClass(old string) string {
-	l := s.fleetCfg.Adopt[old]
-	return l.Pool + "-" + l.Tier
+	return s.fleet.SavePool(ctx, Pool{ID: DefaultPool, Name: "General", CreatedAt: time.Now()})
 }
 
 // ClassInfo is a GPU class as the catalogue, the hub and the admin page show it.
 type ClassInfo struct {
-	ID       string  `json:"id" example:"allgemein-mittel"`
-	Pool     string  `json:"pool" example:"allgemein"`
-	PoolName string  `json:"pool_name" example:"Allgemein"`
-	Tier     string  `json:"tier" example:"mittel"`
-	TierName string  `json:"tier_name" example:"mittel"`
-	Name     string  `json:"name" example:"Allgemein · mittel"`
+	ID       string  `json:"id" example:"general-medium"`
+	Pool     string  `json:"pool" example:"general"`
+	PoolName string  `json:"pool_name" example:"General"`
+	Tier     string  `json:"tier" example:"medium"`
+	TierName string  `json:"tier_name" example:"medium"`
+	Name     string  `json:"name" example:"General · medium"`
 	Nodes    int     `json:"nodes"`              // assigned nodes, ready or not
 	GPUs     float64 `json:"gpus"`               // GPUs of the ready, schedulable assigned nodes
 	Products string  `json:"products,omitempty"` // GPU types of its nodes, e.g. "NVIDIA-L40S-12Q"
@@ -522,7 +477,7 @@ func (s *Service) DeletePool(ctx context.Context, id string) error {
 		return &ErrFleet{"GPU-Verwaltung ist aus."}
 	}
 	if id == DefaultPool {
-		return &ErrFleet{"Den Pool „allgemein“ gibt es immer."}
+		return &ErrFleet{"Den Pool „general“ gibt es immer."}
 	}
 	classes, err := s.fleet.Classes(ctx)
 	if err != nil {
@@ -560,9 +515,6 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 	k, ok := s.pods.(fleetKube)
 	if !ok || s.fleet == nil {
 		return nil
-	}
-	if err := s.adoptLegacyNodes(ctx, k); err != nil {
-		return err
 	}
 	nodes, err := s.GPUNodes(ctx)
 	if err != nil {
@@ -637,32 +589,6 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// adoptLegacyNodes assigns nodes that carry an old class label and have no assignment yet: the nodes from before the GPU administration keep what they were.
-func (s *Service) adoptLegacyNodes(ctx context.Context, k nodeLister) error {
-	if len(s.fleetCfg.Adopt) == 0 {
-		return nil
-	}
-	raw, err := k.listNodes(ctx, "dhbw.cloud/node-type=gpu")
-	if err != nil {
-		return err
-	}
-	assigned, err := s.fleet.Assignments(ctx)
-	if err != nil {
-		return err
-	}
-	for _, n := range raw {
-		l, ok := s.fleetCfg.Adopt[n.Metadata.Labels[labelClass]]
-		if !ok || slices.ContainsFunc(assigned, func(a NodeAssignment) bool { return a.Node == n.Metadata.Name }) {
-			continue
-		}
-		s.log.Infow("gpu node adopted", "node", n.Metadata.Name, "pool", l.Pool, "tier", l.Tier)
-		if err := s.fleet.SaveAssignment(ctx, NodeAssignment{Node: n.Metadata.Name, Pool: l.Pool, Tier: l.Tier, UpdatedAt: time.Now(), UpdatedBy: "adopted"}); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 var gpuToleration = map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}

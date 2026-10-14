@@ -91,7 +91,7 @@ func fleetTestService() (*Service, *fakeFleetKube) {
 	k := &fakeFleetKube{patches: map[string]map[string]any{}, objects: map[string]map[string]any{},
 		nodes: []nodeInfo{gpuNode("gpu-1", "l4-3q", "NVIDIA-L4-3Q", "3072", "1"), gpuNode("gpu-2", "l40s-12q", "NVIDIA-L40S-12Q", "12288", "1"), gpuNode("gpu-3", "", "NVIDIA-H100", "81920", "1")}}
 	s.pods = k
-	s.SetFleet(NewMemoryFleetStore(), FleetConfig{ReserveCPU: 1, ReserveMemoryGi: 2, Adopt: map[string]LegacyClass{"l4-3q": {Pool: "allgemein", Tier: "klein"}}})
+	s.SetFleet(NewMemoryFleetStore(), FleetConfig{ReserveCPU: 1, ReserveMemoryGi: 2})
 	return s, k
 }
 
@@ -101,42 +101,45 @@ func TestReconcileFleet(t *testing.T) {
 	if err := s.SeedFleet(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-1", Pool: "general", Tier: "small"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.ReconcileFleet(ctx); err != nil {
 		t.Fatal(err)
 	}
 	nodes, _ := s.GPUNodes(ctx)
-	if nodes[0].Class != "allgemein-klein" || nodes[0].Assignment == nil || nodes[0].Assignment.UpdatedBy != "adopted" {
-		t.Fatalf("legacy node adopted: %+v", nodes[0])
+	if nodes[0].Class != "general-small" || nodes[0].Assignment == nil {
+		t.Fatalf("assigned node: %+v", nodes[0])
 	}
 	// gpu-2 carries a class nobody knows: it loses the label until an admin assigns it; gpu-3 is new.
-	if _, has := k.nodes[1].Metadata.Labels[labelClass]; has || nodes[1].Assignment != nil || nodes[2].SuggestedTier != "gross" || nodes[1].SuggestedTier != "mittel" {
+	if _, has := k.nodes[1].Metadata.Labels[labelClass]; has || nodes[1].Assignment != nil || nodes[2].SuggestedTier != "large" || nodes[1].SuggestedTier != "medium" {
 		t.Fatalf("unknown and new nodes: %+v %+v %v", nodes[1], nodes[2], k.nodes[1].Metadata.Labels)
 	}
-	if k.nodes[0].Metadata.Labels[labelClass] != "allgemein-klein" {
-		t.Errorf("adopted node relabelled: %v", k.nodes[0].Metadata.Labels)
+	if k.nodes[0].Metadata.Labels[labelClass] != "general-small" {
+		t.Errorf("assigned node labelled: %v", k.nodes[0].Metadata.Labels)
 	}
-	cq := k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-klein"]
+	cq := k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-small"]
 	b, _ := json.Marshal(cq)
 	if !strings.Contains(string(b), `"nominalQuota":"7"`) || !strings.Contains(string(b), `"nominalQuota":"22Gi"`) || !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"1"`) {
-		t.Errorf("queue of allgemein-klein: %s", b)
+		t.Errorf("queue of general-small: %s", b)
 	}
-	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-allgemein-klein"] == nil || k.objects["/apis/kueue.x-k8s.io/v1beta2/resourceflavors/allgemein-klein"] == nil {
+	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-general-small"] == nil || k.objects["/apis/kueue.x-k8s.io/v1beta2/resourceflavors/general-small"] == nil {
 		t.Errorf("flavor and local queue: %v", k.objects)
 	}
 
-	// An admin assigns gpu-2 to allgemein/mittel: a new class with its own queue.
-	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "allgemein", Tier: "mittel"}); err != nil {
+	// An admin assigns gpu-2 to general/medium: a new class with its own queue.
+	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium"}); err != nil {
 		t.Fatal(err)
 	}
 	writes := k.writes
 	if err := s.ReconcileFleet(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if k.nodes[1].Metadata.Labels[labelClass] != "allgemein-mittel" || k.nodes[1].Metadata.Labels[labelPool] != "allgemein" || k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-mittel"] == nil {
+	if k.nodes[1].Metadata.Labels[labelClass] != "general-medium" || k.nodes[1].Metadata.Labels[labelPool] != "general" || k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-medium"] == nil {
 		t.Errorf("assigned node: %v", k.nodes[1].Metadata.Labels)
 	}
 	classes, _ := s.GPUClasses(ctx)
-	if len(classes) != 2 || classes[0].ID != "allgemein-klein" || classes[0].Replaces != "l4-3q" || classes[1].ID != "allgemein-mittel" || classes[1].Name != "Allgemein · mittel" || classes[1].GPUs != 1 || classes[1].Products != "NVIDIA-L40S-12Q" {
+	if len(classes) != 2 || classes[1].ID != "general-small" || classes[0].ID != "general-medium" || classes[0].Name != "General · medium" || classes[0].GPUs != 1 || classes[0].Products != "NVIDIA-L40S-12Q" {
 		t.Errorf("classes: %+v", classes)
 	}
 	// Nothing changed: nothing is written.
@@ -154,7 +157,7 @@ func TestReconcileFleet(t *testing.T) {
 	if _, has := k.nodes[1].Metadata.Labels[labelClass]; has {
 		t.Errorf("unassigned node keeps its class: %v", k.nodes[1].Metadata.Labels)
 	}
-	b, _ = json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-mittel"])
+	b, _ = json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-medium"])
 	if !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"0"`) {
 		t.Errorf("empty class keeps its queue with quota 0: %s", b)
 	}
@@ -166,9 +169,9 @@ func TestFleetRefusals(t *testing.T) {
 	_ = s.SeedFleet(ctx)
 	var refused *ErrFleet
 	for name, err := range map[string]error{
-		"unknown pool": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "gross"}),
-		"unknown tier": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "allgemein", Tier: "riesig"}),
-		"unknown node": s.AssignNode(ctx, NodeAssignment{Node: "gpu-9", Pool: "allgemein", Tier: "gross"}),
+		"unknown pool": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "large"}),
+		"unknown tier": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "general", Tier: "riesig"}),
+		"unknown node": s.AssignNode(ctx, NodeAssignment{Node: "gpu-9", Pool: "general", Tier: "large"}),
 		"pool id":      s.SavePool(ctx, Pool{ID: "W I", Name: "WI"}),
 		"default pool": s.DeletePool(ctx, DefaultPool),
 	} {
@@ -179,7 +182,7 @@ func TestFleetRefusals(t *testing.T) {
 	if err := s.SavePool(ctx, Pool{ID: "wi", Name: "Wirtschaftsinformatik"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "gross"}); err != nil {
+	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "large"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeletePool(ctx, "wi"); !errors.As(err, &refused) {
@@ -198,20 +201,20 @@ func TestFleetLending(t *testing.T) {
 	s, k := fleetTestService()
 	_ = s.SeedFleet(ctx)
 	_ = s.SavePool(ctx, Pool{ID: "wi", Name: "WI", Lend: true})
-	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "allgemein", Tier: "mittel"})
-	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "mittel"})
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium"})
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "medium"})
 	if err := s.ReconcileFleet(ctx); err != nil {
 		t.Fatal(err)
 	}
-	wi := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-wi-mittel"])
-	all := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-allgemein-mittel"])
+	wi := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-wi-medium"])
+	all := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-medium"])
 	for _, q := range []string{wi, all} {
-		if !strings.Contains(q, `"cohortName":"tier-mittel"`) || !strings.Contains(q, `"reclaimWithinCohort":"Any"`) {
+		if !strings.Contains(q, `"cohortName":"tier-medium"`) || !strings.Contains(q, `"reclaimWithinCohort":"Any"`) {
 			t.Errorf("cohort: %s", q)
 		}
 	}
-	// wi lends: no lendingLimit on its own flavor; allgemein keeps its GPUs; each lists the other with no quota of its own.
-	if strings.Contains(wi, `"lendingLimit"`) || !strings.Contains(all, `"lendingLimit":"0"`) || !strings.Contains(all, `"name":"wi-mittel"`) || !strings.Contains(wi, `"name":"allgemein-mittel"`) {
+	// wi lends: no lendingLimit on its own flavor; general keeps its GPUs; each lists the other with no quota of its own.
+	if strings.Contains(wi, `"lendingLimit"`) || !strings.Contains(all, `"lendingLimit":"0"`) || !strings.Contains(all, `"name":"wi-medium"`) || !strings.Contains(wi, `"name":"general-medium"`) {
 		t.Errorf("lending:\nwi  %s\nall %s", wi, all)
 	}
 }

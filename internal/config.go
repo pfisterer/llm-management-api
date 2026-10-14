@@ -151,7 +151,7 @@ func LoadConfig() (Config, error) {
 		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", "jupyterhub"),
 		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", ""), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
 	}
-	// GPU administration: {"enabled": true, "reserveCPU": 1, "reserveMemoryGi": 2, "legacy": {"l4-3q": {"pool": "allgemein", "tier": "klein"}}}.
+	// GPU administration: {"enabled": true, "reserveCPU": 1, "reserveMemoryGi": 2, "inference": {…}}.
 	if raw := envconf.String("GPU_FLEET", ""); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.GPUFleet); err != nil {
 			return Config{}, fmt.Errorf("GPU_FLEET: %w", err)

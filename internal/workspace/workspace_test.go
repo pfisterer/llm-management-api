@@ -17,7 +17,7 @@ var catalog = Config{
 func service(running ...Running) *Service {
 	s := NewService(NewMemoryStore(), catalog, func(context.Context) ([]Running, error) { return running, nil })
 	s.SetGPUClasses(func(context.Context) ([]GPUClass, error) {
-		return []GPUClass{{ID: "l4-3q", Name: "Allgemein · klein"}, {ID: "allgemein-mittel", Name: "Allgemein · mittel"}}, nil
+		return []GPUClass{{ID: "l4-3q", Name: "General · small"}, {ID: "general-medium", Name: "General · medium"}}, nil
 	})
 	return s
 }
@@ -98,7 +98,7 @@ func TestCheckStart(t *testing.T) {
 		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "gpu", GPUs: 1}, "keine GPUs"},
 		{"cores per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 1.5}, "Kerne"},
 		{"memory per person", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", RAMGB: 5}, "Speicher"},
-		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1}, "GPUs der Klasse Allgemein · klein"},
+		{"project GPUs of the class busy", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1}, "GPUs der Klasse General · small"},
 		{"own restart does not count", StartRequest{Person: "b@dhbw.de", Project: "kurs", Profile: "gpu", GPUs: 1, Server: "jupyter-b-gpu"}, ""},
 	}
 	for _, c := range cases {
@@ -337,7 +337,7 @@ func TestCheckStartClass(t *testing.T) {
 	me := []string{"user:a@dhbw.de"}
 	s := service()
 	_, _ = s.create(ctx, Project{Slug: "zwei", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"gpu"},
-		GPUClasses: []string{"l4-3q", "allgemein-mittel"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16, GPUsPerPerson: 1}}, "admin")
+		GPUClasses: []string{"l4-3q", "general-medium"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16, GPUsPerPerson: 1}}, "admin")
 	_, _ = s.create(ctx, Project{Slug: "eins", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"gpu"},
 		GPUClasses: []string{"l4-3q"}, Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16, GPUsPerPerson: 1}}, "admin")
 	for _, c := range []struct {
@@ -345,9 +345,9 @@ func TestCheckStartClass(t *testing.T) {
 		want string
 	}{
 		{StartRequest{Person: "a@dhbw.de", Project: "zwei", Profile: "gpu", GPUs: 1}, "GPU-Klasse wählen"},
-		{StartRequest{Person: "a@dhbw.de", Project: "zwei", Profile: "gpu", GPUs: 1, GPUClass: "allgemein-mittel"}, ""},
+		{StartRequest{Person: "a@dhbw.de", Project: "zwei", Profile: "gpu", GPUs: 1, GPUClass: "general-medium"}, ""},
 		{StartRequest{Person: "a@dhbw.de", Project: "eins", Profile: "gpu", GPUs: 1}, ""},
-		{StartRequest{Person: "a@dhbw.de", Project: "eins", Profile: "gpu", GPUs: 1, GPUClass: "allgemein-mittel"}, "Allgemein · mittel ist im Projekt"},
+		{StartRequest{Person: "a@dhbw.de", Project: "eins", Profile: "gpu", GPUs: 1, GPUClass: "general-medium"}, "General · medium ist im Projekt"},
 	} {
 		if got := reason(s.CheckStart(ctx, me, c.req)); (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("%+v: %q, want %q", c.req, got, c.want)
@@ -361,14 +361,14 @@ func TestRenameGPUClass(t *testing.T) {
 	s := service()
 	_, _ = s.create(ctx, Project{Slug: "alt", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"gpu"}, GPUClasses: []string{"l4-3q"},
 		GPUsByClass: map[string]int{"l4-3q": 2}, Budgets: []Budget{{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "30d", Amount: 10}}, Limits: Limits{GPUsPerPerson: 1}}, "admin")
-	if n, err := s.RenameGPUClass(ctx, "l4-3q", "allgemein-klein"); err != nil || n != 1 {
+	if n, err := s.RenameGPUClass(ctx, "l4-3q", "general-small"); err != nil || n != 1 {
 		t.Fatalf("renamed %d, %v", n, err)
 	}
 	p, _ := s.store.Get(ctx, "alt")
-	if !slices.Equal(p.GPUClasses, []string{"allgemein-klein"}) || p.GPUsByClass["allgemein-klein"] != 2 || len(p.GPUsByClass) != 1 || p.Budgets[0].GPUClass != "allgemein-klein" {
+	if !slices.Equal(p.GPUClasses, []string{"general-small"}) || p.GPUsByClass["general-small"] != 2 || len(p.GPUsByClass) != 1 || p.Budgets[0].GPUClass != "general-small" {
 		t.Errorf("project after rename: %+v", p)
 	}
-	if n, _ := s.RenameGPUClass(ctx, "l4-3q", "allgemein-klein"); n != 0 {
+	if n, _ := s.RenameGPUClass(ctx, "l4-3q", "general-small"); n != 0 {
 		t.Errorf("second rename changed %d projects", n)
 	}
 }

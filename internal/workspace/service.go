@@ -26,12 +26,12 @@ type Config struct {
 
 // GPUClass is a combination of pool and tier of the GPU administration (docs/bauplan.md 10.13): what the tree grants (ws-gpus-<id>, ws-gpu-hours-<id>) and what a start chooses.
 type GPUClass struct {
-	ID       string  `json:"id" example:"allgemein-mittel"`
-	Name     string  `json:"name" example:"Allgemein · mittel"`
-	Pool     string  `json:"pool" example:"allgemein"`
-	PoolName string  `json:"pool_name" example:"Allgemein"`
-	Tier     string  `json:"tier" example:"mittel"`
-	TierName string  `json:"tier_name" example:"mittel"`
+	ID       string  `json:"id" example:"general-medium"`
+	Name     string  `json:"name" example:"General · medium"`
+	Pool     string  `json:"pool" example:"general"`
+	PoolName string  `json:"pool_name" example:"General"`
+	Tier     string  `json:"tier" example:"medium"`
+	TierName string  `json:"tier_name" example:"medium"`
 	Nodes    int     `json:"nodes"`
 	GPUs     float64 `json:"gpus"` // GPUs of its ready nodes right now
 	Products string  `json:"products,omitempty"`
@@ -41,7 +41,7 @@ type GPUClass struct {
 	Lends bool `json:"lends"`
 }
 
-// RenameGPUClass moves every project from an old class id to a new one: its classes, GPUs per class and budgets. For the switch to pools and tiers; idempotent.
+// RenameGPUClass moves every project from an old class id to a new one: its classes, GPUs per class and budgets. For a renamed pool or tier; idempotent.
 func (s *Service) RenameGPUClass(ctx context.Context, old, new string) (int, error) {
 	list, err := s.store.List(ctx)
 	if err != nil {
@@ -151,7 +151,7 @@ func (s *Service) knownClass(id string) bool {
 	return slices.ContainsFunc(s.GPUClasses(context.Background()), func(c GPUClass) bool { return c.ID == id })
 }
 
-// ClassName names a class for people ("Allgemein · mittel"); the id when unknown.
+// ClassName names a class for people ("General · medium"); the id when unknown.
 func (s *Service) ClassName(ctx context.Context, id string) string {
 	for _, c := range s.GPUClasses(ctx) {
 		if c.ID == id {

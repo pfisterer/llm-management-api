@@ -199,21 +199,29 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			if err := gpuSvc.SeedModels(context.Background()); err != nil {
 				return fmt.Errorf("model catalogue: %w", err)
 			}
-			// The class ids from before pools (l4-3q) become pool-tier: projects and booked usage follow once; the tree renames its resources when it sees "replaces" in the catalogue.
-			for _, old := range gpuSvc.AdoptedIDs() {
-				nw := gpuSvc.AdoptedClass(old)
-				n, err := wsSvc.RenameGPUClass(context.Background(), old, nw)
+			// A class that replaces an id (a pool or tier renamed) takes over its projects and booked usage, once (idempotent); the tree renames its resources when it sees "replaces" in the catalogue.
+			classes, err := gpuSvc.GPUClasses(context.Background())
+			if err != nil {
+				return fmt.Errorf("gpu classes: %w", err)
+			}
+			for _, c := range classes {
+				if c.Replaces == "" || c.Replaces == c.ID {
+					continue
+				}
+				n, err := wsSvc.RenameGPUClass(context.Background(), c.Replaces, c.ID)
 				if err != nil {
-					return fmt.Errorf("rename GPU class %s: %w", old, err)
+					return fmt.Errorf("rename GPU class %s: %w", c.Replaces, err)
 				}
 				if r, ok := st.usage.(interface {
 					RenameGPUClass(ctx context.Context, old, new string) error
 				}); ok {
-					if err := r.RenameGPUClass(context.Background(), old, nw); err != nil {
-						return fmt.Errorf("rename GPU class %s in usage: %w", old, err)
+					if err := r.RenameGPUClass(context.Background(), c.Replaces, c.ID); err != nil {
+						return fmt.Errorf("rename GPU class %s in usage: %w", c.Replaces, err)
 					}
 				}
-				log.Infow("GPU class renamed", "from", old, "to", nw, "projects", n)
+				if n > 0 {
+					log.Infow("GPU class renamed", "from", c.Replaces, "to", c.ID, "projects", n)
+				}
 			}
 			wsSvc.SetGPUClasses(func(ctx context.Context) ([]workspace.GPUClass, error) {
 				classes, err := gpuSvc.GPUClasses(ctx)

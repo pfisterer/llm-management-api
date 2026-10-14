@@ -118,14 +118,14 @@ func isChatAlias(alias string) bool {
 
 // KeyView is one key as the UI shows it. Project is the slug of the pool the key spends from ("" for a key outside every pool, which cannot spend anything); ProjectName is empty when that project is not one of the person's.
 type KeyView struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Chat           bool     `json:"chat"`
-	Project        string   `json:"project" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
-	ProjectName    string   `json:"project_name" example:"Machine Learning WWI23SEB"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Chat        bool   `json:"chat"`
+	Project     string `json:"project" example:"t-7841d99e-68a2-47b7-88a5-1ab55180f4f5"`
+	ProjectName string `json:"project_name" example:"Machine Learning WWI23SEB"`
 	// Workspace is the workspace project whose servers use the key (the key of a person's workspaces, see EnsureWorkspaceKey), WorkspaceName its name; empty for every other key.
-	Workspace     string `json:"workspace,omitempty" example:"t-f5fbea5b-c451-4d95-83a7-a008e3376a1e"`
-	WorkspaceName string `json:"workspace_name,omitempty" example:"Workspace-Testprojekt"`
+	Workspace      string   `json:"workspace,omitempty" example:"t-f5fbea5b-c451-4d95-83a7-a008e3376a1e"`
+	WorkspaceName  string   `json:"workspace_name,omitempty" example:"Workspace-Testprojekt"`
 	Spend          float64  `json:"spend"`
 	Budget         *float64 `json:"budget"`
 	BudgetDuration *string  `json:"budget_duration"`

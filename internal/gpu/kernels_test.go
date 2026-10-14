@@ -29,7 +29,7 @@ func (f *fakeKernelKube) do(_ context.Context, method, path string, body, out an
 	return nil
 }
 
-const testServerPod = `{"metadata":{"name":"jupyter-a-40dhbw-2ede","uid":"u1","labels":{"component":"singleuser-server","hub.jupyter.org/username":"a-40dhbw-2ede","dhbw.cloud/project":"ml","dhbw.cloud/profile":"cpu-gpukernel","dhbw.cloud/gpu-class":"allgemein-klein"},"annotations":{"hub.jupyter.org/username":"a@dhbw.de"}},
+const testServerPod = `{"metadata":{"name":"jupyter-a-40dhbw-2ede","uid":"u1","labels":{"component":"singleuser-server","hub.jupyter.org/username":"a-40dhbw-2ede","dhbw.cloud/project":"ml","dhbw.cloud/profile":"cpu-gpukernel","dhbw.cloud/gpu-class":"general-small"},"annotations":{"hub.jupyter.org/username":"a@dhbw.de"}},
  "spec":{"containers":[{"name":"notebook","image":"reg/envs/ml:1","env":[{"name":"JUPYTERHUB_API_TOKEN","value":"secret"},{"name":"OPENAI_API_KEY","value":"k"}],
    "volumeMounts":[{"name":"home","mountPath":"/home/jovyan","subPath":"homes/a"},{"name":"home","mountPath":"/home/jovyan/project-shared","subPath":"project-shared","readOnly":true},{"name":"kube-api","mountPath":"/var/run/secrets"}]}],
   "volumes":[{"name":"home","persistentVolumeClaim":{"claimName":"ws-ml"}}]},
@@ -86,7 +86,7 @@ func TestStartKernel(t *testing.T) {
 	}
 	b, _ := json.Marshal(k.created[0])
 	pod := string(b)
-	for _, want := range []string{`"image":"reg/envs/ml:1"`, `"claimName":"ws-ml"`, `"subPath":"homes/a"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"OPENAI_API_KEY"`, `"workingDir":"/home/jovyan/kurs"`, `"kueue.x-k8s.io/queue-name":"gpu-allgemein-klein"`, `"nvidia.com/gpu":"1"`, `"dhbw.cloud/kernel-owner":"jupyter-a-40dhbw-2ede"`, `"uid":"u1"`, `"automountServiceAccountToken":false`} {
+	for _, want := range []string{`"image":"reg/envs/ml:1"`, `"claimName":"ws-ml"`, `"subPath":"homes/a"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"OPENAI_API_KEY"`, `"workingDir":"/home/jovyan/kurs"`, `"kueue.x-k8s.io/queue-name":"gpu-general-small"`, `"nvidia.com/gpu":"1"`, `"dhbw.cloud/kernel-owner":"jupyter-a-40dhbw-2ede"`, `"uid":"u1"`, `"automountServiceAccountToken":false`} {
 		if !strings.Contains(pod, want) {
 			t.Errorf("kernel pod lacks %s: %s", want, pod)
 		}
