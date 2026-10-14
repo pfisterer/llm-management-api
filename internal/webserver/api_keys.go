@@ -147,6 +147,8 @@ func (s *Server) createKey(c *gin.Context) {
 		notEligible(c)
 	case errors.Is(err, keys.ErrTooManyKeys):
 		abort(c, http.StatusConflict, "too_many_keys", "Höchstzahl an API Keys erreicht. Bitte zuerst einen alten löschen.")
+	case errors.Is(err, keys.ErrNameReserved):
+		abort(c, http.StatusBadRequest, "name_reserved", "Diese Bezeichnung ist für automatische Keys reserviert (DHBW-Chat, Workspaces).")
 	case errors.Is(err, keys.ErrDuplicate):
 		abort(c, http.StatusConflict, "duplicate", "Diese Bezeichnung ist schon für einen anderen eigenen Key vergeben.")
 	case err != nil:

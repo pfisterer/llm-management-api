@@ -89,6 +89,8 @@ var (
 	ErrNameRequired = errors.New("name required")
 	ErrTooManyKeys  = errors.New("too many keys")
 	ErrDuplicate    = errors.New("name already used")
+	// ErrNameReserved: the name of an automatic key (the chat's, a workspace's).
+	ErrNameReserved = errors.New("name reserved")
 	ErrNotFound     = errors.New("key not found")
 	// ErrNotEligible: the project is not one whose pool the person may draw from.
 	ErrNotEligible = errors.New("project not eligible")
@@ -285,9 +287,10 @@ func view(keys []litellm.Key, pools []Pool) ([]KeyView, int) {
 		if ws, ok := strings.CutPrefix(v.Name, workspaceAlias("")); ok && !v.Chat {
 			v.Workspace = ws
 		}
+		// Automatic keys (the chat's, the workspaces') come back by themselves and do not count against the person's own.
 		if v.Chat {
 			v.Name = "DHBW-Chat (automatisch)"
-		} else {
+		} else if v.Workspace == "" {
 			own++
 		}
 		out = append(out, v)
@@ -352,6 +355,9 @@ func (s *Service) Create(ctx context.Context, p Person, g Grant, name, project s
 	safe := strings.Trim(unsafeChars.ReplaceAllString(name, "-"), "-.")
 	if safe == "" || !regexp.MustCompile(`[A-Za-z0-9]`).MatchString(safe) {
 		return "", KeyView{}, ErrNameRequired
+	}
+	if isChatAlias(safe) || strings.HasPrefix(safe, workspaceAlias("")) {
+		return "", KeyView{}, ErrNameReserved
 	}
 	info, keys, err := s.reconcile(ctx, p, g)
 	if err != nil {

@@ -30,8 +30,11 @@ func TestEnsureWorkspaceKey(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("workspace key not named: %+v", u.Keys)
+	if !found || u.OwnKeys != 0 {
+		t.Fatalf("workspace key not named or counted as own: own=%d %+v", u.OwnKeys, u.Keys)
+	}
+	if _, _, err := svc.Create(ctx, p, grant(poolA), "workspace-x", ""); !errors.Is(err, ErrNameReserved) {
+		t.Fatalf("reserved name accepted: %v", err)
 	}
 	if _, err := svc.EnsureWorkspaceKey(ctx, p, grant(), "master", "t-ws"); !errors.Is(err, ErrNotEligible) {
 		t.Fatalf("without a pool: %v", err)
