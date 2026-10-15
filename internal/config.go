@@ -50,6 +50,8 @@ type Config struct {
 	// modelAliases and aliasProbes from the inventory (JSON).
 	AliasesJSON, AliasProbesJSON string
 	ChatBind, AdminLoginBind     string
+	// ChatExchangeToken is the shared secret LibreChat sends to the chat exchange (as its API key, Authorization: Bearer); empty = the exchange refuses everything.
+	ChatExchangeToken string
 
 	FleetJSON, WireGuardJSON                        string
 	MachineBind                                     string
@@ -120,6 +122,7 @@ func LoadConfig() (Config, error) {
 		AliasesJSON:         envconf.String("ALIASES", "{}"),
 		AliasProbesJSON:     envconf.String("ALIAS_PROBES", "{}"),
 		ChatBind:            envconf.String("CHAT_BIND", ":8089"),
+		ChatExchangeToken:   envconf.String("CHAT_EXCHANGE_TOKEN", ""),
 		AdminLoginBind:      envconf.String("ADMIN_LOGIN_BIND", ":8090"),
 		LiteLLMMasterKey:    envconf.String("LITELLM_MASTER_KEY", ""),
 		MaxKeysPerUser:      envconf.Int("MAX_KEYS_PER_USER", 5),

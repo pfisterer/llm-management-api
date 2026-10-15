@@ -94,6 +94,8 @@ var (
 	ErrNotFound     = errors.New("key not found")
 	// ErrNotEligible: the project is not one whose pool the person may draw from.
 	ErrNotEligible = errors.New("project not eligible")
+	// ErrIdentityMismatch: a sub and an e-mail that do not belong together (CheckIdentity).
+	ErrIdentityMismatch = errors.New("sub and e-mail do not belong together")
 )
 
 const chatAlias = "librechat"
@@ -587,7 +589,16 @@ func (s *Service) applyKeyBudget(ctx context.Context, k litellm.Key, p Pool) (bo
 	return true, s.lite.SetKeyBudget(ctx, k.Token, b, window)
 }
 
-// SyncKeys keeps the keys of a LiteLLM user in their pools: a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the short-term budget of its pool — of the pool it is in or is moved to; a key left outside every pool gets 0 — and clears rate limits and models of the key's own (from before, or set in LiteLLM's UI), so only the team's apply. Returns how many writes it made (a move and its budget count as one each).
+// workspaceOf is the project of a workspace key (alias workspace-<project>); false for every other key.
+func workspaceOf(k litellm.Key) (string, bool) {
+	if k.Alias == nil || isChatAlias(*k.Alias) {
+		return "", false
+	}
+	ws, ok := strings.CutPrefix(shownName(*k.Alias), workspaceAlias(""))
+	return ws, ok && ws != ""
+}
+
+// SyncKeys keeps the keys of a LiteLLM user in their pools (a workspace key only in its own project's, see workspaceOf): a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the short-term budget of its pool — of the pool it is in or is moved to; a key left outside every pool gets 0 — and clears rate limits and models of the key's own (from before, or set in LiteLLM's UI), so only the team's apply. Returns how many writes it made (a move and its budget count as one each).
 func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) (int, error) {
 	_, keys, found, err := s.lite.GetUser(ctx, info.UserID)
 	if err != nil || !found {
@@ -596,6 +607,24 @@ func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) 
 	def, hasPool := g.defaultPool(info)
 	writes := 0
 	for _, k := range keys {
+		// A workspace key draws only from its own project's pool: never moved to the default project, deleted once that pool is not the person's (it comes back on the next start in a project with tokens).
+		if ws, ok := workspaceOf(k); ok {
+			own, has := g.pool(ws)
+			if !has {
+				if err := s.lite.DeleteKeys(ctx, k.Token); err != nil {
+					return writes, err
+				}
+				writes++
+				continue
+			}
+			if k.Team() != own.Slug {
+				if err := s.moveKey(ctx, info.UserID, k.Token, own); err != nil {
+					return writes, err
+				}
+				writes++
+				k.TeamID = &own.Slug
+			}
+		}
 		pool, inPool := g.pool(k.Team())
 		switch {
 		case !inPool && hasPool:
@@ -640,6 +669,28 @@ func (s *Service) Delete(ctx context.Context, p Person, id string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+// CheckIdentity refuses a sub and an e-mail that do not belong together, for callers that hand over both as claims (the chat exchange): ErrIdentityMismatch when the LiteLLM user kc-<sub> exists with another e-mail, or another kc-<sub> has this e-mail. A person LiteLLM does not know at all passes (first use).
+func (s *Service) CheckIdentity(ctx context.Context, p Person) error {
+	info, _, found, err := s.lite.GetUser(ctx, p.UserID())
+	if err != nil {
+		return err
+	}
+	if found {
+		if !strings.EqualFold(strings.TrimSpace(info.Email), p.Email) {
+			return ErrIdentityMismatch
+		}
+		return nil
+	}
+	sub, ok, err := s.SubjectOf(ctx, p.Email)
+	if err != nil {
+		return err
+	}
+	if ok && sub != p.Subject {
+		return ErrIdentityMismatch
+	}
+	return nil
 }
 
 // SubjectOf finds the Keycloak sub of a person by their e-mail, from the LiteLLM user this service created for them ("kc-<sub>"). An admin acting on someone's behalf knows only the address, and keys are bound to the sub. found=false when the person has never used the LLM themself — then there is nothing to bind keys to yet.

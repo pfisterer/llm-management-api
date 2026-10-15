@@ -34,26 +34,21 @@ func TestUpsertFromTree(t *testing.T) {
 		t.Fatalf("pool = %+v, want the project's limits and models", pools)
 	}
 
-	// A manager narrows: a share per person, fewer profiles; members and the LLM limits stay the tree's, also for an admin.
+	// An admin narrows: a share per person, fewer profiles; members and the LLM limits stay the tree's, also for an admin.
 	p.Budgets = append(p.Budgets, Budget{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "7d", Amount: 10, PerPerson: true})
 	p.Profiles = []string{"cpu"}
 	p.Members = []Member{{Token: "user:x@dhbw.de"}}
-	p.LLMRPM, p.LLMModels = 9999, []string{"everything"}
-	if _, err := s.Update(ctx, p, "o@dhbw.de", false); err != nil {
-		t.Fatal(err)
-	}
-	p, _ = s.Get(ctx, st.Slug)
-	p.LLMTPM = 1
+	p.LLMRPM, p.LLMModels, p.LLMTPM = 9999, []string{"everything"}, 1
 	if _, err := s.Update(ctx, p, "root@dhbw.de", true); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = s.Get(ctx, st.Slug)
 	if len(p.Members) != 2 || len(p.Budgets) != 3 || !slices.Equal(p.Profiles, []string{"cpu"}) || p.LLMRPM != 120 || p.LLMTPM != 400000 || len(p.LLMModels) != 2 {
-		t.Errorf("after the manager: %+v", p)
+		t.Errorf("after the admin: %+v", p)
 	}
 	// Not beyond what the tree gives.
 	p.Budgets = append(p.Budgets, Budget{Unit: "vcpu_hours", Window: "24h", Amount: 5000})
-	if _, err := s.Update(ctx, p, "o@dhbw.de", false); err == nil || !strings.Contains(reason(err), "größer") {
+	if _, err := s.Update(ctx, p, "root@dhbw.de", true); err == nil || !strings.Contains(reason(err), "größer") {
 		t.Errorf("a budget above the tree's: %v", err)
 	}
 
@@ -156,5 +151,62 @@ func TestTreeUsageAndLLM(t *testing.T) {
 		if p.Name == "C" && p.MTokens != 0 {
 			t.Errorf("ended project's pool = %d, want 0", p.MTokens)
 		}
+	}
+}
+
+// Regression: a manager of a tree project lifted its limits with one PUT (no_workspaces=false, every profile, 0 = unlimited per person, 99 GPUs, more budget, longer end); now only the description and the environment change, and a member of the LLM-only project still cannot start a server.
+func TestManagerCannotLiftTreeLimits(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	end := time.Now().AddDate(0, 1, 0)
+	del := end.AddDate(0, 0, 30)
+	node := "p_llm-only"
+	st, err := s.UpsertFromTree(ctx, node, TreeProject{Name: "Nur LLM", Members: []Member{{Token: "user:m@dhbw.de", Role: RoleManager}, {Token: "group:k", Role: RoleMember}},
+		LLMMTokens: 10, EndsAt: &end, DeleteAt: &del, Budgets: []TreeBudget{{Unit: "vcpu_hours", Window: "30d", Amount: 10}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.Get(ctx, st.Slug)
+	if !before.NoWorkspaces {
+		t.Fatalf("LLM-only project has workspaces: %+v", before)
+	}
+	// Admin narrows the preset limits and profiles first, so the manager has something to lift.
+	before.Profiles, before.Limits = []string{"cpu"}, Limits{ServersPerPerson: 1, CPUPerPerson: 2, RAMGBPerPerson: 4}
+	before.Budgets = append(before.Budgets, Budget{Unit: "vcpu_hours", Window: "7d", Amount: 1, PerPerson: true})
+	if before, err = s.Update(ctx, before, "root@dhbw.de", true); err != nil {
+		t.Fatal(err)
+	}
+
+	later := end.AddDate(5, 0, 0)
+	attack := before
+	attack.Description = "neu"
+	attack.NoWorkspaces = false
+	attack.Profiles = []string{"cpu", "gpu", SplitProfile}
+	attack.Limits = Limits{GPUsPerPerson: 99}
+	attack.GPUClasses, attack.GPUsByClass = []string{"l4-3q"}, map[string]int{"l4-3q": 200}
+	attack.Budgets = []Budget{{Unit: "vcpu_hours", Window: "30d", Amount: 1e9, Tree: true}}
+	attack.StorageGB, attack.LLMMTokens, attack.EndsAt, attack.DeleteAt = 1000, 1e6, &later, nil
+	attack.Members = append(attack.Members, Member{Token: "user:x@dhbw.de", Role: RoleManager})
+	out, err := s.Update(ctx, attack, "m@dhbw.de", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.Get(ctx, st.Slug)
+	if out.Description != "neu" || after.Description != "neu" {
+		t.Errorf("description not changed: %q", after.Description)
+	}
+	if !after.NoWorkspaces || !slices.Equal(after.Profiles, before.Profiles) || after.Limits != before.Limits || len(after.GPUClasses) != 0 || len(after.GPUsByClass) != 0 ||
+		!slices.Equal(after.Budgets, before.Budgets) || after.StorageGB != 0 || after.LLMMTokens != 10 || !after.EndsAt.Equal(end) || after.DeleteAt == nil || !after.DeleteAt.Equal(del) || len(after.Members) != 2 {
+		t.Fatalf("manager changed tree or admin fields:\nbefore %+v\nafter  %+v", before, after)
+	}
+	// Even an admin cannot give an LLM-only project workspaces; that is the tree's.
+	adminTry := after
+	adminTry.NoWorkspaces = false
+	if after, err = s.Update(ctx, adminTry, "root@dhbw.de", true); err != nil || !after.NoWorkspaces {
+		t.Fatalf("admin lifted no_workspaces: %+v %v", after, err)
+	}
+	err = s.CheckStart(ctx, []string{"user:a@dhbw.de", "group:k"}, StartRequest{Person: "a@dhbw.de", Project: st.Slug, Profile: "cpu", CPU: 1, RAMGB: 1})
+	if !strings.Contains(reason(err), "keine Workspaces") {
+		t.Fatalf("member started a server in an LLM-only project: %v", err)
 	}
 }

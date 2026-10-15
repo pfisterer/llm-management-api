@@ -352,11 +352,9 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		{Addr: cfg.Bind, Handler: srv.Router(), ReadHeaderTimeout: 10 * time.Second},
 		// Machine API: its own listener and its own Service/ingress (see MachineRouter).
 		{Addr: cfg.MachineBind, Handler: webserver.MachineRouter(fleetSvc, classifier, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second},
-		// Chat exchange for LibreChat: trusts identity headers, so NetworkPolicy
-		// admits LibreChat only. No write timeout — a streamed answer of a large
-		// model can take minutes.
+		// Chat exchange for LibreChat: takes identity headers from callers with the shared token (CHAT_EXCHANGE_TOKEN), and NetworkPolicy admits LibreChat only. No write timeout — a streamed answer of a large model can take minutes.
 		{Addr: cfg.ChatBind, Handler: webserver.ChatRouter(webserver.ChatOptions{Access: accessSvc, Keys: keySvc, Quota: quota,
-			Gateway: cfg.LiteLLMGatewayURL, MasterKey: cfg.LiteLLMMasterKey, Log: log}), ReadHeaderTimeout: 10 * time.Second},
+			Gateway: cfg.LiteLLMGatewayURL, MasterKey: cfg.LiteLLMMasterKey, Token: cfg.ChatExchangeToken, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 		// LiteLLM UI autologin, behind the admin host's forward-auth.
 		{Addr: cfg.AdminLoginBind, Handler: webserver.AdminLoginRouter(webserver.AdminLoginOptions{Access: accessSvc,
 			LiteLLMURL: cfg.LiteLLMURL, Username: cfg.LiteLLMUIUsername, Password: cfg.LiteLLMUIPassword, Log: log}), ReadHeaderTimeout: 10 * time.Second},

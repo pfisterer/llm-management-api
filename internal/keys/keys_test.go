@@ -131,8 +131,14 @@ func (f *fakeLiteLLM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.writes = append(f.writes, fmt.Sprintf("key/quota:%s", k["token"]))
 		}
 	case "/key/delete":
+		// Like LiteLLM: by the hashed token or by the key itself.
 		for _, t := range body["keys"].([]any) {
-			delete(f.keys, t.(string))
+			for tok, k := range f.keys {
+				if tok == t || k["key"] == t {
+					delete(f.keys, tok)
+				}
+			}
+			f.writes = append(f.writes, "key/delete:"+t.(string))
 		}
 	case "/team/info":
 		t, ok := f.teams[r.URL.Query().Get("team_id")]

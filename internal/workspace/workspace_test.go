@@ -67,6 +67,12 @@ func TestManagerMayOnlyChangeMembersImagesDescription(t *testing.T) {
 	if err != nil || out.Description != "neu" || len(out.Members) != 1 || out.Members[0].Role != RoleMember || len(out.Profiles) != 1 || out.Limits.ServersPerPerson != 1 {
 		t.Fatalf("manager update: %+v %v", out, err)
 	}
+	// Budgets, GPUs, storage, end and no_workspaces stay too.
+	out, err = s.Update(ctx, Project{Slug: "kurs", Members: out.Members, Budgets: []Budget{{Unit: "gpu_hours", Window: "30d", Amount: 1}}, GPUClasses: []string{"l4-3q"},
+		GPUsByClass: map[string]int{"l4-3q": 9}, StorageGB: 99, NoWorkspaces: true, Limits: Limits{GPUsPerPerson: 99}}, "manager@dhbw.de", false)
+	if err != nil || len(out.Budgets) != 0 || len(out.GPUClasses) != 0 || len(out.GPUsByClass) != 0 || out.StorageGB != 0 || out.NoWorkspaces || out.Limits.GPUsPerPerson != 0 {
+		t.Fatalf("manager update of admin fields: %+v %v", out, err)
+	}
 }
 
 func TestCheckStart(t *testing.T) {

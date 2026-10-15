@@ -4,6 +4,7 @@ package webserver
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -90,7 +91,8 @@ func (s *Server) Router() *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	r.Use(gin.Recovery(), s.requestLog())
+	// Writes from another origin are refused for every route (the self-service UI reaches this API through its BFF, same origin for the browser). The UI's origin is trusted for browsers that send no Sec-Fetch-Site, since the BFF rewrites Host on the way here.
+	r.Use(gin.Recovery(), s.requestLog(), ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{TrustedOrigins: originOf(s.adminUI), DevMode: s.devMode, Log: s.log}))
 
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 	r.GET("/config.json", s.getConfig)
@@ -192,4 +194,13 @@ type ConfigResponse struct {
 
 func (s *Server) getConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, ConfigResponse{Name: "llm-management-api", Version: s.version})
+}
+
+// originOf is the scheme and host of a URL, as a one-element list; none when the URL is empty or not absolute.
+func originOf(raw string) []string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil
+	}
+	return []string{u.Scheme + "://" + u.Host}
 }

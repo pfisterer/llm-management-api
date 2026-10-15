@@ -62,6 +62,7 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `SELF_SERVICE_URL` | where people without a project get one (in the 403 of the LLM and for JupyterHub) |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
 | `CHAT_BIND` | chat exchange for LibreChat (`/v1/*` with `X-LibreChat-User-*` headers), default `:8089`; NetworkPolicy: LibreChat only |
+| `CHAT_EXCHANGE_TOKEN` | shared secret LibreChat sends to the chat exchange as its API key (`Authorization: Bearer`); empty = the exchange refuses every request |
 | `ADMIN_LOGIN_BIND` | LiteLLM UI autologin (`/`, `/autologin`), default `:8090`; only behind the admin host's forward-auth, role admin |
 | `LITELLM_GATEWAY_URL` | LiteLLM inference gateway (chat, classification probes) |
 | `LITELLM_UI_USERNAME`, `LITELLM_UI_PASSWORD` | shared LiteLLM UI account for the autologin |

@@ -107,6 +107,8 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: tree-api-token, optional: true}}
             - {name: MACHINE_BIND, value: ":8087"}
             - {name: CHAT_BIND, value: ":8089"}
+            - name: CHAT_EXCHANGE_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: chat-exchange-token, optional: true}}
             - {name: ADMIN_LOGIN_BIND, value: ":8090"}
             - {name: LITELLM_GATEWAY_URL, value: {{ required "config.litellmGatewayUrl is required" .Values.config.litellmGatewayUrl | quote }}}
             - {name: LITELLM_UI_USERNAME, value: {{ .Values.config.litellmUiUsername | quote }}}

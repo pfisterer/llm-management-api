@@ -23,22 +23,23 @@ func WorkspaceKey(masterKey, userID, project string) string {
 // workspaceAlias is the name the workspace key of a project has in the person's key list.
 func workspaceAlias(project string) string { return "workspace-" + project }
 
-// EnsureWorkspaceKey makes sure the person exists in LiteLLM with their quota and has the workspace key of the project in a pool, with the pool's key budget, and returns it. The pool is the project's own; a project without LLM tokens (a workspace project, the LLM in a project of its own, docs/bauplan.md 8.14) draws from the person's default project. ErrNotEligible when the person has no pool at all.
+// EnsureWorkspaceKey makes sure the person exists in LiteLLM with their quota and has the workspace key of the project in the project's own pool, with the pool's key budget, and returns it. Only the project's own pool: a project without LLM tokens (or one the person is no member of) gets no key, ErrNotEligible, and a workspace key left from before (when such projects drew from the person's default project) is deleted, so a running notebook's copy stops working too.
 func (s *Service) EnsureWorkspaceKey(ctx context.Context, p Person, g Grant, masterKey, project string) (string, error) {
-	if len(g.Pools) == 0 {
-		return "", ErrNotEligible
-	}
 	uid := p.UserID()
 	key := WorkspaceKey(masterKey, uid, project)
-	info, _, err := s.reconcile(ctx, p, g)
-	if err != nil {
-		return "", err
-	}
 	pool, ok := g.pool(project)
 	if !ok {
-		if pool, ok = g.defaultPool(info); !ok {
-			return "", ErrNotEligible
+		if _, found, err := s.lite.KeyInfo(ctx, key); err != nil {
+			return "", err
+		} else if found {
+			if err := s.lite.DeleteKeys(ctx, key); err != nil {
+				return "", fmt.Errorf("remove workspace key without pool: %w", err)
+			}
 		}
+		return "", ErrNotEligible
+	}
+	if _, _, err := s.reconcile(ctx, p, g); err != nil {
+		return "", err
 	}
 	cur, found, err := s.lite.KeyInfo(ctx, key)
 	if err != nil {

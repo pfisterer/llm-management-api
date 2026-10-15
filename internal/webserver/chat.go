@@ -3,6 +3,7 @@ package webserver
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"go.uber.org/zap"
@@ -28,7 +30,9 @@ type ChatOptions struct {
 	Quota     LLMQuota
 	Gateway   string // LiteLLM inference gateway, e.g. http://litellm-gateway:4000
 	MasterKey string // derives the chat keys (see keys.ChatKey)
-	Log       *zap.SugaredLogger
+	// Token is the shared secret LibreChat sends as its API key (Authorization: Bearer <token>, from its Secret); empty = every request is refused.
+	Token string
+	Log   *zap.SugaredLogger
 }
 
 // chatKeyTTL is how long a person's access and key count as checked. Every expiry asks the projects again — not only when the key is created, or whoever left their project would keep chatting as long as the key exists.
@@ -44,14 +48,13 @@ const chatBodyLimit = 64 << 20
 // {{LIBRECHAT_USER_EMAIL}}), and this exchange answers with the person's key.
 // The project's limits therefore apply exactly as for the person's own API keys in it, and spend lands in the project's pool.
 //
-// Trust in those headers rests on the NetworkPolicy alone: only the LibreChat
-// pod reaches this listener. That is why it is a listener of its own.
+// Trust in those headers rests on two things: the shared token LibreChat sends as its API key (Token, compared in constant time), and the NetworkPolicy, by which only the LibreChat pod reaches this listener (a listener of its own for that). The token keeps out what else runs in that pod on behalf of people, e.g. HTTP calls of agents. On top, sub and e-mail must belong together (keys.CheckIdentity).
 func ChatRouter(o ChatOptions) http.Handler {
 	target, err := url.Parse(strings.TrimRight(o.Gateway, "/"))
 	if err != nil || target.Host == "" {
 		panic("chat exchange: invalid gateway URL " + o.Gateway)
 	}
-	ex := &chatExchange{o: o, ok: map[string]time.Time{}}
+	ex := &chatExchange{o: o, ok: map[string]chatChecked{}}
 	ex.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
@@ -87,11 +90,17 @@ func ChatRouter(o ChatOptions) http.Handler {
 
 type chatUIDKey struct{}
 
+// chatChecked is a person whose access and key were checked, with the e-mail that came with the sub: another e-mail is checked anew.
+type chatChecked struct {
+	until time.Time
+	email string
+}
+
 type chatExchange struct {
 	o     ChatOptions
 	proxy *httputil.ReverseProxy
 	mu    sync.Mutex
-	ok    map[string]time.Time // user id -> checked until
+	ok    map[string]chatChecked // user id -> checked until, for which e-mail
 	// Two requests of one person at once: only one creates the key, or the
 	// second fails on the key the first has just taken.
 	group singleflight.Group
@@ -104,6 +113,11 @@ func (ex *chatExchange) forget(uid string) {
 }
 
 func (ex *chatExchange) serve(w http.ResponseWriter, r *http.Request) {
+	raw, ok := authn.CutBearerPrefix(r.Header.Get("Authorization"))
+	if !ok || ex.o.Token == "" || subtle.ConstantTimeCompare([]byte(raw), []byte(ex.o.Token)) != 1 {
+		chatError(w, http.StatusUnauthorized, "Token fehlt oder ist falsch.")
+		return
+	}
 	sub := strings.TrimSpace(r.Header.Get("X-Librechat-User-Openid"))
 	email := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Librechat-User-Email")))
 	// An unreplaced placeholder means LibreChat did not know the person (or its
@@ -153,9 +167,9 @@ func (ex *chatExchange) serve(w http.ResponseWriter, r *http.Request) {
 func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, string) {
 	uid := p.UserID()
 	ex.mu.Lock()
-	until := ex.ok[uid]
+	seen := ex.ok[uid]
 	ex.mu.Unlock()
-	if time.Now().Before(until) {
+	if seen.email == p.Email && time.Now().Before(seen.until) {
 		return keys.ChatKey(ex.o.MasterKey, uid), 0, ""
 	}
 
@@ -165,9 +179,17 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 	}
 	// Detached from the request: the shared call must not die with whichever
 	// request happened to start it.
-	v, _, _ := ex.group.Do(uid, func() (any, error) {
+	v, _, _ := ex.group.Do(uid+"\n"+p.Email, func() (any, error) {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
+		// Sub and e-mail come as claims from LibreChat; they must be one person's, or one could spend another's pool under their own e-mail's projects, or the other way round.
+		if err := ex.o.Keys.CheckIdentity(cctx, p); errors.Is(err, keys.ErrIdentityMismatch) {
+			ex.o.Log.Warnw("chat: sub and e-mail do not belong together", "user", uid, "email", p.Email)
+			return answer{status: http.StatusForbidden, msg: "Konto und E-Mail-Adresse passen nicht zusammen."}, nil
+		} else if err != nil {
+			ex.o.Log.Errorw("chat: identity not checked", "user", uid, "error", err)
+			return answer{status: http.StatusBadGateway, msg: "LiteLLM nicht erreichbar"}, nil
+		}
 		g, status, msg := ex.o.Quota.GrantFor(cctx, ex.o.Access.Who(cctx, p.Email).Tokens)
 		if status != 0 {
 			return answer{status: status, msg: msg}, nil
@@ -178,7 +200,7 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 			return answer{status: http.StatusBadGateway, msg: "Key konnte nicht angelegt werden"}, nil
 		}
 		ex.mu.Lock()
-		ex.ok[uid] = time.Now().Add(chatKeyTTL)
+		ex.ok[uid] = chatChecked{until: time.Now().Add(chatKeyTTL), email: p.Email}
 		ex.mu.Unlock()
 		return answer{key: key}, nil
 	})

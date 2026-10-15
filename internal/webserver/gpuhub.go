@@ -202,7 +202,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		})
 	}
 	if o.Keys != nil {
-		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws from the project's LLM tokens, or, for a project without (a workspace project), from the person's default LLM project. A person without any LLM project (or one the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without.
+		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws only from the project's own LLM tokens and only for its members. A person who is no member gets 403; a project without LLM tokens (or a person the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without.
 		r.POST("/gpu/hub/workspace-key", func(c *gin.Context) {
 			if !hubToken(c, o.Token) {
 				return
@@ -214,6 +214,21 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			ctx := c.Request.Context()
 			email := strings.ToLower(strings.TrimSpace(req.User))
+			tokens := o.Access.Who(ctx, email).Tokens
+			if o.Workspaces == nil {
+				abort(c, http.StatusForbidden, "forbidden", "Projekte sind nicht eingerichtet.")
+				return
+			}
+			proj, err := o.Workspaces.Get(ctx, req.Project)
+			if err != nil && !errors.Is(err, workspace.ErrNotFound) {
+				o.Log.Errorw("workspace key: project not read", "project", req.Project, "error", err)
+				abort(c, http.StatusInternalServerError, "internal", "Projekt nicht lesbar.")
+				return
+			}
+			if err != nil || proj.RoleOf(tokens) == "" {
+				abort(c, http.StatusForbidden, "forbidden", "Kein Mitglied des Projekts.")
+				return
+			}
 			sub := strings.TrimSpace(req.Subject)
 			if sub == "" {
 				found, ok, err := o.Keys.SubjectOf(ctx, email)
@@ -228,14 +243,14 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				}
 				sub = found
 			}
-			g, status, msg := o.Quota.GrantFor(ctx, o.Access.Who(ctx, email).Tokens)
+			g, status, msg := o.Quota.GrantFor(ctx, tokens)
 			if status != 0 {
 				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: msg})
 				return
 			}
 			key, err := o.Keys.EnsureWorkspaceKey(ctx, keys.Person{Subject: sub, Email: email}, g, o.MasterKey, req.Project)
 			if errors.Is(err, keys.ErrNotEligible) {
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "no LLM project"})
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "project has no LLM tokens"})
 				return
 			}
 			if err != nil {

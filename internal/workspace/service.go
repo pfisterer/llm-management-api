@@ -275,21 +275,19 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the environment (base, project image); everything else is kept.
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the environment (base, project image), in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
-	switch {
-	case cur.Managed():
-		// The tree owns members, end and the project's amounts; managers and
-		// admins set how the project uses them.
-		keepTreeFields(&p, cur)
-	case !asAdmin:
+	if !asAdmin {
 		desc, members, base, image, gitURL, gitRef := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef
 		p = cur
 		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef = desc, members, base, image, gitURL, gitRef
+	}
+	if cur.Managed() {
+		keepTreeFields(&p, cur)
 	}
 	if err := s.validate(&p); err != nil {
 		return Project{}, err
@@ -344,6 +342,9 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	}
 	if !p.Active(s.now()) {
 		return refuse("Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))
+	}
+	if p.NoWorkspaces {
+		return refuse("Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", p.Name)
 	}
 	if !p.Allows(r.Profile) {
 		return refuse("Profil %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)

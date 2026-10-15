@@ -27,6 +27,8 @@ secrets:
   gpuInferenceApiKey: ""
   # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
   treeApiToken: ""
+  # Token LibreChat sends to the chat exchange (:8089) as its API key; empty = the exchange refuses every request.
+  chatExchangeToken: ""
 
 config:
   # The ID token the self-service BFF forwards: issuer of the realm, audience =

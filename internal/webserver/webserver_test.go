@@ -389,3 +389,47 @@ func TestKeysOnBehalfFindTheSubject(t *testing.T) {
 		}
 	}
 }
+
+// Regression: the hub's workspace key went to anyone for any project (the key then drew from the person's default LLM project). Now only members get one, and only from the project's own LLM tokens.
+func TestGPUHubWorkspaceKey(t *testing.T) {
+	ctx := context.Background()
+	acc := accessFor(t, &roleprovider.Mock{}, nil, nil)
+	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
+	for node, tp := range map[string]workspace.TreeProject{
+		"p_1":     {Name: "Kurs", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 80, Workspaces: true},
+		"p_ws":    {Name: "Nur Workspaces", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, Workspaces: true},
+		"p_other": {Name: "Fremd", Members: []workspace.Member{{Token: "user:other@dhbw.de"}}, LLMMTokens: 50, Workspaces: true},
+	} {
+		if _, err := ws.UpsertFromTree(ctx, node, tp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, srv := newFakeLite(t)
+	quota := testQuota
+	quota.Projects = ws
+	r := GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", Keys: testKeys(srv.URL), Quota: quota, MasterKey: "master", Log: zap.NewNop().Sugar()}, true)
+	post := func(project string) (int, WorkspaceKeyResponse) {
+		b, _ := json.Marshal(WorkspaceKeyRequest{User: "member@dhbw.de", Subject: "sub-m", Project: project})
+		req := httptest.NewRequest(http.MethodPost, "/gpu/hub/workspace-key", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var out WorkspaceKeyResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+	if code, out := post("t-1"); code != 200 || out.Key == "" || f.keyBy(out.Key)["team_id"] != "t-1" {
+		t.Fatalf("member, own tokens: %d %+v", code, out)
+	}
+	for _, project := range []string{"t-other", "t-nope"} {
+		if code, out := post(project); code != http.StatusForbidden || out.Key != "" {
+			t.Errorf("%s: %d %+v, want 403 without a key", project, code, out)
+		}
+	}
+	if code, out := post("t-ws"); code != 200 || out.Key != "" || out.Reason == "" {
+		t.Errorf("project without tokens: %d %+v, want no key", code, out)
+	}
+	if k := f.keyBy(keys.WorkspaceKey("master", "kc-sub-m", "t-ws")); k != nil {
+		t.Errorf("key drawn from another pool: %v", k)
+	}
+}

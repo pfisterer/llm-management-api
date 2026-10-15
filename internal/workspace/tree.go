@@ -252,13 +252,14 @@ func cleanModels(in []string) []string {
 	return slices.Compact(out)
 }
 
-// keepTreeFields puts back what the tree owns into a project a person changed: members, end, the tree's budgets, GPUs per class, the LLM tokens, rate limits and models, the storage, name and the node.
+// keepTreeFields puts back everything UpsertFromTree sets on every call into a project a person changed, whoever it is: members, end and deletion day, whether it has workspaces at all, the tree's budgets, GPU classes and GPUs per class, the LLM tokens, rate limits and models, the storage, name and the node. Limits per person and profiles the tree only presets; they are the admins' (Update keeps them from managers).
 func keepTreeFields(p *Project, cur Project) {
 	p.TreeNode, p.Name, p.Members, p.EndsAt = cur.TreeNode, cur.Name, cur.Members, cur.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = cur.GPUClasses, cur.GPUsByClass, cur.LLMMTokens
 	p.LLMRPM, p.LLMTPM, p.LLMModels = cur.LLMRPM, cur.LLMTPM, cur.LLMModels
 	p.StorageGB = cur.StorageGB
 	p.DeleteAt = cur.DeleteAt
+	p.NoWorkspaces = cur.NoWorkspaces
 	own := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range cur.Budgets {
 		if b.Tree {
