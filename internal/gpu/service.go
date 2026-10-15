@@ -23,6 +23,7 @@ type builds interface {
 	jobStatus(ctx context.Context, ns, name string) (jobStatus, error)
 	deleteJob(ctx context.Context, ns, name string) error
 	jobLog(ctx context.Context, ns, job string, tail int) (string, error)
+	jobState(ctx context.Context, ns, job string) (string, *time.Time, error)
 }
 
 type images interface {

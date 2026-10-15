@@ -26,11 +26,18 @@ type ImageBuild struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// BuildLog is the tail of a build's log and what its pod is doing (waiting for a node, pulling the image, running, ended), for the people waiting for it; Since is when it started running.
+type BuildLog struct {
+	Log   string     `json:"log"`
+	State string     `json:"state,omitempty"`
+	Since *time.Time `json:"since,omitempty"`
+}
+
 // ImageBuilder builds project images from Git (gpu.Service).
 type ImageBuilder interface {
 	BuildProjectImage(ctx context.Context, slug, base, gitURL, ref string, rebuild bool) (ImageBuild, error)
 	ProjectImageBuild(ctx context.Context, slug string) (*ImageBuild, error)
-	ProjectImageLog(ctx context.Context, slug string) (string, error)
+	ProjectImageLog(ctx context.Context, slug string) (BuildLog, error)
 	ForgetProjectImage(ctx context.Context, slug string) error
 }
 
@@ -118,9 +125,9 @@ func (s *Service) RebuildProjectImage(ctx context.Context, slug string) (ImageBu
 }
 
 // ProjectImageLog is the tail of the project image's build log.
-func (s *Service) ProjectImageLog(ctx context.Context, slug string) (string, error) {
+func (s *Service) ProjectImageLog(ctx context.Context, slug string) (BuildLog, error) {
 	if s.builds == nil {
-		return "", ErrNotFound
+		return BuildLog{}, ErrNotFound
 	}
 	return s.builds.ProjectImageLog(ctx, slug)
 }

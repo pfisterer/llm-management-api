@@ -23,9 +23,7 @@ func (s *Server) requireWorkspace(c *gin.Context) {
 }
 
 // BuildLogResponse is the tail of a project image's build log.
-type BuildLogResponse struct {
-	Log string `json:"log"`
-}
+type BuildLogResponse = workspace.BuildLog
 
 func (s *Server) gpuError(c *gin.Context, what string, err error) {
 	var he *gpu.HubError

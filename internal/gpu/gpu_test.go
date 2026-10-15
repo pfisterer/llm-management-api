@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -79,6 +80,10 @@ func (f *fakeBuilds) jobStatus(_ context.Context, _, name string) (jobStatus, er
 	return jobStatus{Active: 1}, nil
 }
 func (f *fakeBuilds) deleteJob(context.Context, string, string) error { return nil }
+func (f *fakeBuilds) jobState(context.Context, string, string) (string, *time.Time, error) {
+	return "Läuft.", nil, nil
+}
+
 func (f *fakeBuilds) jobLog(context.Context, string, string, int) (string, error) {
 	if f.log != "" {
 		return f.log, nil

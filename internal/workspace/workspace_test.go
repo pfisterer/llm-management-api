@@ -181,7 +181,9 @@ func (f *fakeBuilder) ProjectImageBuild(_ context.Context, slug string) (*ImageB
 	}
 	return &b, nil
 }
-func (f *fakeBuilder) ProjectImageLog(context.Context, string) (string, error) { return "log", nil }
+func (f *fakeBuilder) ProjectImageLog(context.Context, string) (BuildLog, error) {
+	return BuildLog{Log: "log"}, nil
+}
 func (f *fakeBuilder) ForgetProjectImage(_ context.Context, slug string) error {
 	delete(f.builds, slug)
 	return nil

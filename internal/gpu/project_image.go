@@ -178,15 +178,24 @@ func (s *Service) ProjectImageBuild(ctx context.Context, slug string) (*workspac
 }
 
 // ProjectImageLog is the tail of the current build's log.
-func (s *Service) ProjectImageLog(ctx context.Context, slug string) (string, error) {
+func (s *Service) ProjectImageLog(ctx context.Context, slug string) (workspace.BuildLog, error) {
 	cur, err := s.latest(ctx, slug)
 	if err != nil {
-		return "", err
+		return workspace.BuildLog{}, err
 	}
 	if cur == nil || cur.JobName == "" {
-		return "", ErrNotFound
+		return workspace.BuildLog{}, ErrNotFound
 	}
-	return s.builds.jobLog(ctx, s.cfg.BuildNamespace, cur.JobName, 400)
+	state, since, err := s.builds.jobState(ctx, s.cfg.BuildNamespace, cur.JobName)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return workspace.BuildLog{}, err
+	}
+	// A pod that has not started yet has no log; its state says why.
+	log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, cur.JobName, 400)
+	if err != nil {
+		log = ""
+	}
+	return workspace.BuildLog{Log: log, State: state, Since: since}, nil
 }
 
 // ForgetProjectImage drops the project's builds (the project no longer builds from Git, or is gone).

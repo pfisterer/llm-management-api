@@ -192,6 +192,97 @@ func (k *kube) podMetrics(ctx context.Context, ns string) ([]podMetrics, error) 
 }
 
 // jobLog returns the last lines of the job's (newest) pod.
+// buildPod is what jobState reads of a build's pod.
+type buildPod struct {
+	Metadata struct {
+		CreationTimestamp time.Time `json:"creationTimestamp"`
+	} `json:"metadata"`
+	Status struct {
+		Phase      string     `json:"phase"`
+		StartTime  *time.Time `json:"startTime"`
+		Conditions []struct {
+			Type    string `json:"type"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"conditions"`
+		ContainerStatuses []containerStatus `json:"containerStatuses"`
+		InitStatuses      []containerStatus `json:"initContainerStatuses"`
+	} `json:"status"`
+}
+
+type containerStatus struct {
+	Name  string `json:"name"`
+	State struct {
+		Waiting *struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"waiting"`
+		Running *struct {
+			StartedAt time.Time `json:"startedAt"`
+		} `json:"running"`
+		Terminated *struct {
+			ExitCode int    `json:"exitCode"`
+			Reason   string `json:"reason"`
+		} `json:"terminated"`
+	} `json:"state"`
+}
+
+// jobState says in a sentence what the newest pod of a build job is doing, for the people waiting for the image, and since when it runs.
+func (k *kube) jobState(ctx context.Context, ns, job string) (string, *time.Time, error) {
+	var pods struct {
+		Items []buildPod `json:"items"`
+	}
+	if err := k.do(ctx, http.MethodGet, "/api/v1/namespaces/"+ns+"/pods?labelSelector="+url.QueryEscape("job-name="+job), nil, &pods); err != nil {
+		return "", nil, err
+	}
+	if len(pods.Items) == 0 {
+		return "Der Bau ist angelegt, sein Pod noch nicht.", nil, nil
+	}
+	p := pods.Items[0]
+	for _, q := range pods.Items[1:] {
+		if q.Metadata.CreationTimestamp.After(p.Metadata.CreationTimestamp) {
+			p = q
+		}
+	}
+	return buildPodState(p), p.Status.StartTime, nil
+}
+
+// buildPodState puts a build pod's status into words: waiting for a node, preparing or pulling, running, ended.
+func buildPodState(p buildPod) string {
+	for _, c := range p.Status.Conditions {
+		if c.Type == "PodScheduled" && c.Status == "False" {
+			return "Wartet auf einen Build-Knoten: " + c.Message
+		}
+	}
+	for _, c := range append(append([]containerStatus{}, p.Status.InitStatuses...), p.Status.ContainerStatuses...) {
+		if w := c.State.Waiting; w != nil && w.Reason != "" && w.Reason != "PodInitializing" {
+			switch w.Reason {
+			case "ContainerCreating":
+				return "Der Build-Container wird vorbereitet (Image des Builders wird geladen)."
+			case "ErrImagePull", "ImagePullBackOff":
+				return "Das Image des Builders lässt sich nicht laden: " + w.Message
+			}
+			return "Wartet (" + w.Reason + "): " + w.Message
+		}
+	}
+	switch p.Status.Phase {
+	case "Pending":
+		return "Der Build-Pod startet."
+	case "Running":
+		return "Der Bau läuft."
+	case "Succeeded":
+		return "Der Bau ist fertig."
+	case "Failed":
+		for _, c := range p.Status.ContainerStatuses {
+			if t := c.State.Terminated; t != nil {
+				return fmt.Sprintf("Der Bau ist gescheitert (Exit-Code %d, %s).", t.ExitCode, t.Reason)
+			}
+		}
+		return "Der Bau ist gescheitert."
+	}
+	return p.Status.Phase
+}
+
 func (k *kube) jobLog(ctx context.Context, ns, job string, tail int) (string, error) {
 	var pods struct {
 		Items []struct {

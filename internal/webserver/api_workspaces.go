@@ -269,14 +269,14 @@ func (s *Server) getProjectImageLog(c *gin.Context) {
 	if !s.manager(c, slug) {
 		return
 	}
-	log, err := s.ws.ProjectImageLog(c.Request.Context(), slug)
+	bl, err := s.ws.ProjectImageLog(c.Request.Context(), slug)
 	if errors.Is(err, gpu.ErrNotFound) {
 		err = workspace.ErrNotFound
 	}
 	if s.workspaceError(c, err) {
 		return
 	}
-	c.JSON(http.StatusOK, BuildLogResponse{Log: log})
+	c.JSON(http.StatusOK, bl)
 }
 
 // deleteWorkspaceProject godoc
