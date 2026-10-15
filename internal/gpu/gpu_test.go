@@ -104,6 +104,9 @@ func (f *fakeHub) startServer(_ context.Context, _, server string, o map[string]
 	return nil
 }
 func (f *fakeHub) stopServer(context.Context, string, string, bool) error { return nil }
+func (f *fakeHub) progress(context.Context, string, string) (Progress, error) {
+	return Progress{Events: []ProgressEvent{}}, nil
+}
 
 const testBase = "reg/platform/base-pytorch:v2.0.0"
 

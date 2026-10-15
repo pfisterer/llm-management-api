@@ -34,6 +34,7 @@ type servers interface {
 	ensureUser(ctx context.Context, name string) error
 	startServer(ctx context.Context, user, server string, options map[string]any) error
 	stopServer(ctx context.Context, user, server string, remove bool) error
+	progress(ctx context.Context, user, server string) (Progress, error)
 }
 
 type refResolver func(ctx context.Context, repoURL string) (gitRefs, error)
@@ -366,6 +367,11 @@ func (s *Service) StopServer(ctx context.Context, user, name string) error {
 	return s.servers.stopServer(ctx, user, name, name != "")
 }
 
+// ServerProgress is how far the start of one of the person's servers got (the hub's event log), or why it failed.
+func (s *Service) ServerProgress(ctx context.Context, user, name string) (Progress, error) {
+	return s.servers.progress(ctx, user, name)
+}
+
 // NewForTest builds a service without cluster connections (memory store only, a hub without users), for tests of other packages.
 func NewForTest(cfg Config) (*Service, error) {
 	return newService(cfg, NewMemoryStore(), nil, nil, noHub{}, nil, nil), nil
@@ -377,3 +383,6 @@ func (noHub) user(context.Context, string) (*hubUser, error)                    
 func (noHub) ensureUser(context.Context, string) error                          { return nil }
 func (noHub) startServer(context.Context, string, string, map[string]any) error { return nil }
 func (noHub) stopServer(context.Context, string, string, bool) error            { return nil }
+func (noHub) progress(context.Context, string, string) (Progress, error) {
+	return Progress{Events: []ProgressEvent{}}, nil
+}

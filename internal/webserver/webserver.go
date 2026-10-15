@@ -151,6 +151,7 @@ func (s *Server) Router() *gin.Engine {
 		g := v1.Group("/gpu", s.requireWorkspace)
 		g.GET("/servers", s.listServers)
 		g.DELETE("/servers/:name", s.stopServer)
+		g.GET("/servers/:name/progress", s.getServerProgress)
 		if s.ws != nil {
 			g.GET("/start-options", s.getStartOptions)
 			g.POST("/servers", s.startServer)

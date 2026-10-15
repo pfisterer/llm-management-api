@@ -248,6 +248,22 @@ func TestStartServer(t *testing.T) {
 	}
 }
 
+// The progress of a start: for members of a workspace project, only well-formed server names (the caller's own servers, the name goes into the hub's path).
+func TestServerProgress(t *testing.T) {
+	_, _, h := llmServer(t)
+	if code, body := do(t, h, "GET", "/v1/gpu/servers/t-1-gpu/progress", "member@dhbw.de", nil); code != 200 || !strings.Contains(string(body), `"events":[]`) {
+		t.Fatalf("progress: %d %s", code, body)
+	}
+	for _, name := range []string{"..", "a%2Fb", "a%20b"} {
+		if code, _ := do(t, h, "GET", "/v1/gpu/servers/"+name+"/progress", "member@dhbw.de", nil); code != 400 && code != 404 {
+			t.Errorf("%q: %d, want 400", name, code)
+		}
+	}
+	if code, _ := do(t, h, "GET", "/v1/gpu/servers/t-1-gpu/progress", "nobody@dhbw.de", nil); code != http.StatusForbidden {
+		t.Errorf("nobody: %d", code)
+	}
+}
+
 func TestGPUHubAccess(t *testing.T) {
 	acc, ws, _ := llmServer(t)
 	r := GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", SelfServiceURL: "https://self-service", Log: zap.NewNop().Sugar()}, true)
