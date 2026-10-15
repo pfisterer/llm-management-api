@@ -95,13 +95,17 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 
 // Add increments in the database, so a restart loses at most the minute in flight and two instances never overwrite each other.
 func (s *GormStore) Add(ctx context.Context, rows []Row) error {
+	return addRows(s.db.WithContext(ctx), rows)
+}
+
+func addRows(db *gorm.DB, rows []Row) error {
 	if len(rows) == 0 {
 		return nil
 	}
 	inc := func(col string) clause.Expr {
 		return gorm.Expr("workspace_usage_daily." + col + " + excluded." + col)
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "day"}, {Name: "project"}, {Name: "person"}, {Name: "profile"}, {Name: "gpu_class"}, {Name: "gpu_product"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"server_hours":      inc("server_hours"),

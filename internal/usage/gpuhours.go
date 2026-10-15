@@ -330,40 +330,42 @@ func migrateGPUHours(db *gorm.DB) error { return db.AutoMigrate(&GPUHour{}, &GPU
 
 // AddGPUHours increments in the database (two instances or a restart never overwrite each other); MaxWaiting keeps the larger value.
 func (s *GormStore) AddGPUHours(ctx context.Context, hours []GPUHour, people []GPUHourPerson) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return addGPUHours(tx, hours, people) })
+}
+
+func addGPUHours(tx *gorm.DB, hours []GPUHour, people []GPUHourPerson) error {
 	inc := func(table, col string) clause.Expr { return gorm.Expr(table + "." + col + " + excluded." + col) }
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if len(hours) > 0 {
-			t := "gpu_usage_hourly"
-			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "hour"}, {Name: "gpu_class"}},
-				DoUpdates: clause.Assignments(map[string]any{
-					"sampled_hours":   inc(t, "sampled_hours"),
-					"capacity":        inc(t, "capacity"),
-					"workspace_hours": inc(t, "workspace_hours"),
-					"inference_hours": inc(t, "inference_hours"),
-					"wait_hours":      inc(t, "wait_hours"),
-					"max_waiting":     gorm.Expr("GREATEST(" + t + ".max_waiting, excluded.max_waiting)"),
-					"updated_at":      gorm.Expr("excluded.updated_at"),
-				}),
-			}).Create(&hours).Error; err != nil {
-				return err
-			}
+	if len(hours) > 0 {
+		t := "gpu_usage_hourly"
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "hour"}, {Name: "gpu_class"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"sampled_hours":   inc(t, "sampled_hours"),
+				"capacity":        inc(t, "capacity"),
+				"workspace_hours": inc(t, "workspace_hours"),
+				"inference_hours": inc(t, "inference_hours"),
+				"wait_hours":      inc(t, "wait_hours"),
+				"max_waiting":     gorm.Expr("GREATEST(" + t + ".max_waiting, excluded.max_waiting)"),
+				"updated_at":      gorm.Expr("excluded.updated_at"),
+			}),
+		}).Create(&hours).Error; err != nil {
+			return err
 		}
-		if len(people) > 0 {
-			t := "gpu_usage_hourly_person"
-			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "hour"}, {Name: "gpu_class"}, {Name: "project"}, {Name: "person"}, {Name: "profile"}},
-				DoUpdates: clause.Assignments(map[string]any{
-					"gpu_hours":  inc(t, "gpu_hours"),
-					"wait_hours": inc(t, "wait_hours"),
-					"updated_at": gorm.Expr("excluded.updated_at"),
-				}),
-			}).Create(&people).Error; err != nil {
-				return err
-			}
+	}
+	if len(people) > 0 {
+		t := "gpu_usage_hourly_person"
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "hour"}, {Name: "gpu_class"}, {Name: "project"}, {Name: "person"}, {Name: "profile"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"gpu_hours":  inc(t, "gpu_hours"),
+				"wait_hours": inc(t, "wait_hours"),
+				"updated_at": gorm.Expr("excluded.updated_at"),
+			}),
+		}).Create(&people).Error; err != nil {
+			return err
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 func (s *GormStore) GPUHours(ctx context.Context, from, to time.Time) ([]GPUHour, []GPUHourPerson, error) {
@@ -387,14 +389,34 @@ func (s *GormStore) PruneGPUHours(ctx context.Context, before time.Time) error {
 	return db.Where("hour < ?", before).Delete(&GPUHourPerson{}).Error
 }
 
-// RenameGPUClass moves the booked rows from an old class id to a new one (a renamed pool or tier); idempotent.
+// RenameGPUClass moves the booked rows from an old class id to a new one (a renamed pool or tier); idempotent. Rows under the old id are added to the new id's rows like AddGPUHours and Add do, since both ids can hold the same hour or day (a sample written under the old id while the rename ran).
 func (s *GormStore) RenameGPUClass(ctx context.Context, old, new string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, table := range []string{"workspace_usage_daily", "gpu_usage_hourly", "gpu_usage_hourly_person"} {
-			if err := tx.Exec("UPDATE "+table+" SET gpu_class = ? WHERE gpu_class = ?", new, old).Error; err != nil {
+		var rows []Row
+		var hours []GPUHour
+		var people []GPUHourPerson
+		for _, q := range []any{&rows, &hours, &people} {
+			if err := tx.Where("gpu_class = ?", old).Find(q).Error; err != nil {
 				return err
 			}
 		}
-		return nil
+		for _, m := range []any{&Row{}, &GPUHour{}, &GPUHourPerson{}} {
+			if err := tx.Where("gpu_class = ?", old).Delete(m).Error; err != nil {
+				return err
+			}
+		}
+		for i := range rows {
+			rows[i].GPUClass = new
+		}
+		for i := range hours {
+			hours[i].GPUClass = new
+		}
+		for i := range people {
+			people[i].GPUClass = new
+		}
+		if err := addRows(tx, rows); err != nil {
+			return err
+		}
+		return addGPUHours(tx, hours, people)
 	})
 }
