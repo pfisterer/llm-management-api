@@ -173,6 +173,10 @@ func TestFleetRefusals(t *testing.T) {
 		"unknown tier": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "general", Tier: "riesig"}),
 		"unknown node": s.AssignNode(ctx, NodeAssignment{Node: "gpu-9", Pool: "general", Tier: "large"}),
 		"pool id":      s.SavePool(ctx, Pool{ID: "W I", Name: "WI"}),
+		"underscore":   s.SavePool(ctx, Pool{ID: "ma_arm64", Name: "MA"}),
+		"double -":     s.SavePool(ctx, Pool{ID: "ma--arm64", Name: "MA"}),
+		"trailing -":   s.SavePool(ctx, Pool{ID: "ma-", Name: "MA"}),
+		"too long":     s.SavePool(ctx, Pool{ID: "mannheim-arm64-gb10-x", Name: "MA"}),
 		"default pool": s.DeletePool(ctx, DefaultPool),
 	} {
 		if !errors.As(err, &refused) {
@@ -181,6 +185,9 @@ func TestFleetRefusals(t *testing.T) {
 	}
 	if err := s.SavePool(ctx, Pool{ID: "wi", Name: "Wirtschaftsinformatik"}); err != nil {
 		t.Fatal(err)
+	}
+	if err := s.SavePool(ctx, Pool{ID: "mannheim-arm64", Name: "Mannheim arm64"}); err != nil {
+		t.Errorf("a hyphen inside the id: %v", err)
 	}
 	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "large"}); err != nil {
 		t.Fatal(err)

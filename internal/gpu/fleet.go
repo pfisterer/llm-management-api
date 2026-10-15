@@ -228,7 +228,8 @@ type FleetConfig struct {
 // DefaultPool is the pool every GPU is in unless it is bought for someone.
 const DefaultPool = "general"
 
-var poolIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]{1,19}$`)
+// A pool id ends up in Kubernetes names and label values (Kueue queues gpu-<pool>-<tier>, the node label), so DNS-1123: lowercase letters, digits and single hyphens inside, no underscore. The class id pool-tier stays unique because the tiers are fixed words without a hyphen.
+var poolIDPattern = regexp.MustCompile(`^[a-z](-?[a-z0-9])+$`)
 
 // ErrFleet is a request the GPU administration refuses; the text is for the admin.
 type ErrFleet struct{ Reason string }
@@ -450,8 +451,8 @@ func (s *Service) SavePool(ctx context.Context, p Pool) error {
 		return &ErrFleet{"GPU-Verwaltung ist aus."}
 	}
 	p.Name = strings.TrimSpace(p.Name)
-	if !poolIDPattern.MatchString(p.ID) {
-		return &ErrFleet{"Kürzel des Pools: 2–20 Kleinbuchstaben oder Ziffern, beginnend mit einem Buchstaben."}
+	if !poolIDPattern.MatchString(p.ID) || len(p.ID) > 20 {
+		return &ErrFleet{"Kürzel des Pools: Kleinbuchstaben, Ziffern und einzelne Bindestriche, beginnend mit einem Buchstaben, nicht auf Bindestrich endend, 2–20 Zeichen (z. B. mannheim-arm64). Unterstriche gehen nicht, das Kürzel landet in Kubernetes-Namen."}
 	}
 	if p.Name == "" {
 		return &ErrFleet{"Name fehlt."}
