@@ -52,7 +52,10 @@ mkdir -p /tmp/dockerfile
     echo 'COPY --chown=${NB_UID}:${NB_GID} postBuild /tmp/dhbw/postBuild'
     echo 'RUN bash /tmp/dhbw/postBuild'
   fi
+  # As root, as in the Jupyter images: the person may not change the group of files the base or a step left to root (e.g. ~/.ipython).
+  echo 'USER root'
   echo 'RUN fix-permissions "${CONDA_DIR}" && fix-permissions "/home/${NB_USER}"'
+  echo 'USER ${NB_UID}'
   echo "LABEL org.dhbw.git.url=\"$GIT_URL\" org.dhbw.git.branch=\"$GIT_BRANCH\""
 } > /tmp/dockerfile/Dockerfile
 cat /tmp/dockerfile/Dockerfile
