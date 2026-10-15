@@ -243,9 +243,13 @@ func (s *Service) RebaseProjectImages(ctx context.Context) error {
 // PrepullName is the DaemonSet that keeps the course images on the CPU and GPU nodes, so that the first start of a server or GPU kernel in a course does not wait for a pull of several GB.
 const PrepullName = "kernel-image-prepull"
 
+// prepullSpecRevision changes with the DaemonSet's spec (2: amd64 nodes only).
+const prepullSpecRevision = "2"
+
 // prepullDaemonSet pulls every image as an init container (which ends at once) and keeps the pod with the first one, so the images count as in use and the kubelet does not clean them up.
 func prepullDaemonSet(ns string, images []string) map[string]any {
-	sum := sha256.Sum256([]byte(strings.Join(images, "\n")))
+	// The spec revision goes into the hash, so a change of the spec below reaches a DaemonSet whose images stayed the same.
+	sum := sha256.Sum256([]byte(prepullSpecRevision + "\n" + strings.Join(images, "\n")))
 	security := map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}
 	resources := map[string]any{"requests": map[string]any{"cpu": "1m", "memory": "8Mi"}, "limits": map[string]any{"memory": "32Mi"}}
 	var inits []any
@@ -270,7 +274,11 @@ func prepullDaemonSet(ns string, images []string) map[string]any {
 					"automountServiceAccountToken": false,
 					"enableServiceLinks":           false,
 					"affinity": map[string]any{"nodeAffinity": map[string]any{"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
-						"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{map[string]any{"key": "dhbw.cloud/node-type", "operator": "In", "values": []any{"cpu", "gpu"}}}}},
+						// The course images are amd64 only: an arm64 node (GB10) would hang in ErrImagePull.
+						"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{
+							map[string]any{"key": "dhbw.cloud/node-type", "operator": "In", "values": []any{"cpu", "gpu"}},
+							map[string]any{"key": "kubernetes.io/arch", "operator": "In", "values": []any{"amd64"}},
+						}}},
 					}}},
 					"tolerations":    []any{map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
 					"initContainers": inits,
