@@ -55,7 +55,12 @@ type Peer struct {
 	Gate    string  `json:"gate"`
 	Enabled bool    `json:"enabled"`
 
-	Blocked    bool       `json:"blocked"`
+	Blocked bool `json:"blocked"`
+	// Pending: a new machine that no fleet admin has approved yet. It is also Blocked (no tunnel, not in the peer or site list); unblocking approves it, blocking makes it an ordinary blocked machine.
+	Pending bool `json:"pending"`
+	// SecretHash is the SHA-256 (hex) of the machine secret handed out once at enrolment, which the machine presents at every later one. Empty for a machine whose script cannot keep one yet (see Enroll for that migration); Forget clears it with the whole entry.
+	SecretHash string `json:"-" gorm:"column:secret_hash"`
+
 	EnrolledAt time.Time  `json:"enrolledAt"`
 	LastSeen   *time.Time `json:"lastSeen"`
 }

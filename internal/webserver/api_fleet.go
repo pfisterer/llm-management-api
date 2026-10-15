@@ -233,7 +233,7 @@ func (s *Server) blockMachine(c *gin.Context) { s.setBlocked(c, true) }
 // unblockMachine godoc
 //
 //	@ID			unblockMachine
-//	@Summary	Unblock a machine
+//	@Summary	Unblock a machine; for a new machine awaiting approval (pending) this is the approval
 //	@Tags		fleet
 //	@Security	BearerAuth
 //	@Param		serial	path	string	true	"Serial number"
@@ -311,7 +311,7 @@ func (s *Server) setFleetModel(c *gin.Context) {
 //
 //	@ID			forgetMachine
 //	@Summary		Remove a machine from the registry
-//	@Description	For decommissioned devices. A machine that boots again re-enrols with a NEW address; to keep it out, block it instead.
+//	@Description	For decommissioned devices, and the reset that lets a machine enrol afresh (lost machine secret, new WireGuard key without its secret, change of transport or apiBase). A machine that boots again enrols as a new one: it awaits approval and then gets a NEW address. To keep it out, block it instead.
 //	@Tags			fleet
 //	@Security		BearerAuth
 //	@Param			serial	path	string	true	"Serial number"

@@ -55,6 +55,10 @@ func MachineRouter(svc *fleet.Service, classifier *classify.Service, log *zap.Su
 		case err != nil:
 			log.Errorw("enrolment failed", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		case resp.Pending:
+			// 202: recorded, nothing to configure until a fleet admin approves it. The word "blocked" is for scripts from before approval existed: they treat such an answer as a decision, not as a failure.
+			c.JSON(http.StatusAccepted, gin.H{"status": "pending", "name": resp.Name, "reenrollSeconds": resp.ReenrollSeconds, "machineSecret": resp.MachineSecret,
+				"message": "machine is blocked until a fleet admin approves it (pending)"})
 		default:
 			c.JSON(http.StatusOK, resp)
 		}

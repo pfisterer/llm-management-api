@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,40 @@ func testService(t *testing.T, mutate func(*Config)) (*Service, *MemoryStore, st
 		mutate(&cfg)
 	}
 	st := NewMemoryStore()
-	return NewService(cfg, wg, st, NewScripts(dir)), st, dir
+	svc := NewService(cfg, wg, st, NewScripts(dir))
+	svc.lookup = fakeDNS
+	return svc, st, dir
+}
+
+// dns is what fakeDNS answers; tests change it to rebind a name.
+var dns = map[string][]string{"gpu.example": {"141.72.1.10", "2001:7c7:2000::10"}, "inner.example": {"141.72.1.11", "10.43.0.10"}}
+
+func fakeDNS(_ context.Context, host string) ([]netip.Addr, error) {
+	var out []netip.Addr
+	for _, a := range dns[host] {
+		out = append(out, netip.MustParseAddr(a))
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no such host")
+	}
+	return out, nil
+}
+
+// join enrols a new machine and approves it, as an admin would, and returns the answer of its first enrolment after the approval.
+func join(t *testing.T, svc *Service, req EnrollRequest) EnrollResponse {
+	t.Helper()
+	ctx := context.Background()
+	if r, err := svc.Enroll(ctx, req); err != nil || !r.Pending {
+		t.Fatalf("first enrolment of %v must be pending: %+v %v", req["serial"], r, err)
+	}
+	if err := svc.SetBlocked(ctx, req.str("serial"), false); err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.Enroll(ctx, req)
+	if err != nil {
+		t.Fatalf("enrolment after approval: %v", err)
+	}
+	return r
 }
 
 func mac(serial, key, host string, ram int) EnrollRequest {
@@ -53,10 +87,7 @@ func status(err error) int {
 func TestEnrollNewAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	svc, st, _ := testService(t, nil)
-	r, err := svc.Enroll(ctx, mac("XL45R9YKW7", key1, "wimac02.local", 49152))
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := join(t, svc, mac("XL45R9YKW7", key1, "wimac02.local", 49152))
 	if r.Address != "10.90.4.1" || r.Name != "wimac02" || r.Profile.Name != "l" || r.Profile.Model != "big" ||
 		r.Endpoint != "wg6.example:51820" || r.HubPublicKey != "HUB=" || r.PresharedKey == "" ||
 		r.ScriptBaseURL != "https://enroll.example/scripts/" || !strings.Contains(r.ScriptManifest, "dhbw-llm-enroll.sh:") {
@@ -81,8 +112,8 @@ func TestEnrollRules(t *testing.T) {
 	if _, err := svc.Enroll(ctx, mac("SERIAL0001", "notakey", "x", 49152)); status(err) != 400 {
 		t.Fatalf("bad key: %v", err)
 	}
-	if _, err := svc.Enroll(ctx, mac("SERIAL0001", key0, "x", 49152)); err != nil {
-		t.Fatalf("key ending in 0= must be accepted: %v", err)
+	if r := join(t, svc, mac("SERIAL0001", key0, "x", 49152)); r.Address == "" {
+		t.Fatalf("key ending in 0= must be accepted: %+v", r)
 	}
 	if _, err := svc.Enroll(ctx, mac("SERIAL0002", key0, "y", 49152)); status(err) != 409 {
 		t.Fatalf("key of another machine: %v", err)
@@ -102,9 +133,8 @@ func TestEnrollRules(t *testing.T) {
 		t.Fatalf("direct without api key: %v", err)
 	}
 	direct["apiKey"] = "secret"
-	r, err := svc.Enroll(ctx, direct)
-	if err != nil || r.Address != "" || r.Endpoint != "" || r.Transport != "direct" {
-		t.Fatalf("direct: %+v %v", r, err)
+	if r := join(t, svc, direct); r.Address != "" || r.Endpoint != "" || r.Transport != "direct" {
+		t.Fatalf("direct: %+v", r)
 	}
 	// Foreign hardware needs a contact on first enrolment.
 	if _, err := svc.Enroll(ctx, EnrollRequest{"serial": "LINUXBOX02", "publicKey": key2, "ramMb": 64000.0, "controls": false}); status(err) != 400 {
@@ -115,11 +145,16 @@ func TestEnrollRules(t *testing.T) {
 func TestNamesAndPool(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := testService(t, func(c *Config) { c.Pool = "10.90.4.0/30" }) // two host addresses
-	a, _ := svc.Enroll(ctx, mac("SERIAL0001", key1, "wimac", 49152))
-	b, _ := svc.Enroll(ctx, mac("SERIAL0002", key2, "WIMAC", 49152))
+	a := join(t, svc, mac("SERIAL0001", key1, "wimac", 49152))
+	b := join(t, svc, mac("SERIAL0002", key2, "WIMAC", 49152))
 	if a.Name != "wimac" || b.Name != "wimac-2" || a.Address != "10.90.4.1" || b.Address != "10.90.4.2" {
 		t.Fatalf("names/addresses: %+v %+v", a, b)
 	}
+	// A pending machine takes no address; the pool runs out at its approval.
+	if _, err := svc.Enroll(ctx, mac("SERIAL0003", key0, "c", 49152)); err != nil {
+		t.Fatalf("pending with a full pool: %v", err)
+	}
+	_ = svc.SetBlocked(ctx, "SERIAL0003", false)
 	if _, err := svc.Enroll(ctx, mac("SERIAL0003", key0, "c", 49152)); status(err) != 507 {
 		t.Fatalf("pool exhaustion: %v", err)
 	}
@@ -128,12 +163,12 @@ func TestNamesAndPool(t *testing.T) {
 func TestSitesHubAndModels(t *testing.T) {
 	ctx := context.Background()
 	svc, st, _ := testService(t, nil)
-	_, _ = svc.Enroll(ctx, mac("SERIAL0001", key1, "ok", 49152))
+	join(t, svc, mac("SERIAL0001", key1, "ok", 49152))
 	busy := mac("SERIAL0002", key2, "busy", 49152)
 	busy["busy"] = true
-	_, _ = svc.Enroll(ctx, busy)
-	_, _ = svc.Enroll(ctx, mac("OFF00001", key0, "off", 49152)) // override enabled:false
-	_, _ = svc.Enroll(ctx, EnrollRequest{"serial": "LINUXBOX01", "transport": "direct", "apiBase": "https://gpu.example/v1", "apiKey": "k", "ramMb": 64000.0})
+	join(t, svc, busy)
+	join(t, svc, mac("OFF00001", key0, "off", 49152)) // override enabled:false
+	join(t, svc, EnrollRequest{"serial": "LINUXBOX01", "transport": "direct", "apiBase": "https://gpu.example/v1", "apiKey": "k", "ramMb": 64000.0})
 
 	sites, _ := svc.Sites(ctx)
 	names := map[string]Site{}
@@ -165,7 +200,7 @@ func TestSitesHubAndModels(t *testing.T) {
 func TestExtraSites(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := testService(t, nil)
-	_, _ = svc.Enroll(ctx, mac("SERIAL0001", key1, "ok", 49152))
+	join(t, svc, mac("SERIAL0001", key1, "ok", 49152))
 	svc.AddSites(func(context.Context) ([]Site, error) {
 		return []Site{{Name: "gpu-gap-node", Weight: 1, Transport: "direct", APIBase: "https://inference.example/gap-node/v1", APIKey: "k"}}, nil
 	})
@@ -291,8 +326,8 @@ func TestSetModel(t *testing.T) {
 		}
 		return 0, ErrUnknownModel
 	})
-	_, _ = svc.Enroll(ctx, mac("SERIAL0001", key1, "a", 49152))
-	_, _ = svc.Enroll(ctx, mac("SERIAL0002", key2, "b", 24000))
+	join(t, svc, mac("SERIAL0001", key1, "a", 49152))
+	join(t, svc, mac("SERIAL0002", key2, "b", 24000))
 	if _, err := svc.SetModel(ctx, []string{"SERIAL0001"}, "typo:9b"); !errors.Is(err, ErrUnknownModel) {
 		t.Errorf("unknown model accepted: %v", err)
 	}

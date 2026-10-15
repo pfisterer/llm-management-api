@@ -27,9 +27,9 @@ type HubPeer struct {
 	PresharedKey string `json:"presharedKey"`
 }
 
-// HubPeers lists tunnelled, unblocked machines. Direct machines have no key:
+// HubPeers lists tunnelled, unblocked (and so approved) machines. Direct machines have no key:
 // a peer without PublicKey would make `wg syncconf` reject the whole file and
-// drop every other peer's connection.
+// drop every other peer's connection. Neither has a machine that was approved but has not enrolled since (no address, no preshared key yet).
 func (s *Service) HubPeers(ctx context.Context) (map[string]any, error) {
 	peers, err := s.store.List(ctx)
 	if err != nil {
@@ -37,7 +37,7 @@ func (s *Service) HubPeers(ctx context.Context) (map[string]any, error) {
 	}
 	out := []HubPeer{}
 	for _, p := range peers {
-		if p.Blocked || p.Transport == "direct" {
+		if p.Blocked || p.Pending || p.Transport == "direct" || p.PublicKey == "" || p.Address == "" || p.PresharedKey == "" {
 			continue
 		}
 		out = append(out, HubPeer{p.Name, p.Serial, p.Address, p.PublicKey, p.PresharedKey})
@@ -60,9 +60,9 @@ type Site struct {
 	APIKey        string         `json:"apiKey"`
 }
 
-// Sites lists machines that should receive work: not blocked, not switched
+// Sites lists machines that should receive work: not blocked or pending, not switched
 // off by override, and not busy (the gate stopped the service because someone
-// works at the machine — it must not be woken by health checks either).
+// works at the machine — it must not be woken by health checks either). A direct machine's apiBase is checked again (it was at enrolment): an entry from before the check, or a name that now resolves into the cluster or the campus network, is left out.
 func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 	peers, err := s.store.List(ctx)
 	if err != nil {
@@ -74,7 +74,13 @@ func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 	}
 	out := []Site{}
 	for _, p := range peers {
-		if p.Blocked || !p.Enabled || p.Busy {
+		if p.Blocked || p.Pending || !p.Enabled || p.Busy {
+			continue
+		}
+		if p.Transport == "direct" && s.apiBaseProblem(ctx, p.APIBase, false) != "" {
+			continue
+		}
+		if p.Transport != "direct" && p.Address == "" {
 			continue
 		}
 		weight := p.Weight
@@ -155,7 +161,9 @@ type PeerView struct {
 	Canary         bool       `json:"canary"`
 	LastSeen       *time.Time `json:"last_seen"`
 	Blocked        bool       `json:"blocked"`
-	State          string     `json:"state" enums:"aktiv,ohne Rückmeldung,gesperrt"`
+	Pending        bool       `json:"pending"`    // new machine awaiting approval (also blocked); unblocking approves it
+	HasSecret      bool       `json:"has_secret"` // the machine keeps a machine secret; false = recognised by its key only (script from before the secret)
+	State          string     `json:"state" enums:"aktiv,ohne Rückmeldung,gesperrt,wartet auf Freigabe"`
 	QuietSeconds   int        `json:"quiet_seconds"`
 }
 
@@ -251,6 +259,9 @@ func (s *Service) View(ctx context.Context, health HealthSource, mat Material) (
 		if p.Blocked {
 			state = "gesperrt"
 		}
+		if p.Pending {
+			state = "wartet auf Freigabe"
+		}
 		transport := p.Transport
 		if transport == "" {
 			transport = "wireguard"
@@ -266,7 +277,7 @@ func (s *Service) View(ctx context.Context, health HealthSource, mat Material) (
 			Serving: append([]string{}, hp.Models...), Inference: inference, InferenceError: hp.Error, Gate: gate,
 			Enabled: p.Enabled, Busy: p.Busy, Controls: p.Controls, ScriptState: s.scripts.State(s.cfg, p),
 			PkgVersion: p.PkgVersion, Canary: slices.Contains(s.cfg.SelfUpdateCanary, p.Serial), LastSeen: p.LastSeen,
-			Blocked: p.Blocked, State: state, QuietSeconds: quiet,
+			Blocked: p.Blocked, Pending: p.Pending, HasSecret: p.SecretHash != "", State: state, QuietSeconds: quiet,
 		})
 	}
 	if v.Peers == nil {
