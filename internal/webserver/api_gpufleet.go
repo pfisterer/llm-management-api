@@ -99,22 +99,23 @@ func (s *Server) putGPUNode(c *gin.Context) {
 	s.getGPUFleet(c)
 }
 
-// GPUPoolRequest names a pool.
+// GPUPoolRequest names a pool. RenameTo gives an existing pool a new id: its classes, their tree resources, projects and booked usage move along.
 type GPUPoolRequest struct {
-	Name string `json:"name" example:"Wirtschaftsinformatik"`
-	Lend bool   `json:"lend"`
+	Name     string `json:"name" example:"Wirtschaftsinformatik"`
+	Lend     bool   `json:"lend"`
+	RenameTo string `json:"rename_to,omitempty" example:"ma-arm64"`
 }
 
 // putGPUPool godoc
 //
 //	@ID				putGPUPool
 //	@Summary		Create or rename a GPU pool
-//	@Description	For admins: a pool is who GPUs are for — "allgemein", or GPUs of one group, granted in the tree only to that group's budgets. The id is fixed once created (it becomes part of the tree resources).
+//	@Description	For admins: a pool is who GPUs are for — "allgemein", or GPUs of one group, granted in the tree only to that group's budgets. With rename_to the pool gets a new id; its classes are renamed and the tree, the projects and the booked usage follow.
 //	@Tags			gpu
 //	@Accept			json
 //	@Produce		json
 //	@Security		BearerAuth
-//	@Param			id		path		string			true	"pool id (2–20 lower-case letters or digits)"
+//	@Param			id		path		string			true	"pool id (2–20 lower-case letters, digits and single hyphens)"
 //	@Param			body	body		GPUPoolRequest	true	"pool"
 //	@Success		200		{object}	GPUFleetResponse
 //	@Failure		400		{object}	ErrorResponse
@@ -128,6 +129,14 @@ func (s *Server) putGPUPool(c *gin.Context) {
 	}
 	if !s.fleetDone(c, s.gpu.SavePool(c.Request.Context(), gpu.Pool{ID: c.Param("id"), Name: req.Name, Lend: req.Lend})) {
 		return
+	}
+	if to := strings.TrimSpace(req.RenameTo); to != "" && to != c.Param("id") {
+		if !s.fleetDone(c, s.gpu.RenamePool(c.Request.Context(), c.Param("id"), to)) {
+			return
+		}
+		if err := s.gpu.ReconcileGapFillers(c.Request.Context()); err != nil {
+			s.log.Warnw("gpu gap fillers after pool rename", "error", err)
+		}
 	}
 	s.getGPUFleet(c)
 }

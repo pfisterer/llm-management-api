@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"sort"
@@ -89,6 +90,7 @@ type FleetStore interface {
 	DeletePool(ctx context.Context, id string) error
 	Classes(ctx context.Context) ([]GPUClass, error)
 	SaveClass(ctx context.Context, c GPUClass) error
+	DeleteClass(ctx context.Context, id string) error
 	Assignments(ctx context.Context) ([]NodeAssignment, error)
 	SaveAssignment(ctx context.Context, a NodeAssignment) error
 	DeleteAssignment(ctx context.Context, node string) error
@@ -152,6 +154,13 @@ func (m *MemoryFleetStore) SaveClass(_ context.Context, c GPUClass) error {
 	return nil
 }
 
+func (m *MemoryFleetStore) DeleteClass(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.classes, id)
+	return nil
+}
+
 func (m *MemoryFleetStore) Assignments(context.Context) ([]NodeAssignment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -202,6 +211,10 @@ func (g *GormFleetStore) Classes(ctx context.Context) ([]GPUClass, error) {
 
 func (g *GormFleetStore) SaveClass(ctx context.Context, c GPUClass) error {
 	return g.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&c).Error
+}
+
+func (g *GormFleetStore) DeleteClass(ctx context.Context, id string) error {
+	return g.db.WithContext(ctx).Delete(&GPUClass{}, "id = ?", id).Error
 }
 
 func (g *GormFleetStore) Assignments(ctx context.Context) ([]NodeAssignment, error) {
@@ -470,6 +483,111 @@ func (s *Service) SavePool(ctx context.Context, p Pool) error {
 		p.CreatedAt = time.Now()
 	}
 	return s.fleet.SavePool(ctx, p)
+}
+
+// RenamePool gives a pool a new id. Its classes become <new>-<tier> and remember the old id in Replaces: the tree moves its amounts over, the projects their classes and the booked usage (OnClassRenamed). Its nodes follow, and the Kueue objects of the old classes go once the new ones stand.
+func (s *Service) RenamePool(ctx context.Context, old, new string) error {
+	if s.fleet == nil {
+		return &ErrFleet{"GPU-Verwaltung ist aus."}
+	}
+	if old == DefaultPool {
+		return &ErrFleet{"Der Pool „general“ behält sein Kürzel."}
+	}
+	if !poolIDPattern.MatchString(new) || len(new) > 20 {
+		return &ErrFleet{"Kürzel des Pools: Kleinbuchstaben, Ziffern und einzelne Bindestriche, beginnend mit einem Buchstaben, nicht auf Bindestrich endend, 2–20 Zeichen (z. B. mannheim-arm64). Unterstriche gehen nicht, das Kürzel landet in Kubernetes-Namen."}
+	}
+	pools, err := s.fleet.Pools(ctx)
+	if err != nil {
+		return err
+	}
+	var pool *Pool
+	for i := range pools {
+		switch pools[i].ID {
+		case new:
+			return &ErrFleet{fmt.Sprintf("Den Pool „%s“ gibt es schon.", new)}
+		case old:
+			pool = &pools[i]
+		}
+	}
+	if pool == nil {
+		return &ErrFleet{fmt.Sprintf("Den Pool „%s“ gibt es nicht.", old)}
+	}
+	classes, err := s.fleet.Classes(ctx)
+	if err != nil {
+		return err
+	}
+	assigned, err := s.fleet.Assignments(ctx)
+	if err != nil {
+		return err
+	}
+	renamed := *pool
+	renamed.ID = new
+	if err := s.fleet.SavePool(ctx, renamed); err != nil {
+		return err
+	}
+	var gone []string
+	for _, c := range classes {
+		if c.Pool != old {
+			continue
+		}
+		next := GPUClass{ID: new + "-" + c.Tier, Pool: new, Tier: c.Tier, Replaces: c.ID, CreatedAt: c.CreatedAt}
+		if err := s.fleet.DeleteClass(ctx, c.ID); err != nil {
+			return err
+		}
+		if err := s.fleet.SaveClass(ctx, next); err != nil {
+			return err
+		}
+		if s.OnClassRenamed != nil {
+			if err := s.OnClassRenamed(ctx, c.ID, next.ID); err != nil {
+				return fmt.Errorf("class %s: %w", c.ID, err)
+			}
+		}
+		gone = append(gone, c.ID)
+	}
+	for _, a := range assigned {
+		if a.Pool == old {
+			a.Pool = new
+			a.UpdatedAt = time.Now()
+			if err := s.fleet.SaveAssignment(ctx, a); err != nil {
+				return err
+			}
+		}
+	}
+	if err := s.fleet.DeletePool(ctx, old); err != nil {
+		return err
+	}
+	s.log.Infow("gpu pool renamed", "from", old, "to", new, "classes", gone)
+	// The new queues first (the other classes of the tier stop naming the old flavor), then the old objects go; a Kueue finalizer keeps a flavor until nothing uses it.
+	if err := s.ReconcileFleet(ctx); err != nil {
+		s.log.Warnw("gpu fleet after pool rename", "error", err)
+	}
+	return s.removeClassQueues(ctx, gone)
+}
+
+// removeClassQueues deletes the Kueue objects of classes that no longer exist: the LocalQueues of the kernels and of the inference pool, the ClusterQueue and the flavor.
+func (s *Service) removeClassQueues(ctx context.Context, classes []string) error {
+	k, ok := s.pods.(fleetKube)
+	if !ok {
+		return nil
+	}
+	ins := s.cfg.InferenceNamespace
+	if ins == "" {
+		ins = "inference"
+	}
+	var errs []error
+	for _, c := range classes {
+		for _, p := range []string{
+			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + s.kernelNamespace() + "/localqueues/gpu-" + c,
+			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + ins + "/localqueues/inference-" + c,
+			"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-" + c,
+			"/apis/kueue.x-k8s.io/v1beta2/resourceflavors/" + c,
+		} {
+			if err := k.do(ctx, http.MethodDelete, p, nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
+				errs = append(errs, fmt.Errorf("%s: %w", p, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // DeletePool removes a pool that no node and no class uses.

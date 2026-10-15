@@ -225,3 +225,78 @@ func TestFleetLending(t *testing.T) {
 		t.Errorf("lending:\nwi  %s\nall %s", wi, all)
 	}
 }
+
+// A renamed pool takes its classes along: new ids that remember the old ones (the tree, projects and usage follow), its nodes, and the old Kueue objects go.
+func TestRenamePool(t *testing.T) {
+	ctx := context.Background()
+	s, k := fleetTestService()
+	_ = s.SeedFleet(ctx)
+	if err := s.SavePool(ctx, Pool{ID: "maarm64", Name: "Mannheim arm64"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "maarm64", Tier: "large"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReconcileFleet(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-maarm64-large"] == nil {
+		t.Fatalf("queue of the old class missing before: %v", keys(k.objects))
+	}
+	var moved [][2]string
+	s.OnClassRenamed = func(_ context.Context, old, new string) error { moved = append(moved, [2]string{old, new}); return nil }
+
+	var refused *ErrFleet
+	for name, err := range map[string]error{
+		"general":     s.RenamePool(ctx, DefaultPool, "allgemein"),
+		"unknown":     s.RenamePool(ctx, "nope", "ma-arm64"),
+		"taken":       s.RenamePool(ctx, "maarm64", DefaultPool),
+		"invalid new": s.RenamePool(ctx, "maarm64", "ma_arm64"),
+	} {
+		if !errors.As(err, &refused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := s.RenamePool(ctx, "maarm64", "ma-arm64"); err != nil {
+		t.Fatal(err)
+	}
+	classes, _ := s.fleet.Classes(ctx)
+	var got []GPUClass
+	for _, c := range classes {
+		if strings.HasPrefix(c.ID, "ma") {
+			got = append(got, c)
+		}
+	}
+	if len(got) != 1 || got[0].ID != "ma-arm64-large" || got[0].Pool != "ma-arm64" || got[0].Replaces != "maarm64-large" {
+		t.Fatalf("classes after the rename: %+v", got)
+	}
+	if len(moved) != 1 || moved[0] != [2]string{"maarm64-large", "ma-arm64-large"} {
+		t.Errorf("projects and usage moved: %v", moved)
+	}
+	assigned, _ := s.fleet.Assignments(ctx)
+	for _, a := range assigned {
+		if a.Node == "gpu-3" && a.Pool != "ma-arm64" {
+			t.Errorf("node stays in the old pool: %+v", a)
+		}
+	}
+	pools, _ := s.fleet.Pools(ctx)
+	for _, p := range pools {
+		if p.ID == "maarm64" {
+			t.Errorf("old pool kept")
+		}
+		if p.ID == "ma-arm64" && p.Name != "Mannheim arm64" {
+			t.Errorf("name lost: %+v", p)
+		}
+	}
+	if k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-ma-arm64-large"] == nil {
+		t.Errorf("queue of the new class missing")
+	}
+	for _, p := range []string{"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/resourceflavors/maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-maarm64-large"} {
+		if _, ok := k.objects[p]; ok {
+			t.Errorf("%s kept", p)
+		}
+	}
+	if l := k.patches["gpu-3"]; l[labelPool] != "ma-arm64" || l[labelClass] != "ma-arm64-large" {
+		t.Errorf("node labels: %v", l)
+	}
+}

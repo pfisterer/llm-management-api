@@ -68,6 +68,8 @@ type Service struct {
 	ready func(ctx context.Context, e Environment) error
 	// bases are the current bases of the projects' environments at their release (SetBases).
 	bases []string
+	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
+	OnClassRenamed func(ctx context.Context, old, new string) error
 }
 
 // New connects to the GPU cluster's APIs.

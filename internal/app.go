@@ -204,25 +204,33 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			if err != nil {
 				return fmt.Errorf("gpu classes: %w", err)
 			}
-			for _, c := range classes {
-				if c.Replaces == "" || c.Replaces == c.ID {
-					continue
-				}
-				n, err := wsSvc.RenameGPUClass(context.Background(), c.Replaces, c.ID)
+			renameClass := func(ctx context.Context, old, new string) error {
+				n, err := wsSvc.RenameGPUClass(ctx, old, new)
 				if err != nil {
-					return fmt.Errorf("rename GPU class %s: %w", c.Replaces, err)
+					return fmt.Errorf("rename GPU class %s: %w", old, err)
 				}
 				if r, ok := st.usage.(interface {
 					RenameGPUClass(ctx context.Context, old, new string) error
 				}); ok {
-					if err := r.RenameGPUClass(context.Background(), c.Replaces, c.ID); err != nil {
-						return fmt.Errorf("rename GPU class %s in usage: %w", c.Replaces, err)
+					if err := r.RenameGPUClass(ctx, old, new); err != nil {
+						return fmt.Errorf("rename GPU class %s in usage: %w", old, err)
 					}
 				}
 				if n > 0 {
-					log.Infow("GPU class renamed", "from", c.Replaces, "to", c.ID, "projects", n)
+					log.Infow("GPU class renamed", "from", old, "to", new, "projects", n)
+				}
+				return nil
+			}
+			for _, c := range classes {
+				if c.Replaces == "" || c.Replaces == c.ID {
+					continue
+				}
+				if err := renameClass(context.Background(), c.Replaces, c.ID); err != nil {
+					return err
 				}
 			}
+			// A pool renamed while the service runs (GPU administration) moves its classes' projects and usage the same way.
+			gpuSvc.OnClassRenamed = renameClass
 			wsSvc.SetGPUClasses(func(ctx context.Context) ([]workspace.GPUClass, error) {
 				classes, err := gpuSvc.GPUClasses(ctx)
 				out := make([]workspace.GPUClass, 0, len(classes))
