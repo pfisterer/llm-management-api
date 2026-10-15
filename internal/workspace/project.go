@@ -86,6 +86,9 @@ type Project struct {
 
 func (Project) TableName() string { return "workspace_projects" }
 
+// ImagePending tells whether the project's environment is built from Git and has no finished image yet (building or failed): its servers would start in the bare base, so starts wait for the build.
+func (p Project) ImagePending() bool { return p.ImageGitURL != "" && p.ProjectImage == "" }
+
 // Managed tells whether the budget tree manages the project.
 func (p Project) Managed() bool { return p.TreeNode != "" }
 

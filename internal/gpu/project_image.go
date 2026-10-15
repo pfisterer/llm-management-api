@@ -41,7 +41,8 @@ mkdir -p /tmp/dockerfile
   fi
   if [ -f "$dir/environment.yml" ]; then
     echo 'COPY --chown=${NB_UID}:${NB_GID} environment.yml /tmp/dhbw/environment.yml'
-    echo 'RUN mamba env update -n base -f /tmp/dhbw/environment.yml && mamba clean --all -f -y'
+    # The base keeps its Python: a python pin in the file (e.g. python=3.12) cannot be met by updating the base environment, so it is dropped.
+    echo 'RUN sed -i -E "/^[[:space:]]*-[[:space:]]*python([[:space:]]*[<>=!~].*)?[[:space:]]*$/d" /tmp/dhbw/environment.yml && mamba env update -n base -f /tmp/dhbw/environment.yml && mamba clean --all -f -y'
   fi
   if [ -f "$dir/requirements.txt" ]; then
     echo 'COPY --chown=${NB_UID}:${NB_GID} requirements.txt /tmp/dhbw/requirements.txt'

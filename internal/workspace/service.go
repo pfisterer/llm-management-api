@@ -349,6 +349,9 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	if p.NoWorkspaces {
 		return refuse("Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", p.Name)
 	}
+	if p.ImagePending() {
+		return refuse("Die Umgebung von Projekt „%s“ ist noch nicht gebaut. Der Bau und sein Protokoll stehen in den Projekteinstellungen (Workspaces); gestartet werden kann, sobald er fertig ist.", p.Name)
+	}
 	if !p.Allows(r.Profile) {
 		return refuse("Profil %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
 	}

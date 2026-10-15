@@ -338,6 +338,27 @@ func TestRoleOf(t *testing.T) {
 }
 
 // With several GPU classes the start names one, and only a granted one.
+// A project whose environment is built from Git starts only once the build has an image: before, its servers would run in the bare base.
+func TestCheckStartWaitsForTheImage(t *testing.T) {
+	ctx := context.Background()
+	me := []string{"user:a@dhbw.de"}
+	s := service()
+	_, _ = s.create(ctx, Project{Slug: "git", Name: "Git", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, ImageGitURL: "https://github.com/x/y",
+		Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16}}, "admin")
+	err := s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "git", Profile: "cpu", CPU: 1, RAMGB: 2})
+	if err == nil || !strings.Contains(err.Error(), "noch nicht gebaut") {
+		t.Fatalf("without image: %v", err)
+	}
+	p, _ := s.store.Get(ctx, "git")
+	p.ProjectImage = "registry/envs/git:abc"
+	if err := s.store.Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "git", Profile: "cpu", CPU: 1, RAMGB: 2}); err != nil {
+		t.Fatalf("with image: %v", err)
+	}
+}
+
 func TestCheckStartClass(t *testing.T) {
 	ctx := context.Background()
 	me := []string{"user:a@dhbw.de"}

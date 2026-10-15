@@ -60,6 +60,9 @@ type HubProject struct {
 	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
 	EndsAt   *time.Time `json:"ends_at,omitempty"`
 	DeleteAt *time.Time `json:"delete_at,omitempty"`
+	// ImagePending: the environment is built from Git and has no finished image yet; starts are refused until it has. ImageBuild is the build's state (building, failed with its message), when there is one.
+	ImagePending bool                  `json:"image_pending,omitempty"`
+	ImageBuild   *workspace.ImageBuild `json:"image_build,omitempty"`
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -94,7 +97,7 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 			}
 			hubClasses = append(hubClasses, hc)
 		}
-		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt})
+		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild})
 	}
 	return out
 }
