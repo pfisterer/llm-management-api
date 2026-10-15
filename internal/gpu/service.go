@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -286,7 +287,11 @@ type Server struct {
 	Pending string `json:"pending,omitempty"`
 	URL     string `json:"url"`
 	Profile string `json:"profile,omitempty"`
+	Project string `json:"project,omitempty"` // slug of the workspace project it was started in
 	Image   string `json:"image,omitempty"`
+	// When it started and was last active (JupyterHub's view), for the runtime limits of its profile.
+	Started      *time.Time `json:"started,omitempty"`
+	LastActivity *time.Time `json:"last_activity,omitempty"`
 }
 
 // Servers lists the person's servers.
@@ -300,9 +305,12 @@ func (s *Service) Servers(ctx context.Context, user string) ([]Server, error) {
 	}
 	out := []Server{}
 	for name, sv := range u.Servers {
-		srv := Server{Name: name, Ready: sv.Ready, Pending: sv.Pending, URL: strings.TrimRight(s.cfg.JupyterURL, "/") + sv.URL}
+		srv := Server{Name: name, Ready: sv.Ready, Pending: sv.Pending, URL: strings.TrimRight(s.cfg.JupyterURL, "/") + sv.URL, Started: sv.Started, LastActivity: sv.LastActive}
 		if p, ok := sv.UserOptions["profile"].(string); ok {
 			srv.Profile = p
+		}
+		if p, ok := sv.UserOptions["project"].(string); ok {
+			srv.Project = p
 		}
 		if img, ok := sv.UserOptions["image--unlisted-choice"].(string); ok {
 			srv.Image = img
@@ -346,7 +354,7 @@ func (s *Service) StartServer(ctx context.Context, user string, o StartOptions) 
 	if err := s.servers.startServer(ctx, user, name, options); err != nil {
 		return Server{}, err
 	}
-	srv := Server{Name: name, Pending: "spawn", Profile: o.Profile, URL: strings.TrimRight(s.cfg.JupyterURL, "/") + "/user/" + url.PathEscape(user) + "/" + url.PathEscape(name) + "/"}
+	srv := Server{Name: name, Pending: "spawn", Profile: o.Profile, Project: o.Project, URL: strings.TrimRight(s.cfg.JupyterURL, "/") + "/user/" + url.PathEscape(user) + "/" + url.PathEscape(name) + "/"}
 	if list, err := s.Servers(ctx, user); err == nil {
 		for _, sv := range list {
 			if sv.Name == name {

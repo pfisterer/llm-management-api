@@ -15,6 +15,9 @@ type Profile struct {
 	Slug string `json:"slug" example:"gpu"`
 	Name string `json:"name" example:"GPU"`
 	GPU  bool   `json:"gpu,omitempty"`
+	// Runtime limits JupyterHub enforces (same inventory values): the server ends after IdleMinutes without activity, after MaxHours at the latest; 0 when not configured.
+	IdleMinutes int `json:"idle_minutes,omitempty" example:"30"`
+	MaxHours    int `json:"max_hours,omitempty" example:"4"`
 }
 
 // Config is the catalogue (from the inventory, next to the JupyterHub profiles; the GPU classes from the GPU administration). Projects come only from the budget tree (/v1/tree).
