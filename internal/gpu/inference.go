@@ -105,7 +105,8 @@ func (s *Service) InferencePool(ctx context.Context) (InferencePool, error) {
 	}
 	for _, p := range pods {
 		name := p.Metadata.Labels["replica"]
-		if name == "" {
+		// Pods that ended (evicted, completed) stay as records until garbage collected; their deployment already runs a successor.
+		if name == "" || p.Status.Phase == "Failed" || p.Status.Phase == "Succeeded" {
 			continue
 		}
 		ip := InferencePod{Replica: name, Pod: p.Metadata.Name, Site: InferenceSitePrefix + name, Node: p.Spec.NodeName,

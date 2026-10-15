@@ -25,7 +25,8 @@ func TestInferenceReplicas(t *testing.T) {
 		{"metadata":{"name":"c","labels":{"replica":"gated"}},"status":{"conditions":[{"type":"PodScheduled","status":"False"}]}},
 		{"metadata":{"name":"d","labels":{"replica":"starting"}},"status":{"conditions":[{"type":"Ready","status":"False"}]}},
 		{"metadata":{"name":"e","labels":{"replica":"leaving"},"deletionTimestamp":"2026-10-10T10:00:00Z"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
-		{"metadata":{"name":"f","labels":{}},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+		{"metadata":{"name":"f","labels":{}},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+		{"metadata":{"name":"p5","labels":{"replica":"c-start"}},"spec":{"nodeName":"gpu-2"},"status":{"phase":"Failed","reason":"Evicted"}}
 	]`}
 	if !s.InferenceEnabled() {
 		t.Fatal("must be on with URL and pods")
@@ -57,7 +58,7 @@ func TestInferencePool(t *testing.T) {
 	]`}
 	p, err := s.InferencePool(context.Background())
 	if err != nil || !p.Enabled || len(p.Pods) != 4 {
-		t.Fatalf("pool: %+v %v", p, err)
+		t.Fatalf("pool without the evicted pod: %+v %v", p, err)
 	}
 	want := map[string]string{"gap-gpu-1": InferenceReady, "base-l4-3q-0": InferenceWaiting, "c-start": InferenceStarting, "d-leaving": InferenceTerminating}
 	for _, ip := range p.Pods {
