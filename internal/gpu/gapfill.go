@@ -138,6 +138,12 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 			}
 		}
 	}
+	// What each node's model cache keeps; the janitor removes the rest.
+	if pods, err := s.pods.listPods(ctx, ns, "app=vllm"); err != nil {
+		errs = append(errs, err)
+	} else if err := ensureModelCacheKeep(ctx, k, ns, modelCacheKeep(nodes, models, tiers, pods)); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", modelCacheKeepName, err))
+	}
 	return errors.Join(errs...)
 }
 
