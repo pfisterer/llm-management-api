@@ -85,7 +85,9 @@ type Project struct {
 	DeleteAt *time.Time `json:"delete_at,omitempty" gorm:"column:delete_at"`
 	EndsAt   *time.Time `json:"ends_at,omitempty"` // after this day nobody can start in the project
 	// NoWorkspaces: the tree gives the project no workspace resources (LLM tokens only, docs/bauplan.md 8.14); it is then not offered for servers.
-	NoWorkspaces bool      `json:"no_workspaces,omitempty" gorm:"column:no_workspaces"`
+	NoWorkspaces bool `json:"no_workspaces,omitempty" gorm:"column:no_workspaces"`
+	// TreeProfiles: the budget tree grants the server types (Profiles); they are then the tree's like its other fields.
+	TreeProfiles bool      `json:"tree_profiles,omitempty" gorm:"column:tree_profiles"`
 	TreeNode     string    `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
 	CreatedBy    string    `json:"created_by,omitempty"`
 	UpdatedBy    string    `json:"updated_by,omitempty"`

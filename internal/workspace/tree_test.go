@@ -210,3 +210,32 @@ func TestManagerCannotLiftTreeLimits(t *testing.T) {
 		t.Fatalf("member started a server in an LLM-only project: %v", err)
 	}
 }
+
+// The tree grants the server types: exactly those (unknown ones dropped, none = none), and nobody changes them here afterwards; a tree that sends none keeps what the project has.
+func TestTreeProfiles(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	only := []string{"cpu-gpukernel", "gibt-es-nicht"}
+	st, err := s.UpsertFromTree(ctx, "p_kurs", TreeProject{Name: "Kurs", Profiles: &only, Workspaces: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := mustGet(t, s, st.Slug)
+	if !slices.Equal(p.Profiles, []string{"cpu-gpukernel"}) || !p.TreeProfiles {
+		t.Fatalf("profiles %v %v", p.Profiles, p.TreeProfiles)
+	}
+	p.Profiles = []string{"cpu", "gpu", "cpu-gpukernel"}
+	if out, err := s.Update(ctx, p, "admin@dhbw.de", true); err != nil || !slices.Equal(out.Profiles, []string{"cpu-gpukernel"}) {
+		t.Fatalf("admin changed the tree's profiles: %v %v", out.Profiles, err)
+	}
+	none := []string{}
+	_, _ = s.UpsertFromTree(ctx, "p_kurs", TreeProject{Name: "Kurs", Profiles: &none, Workspaces: true})
+	if p := mustGet(t, s, st.Slug); len(p.Profiles) != 0 {
+		t.Fatalf("no grant, still %v", p.Profiles)
+	}
+	// A tree from before server types: the project keeps its own.
+	st2, _ := s.UpsertFromTree(ctx, "p_alt", TreeProject{Name: "Alt", Workspaces: true})
+	if p := mustGet(t, s, st2.Slug); len(p.Profiles) == 0 || p.TreeProfiles {
+		t.Fatalf("old tree: %v %v", p.Profiles, p.TreeProfiles)
+	}
+}

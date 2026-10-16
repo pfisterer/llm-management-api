@@ -36,6 +36,8 @@ type TreeProject struct {
 	DeleteAt *time.Time `json:"delete_at,omitempty"`
 	// Workspaces tells whether the project holds anything of the tree's area workspaces; one with LLM tokens only is no workspace project (docs/bauplan.md 8.14).
 	Workspaces bool `json:"workspaces"`
+	// Profiles are the server types the tree grants the project (availabilities ws-profile-<slug>, from its budgets); then only these, and nobody changes them here. Nil = a tree from before: the project keeps the profiles it has here.
+	Profiles *[]string `json:"profiles,omitempty" example:"cpu,cpu-gpukernel"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -113,7 +115,13 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 		p = Project{Slug: treeSlug(node), TreeNode: node, CreatedBy: "tree",
 			Limits: Limits{ServersPerPerson: 2, CPUPerPerson: 4, RAMGBPerPerson: 16}}
 	}
-	if len(classes) > 0 && len(p.GPUClasses) == 0 {
+	if tp.Profiles != nil {
+		// The tree decides the server types: exactly the ones its budgets grant.
+		p.Profiles, p.TreeProfiles = s.knownProfiles(*tp.Profiles), true
+		if p.Profiles == nil {
+			p.Profiles = []string{}
+		}
+	} else if len(classes) > 0 && len(p.GPUClasses) == 0 {
 		// The first GPUs granted bring the GPU profiles, whether the project is new or grew.
 		for _, pr := range s.cfg.Profiles {
 			if pr.GPU && !slices.Contains(p.Profiles, pr.Slug) {
@@ -121,7 +129,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 			}
 		}
 	}
-	if !exists {
+	if !exists && tp.Profiles == nil {
 		for _, pr := range s.cfg.Profiles {
 			if !pr.GPU && !slices.Contains(p.Profiles, pr.Slug) {
 				p.Profiles = append(p.Profiles, pr.Slug)
@@ -260,6 +268,9 @@ func keepTreeFields(p *Project, cur Project) {
 	p.StorageGB = cur.StorageGB
 	p.DeleteAt = cur.DeleteAt
 	p.NoWorkspaces = cur.NoWorkspaces
+	if cur.TreeProfiles {
+		p.Profiles, p.TreeProfiles = cur.Profiles, true
+	}
 	own := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range cur.Budgets {
 		if b.Tree {
