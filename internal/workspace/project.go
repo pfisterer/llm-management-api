@@ -63,11 +63,13 @@ type Project struct {
 	// ImageDerived tells whether an existing ProjectImage is derived from a base (label BaseLabel of the image at ImageDigest). Any image may be the project's; one that is not derived runs as it is (its own jupyterhub-singleuser), without the GPU kernel (Derived).
 	ImageDerived bool `json:"image_derived,omitempty"`
 	// ImageDigest is what an existing ProjectImage's tag pointed at when it was taken: servers run exactly this image (EffectiveImage), so a moved tag (latest) changes nothing unnoticed and every node runs the same. ImageUpdate is a newer digest the tag points at now (CheckProjectImages), taken with UpdateProjectImage or, with ImageAutoUpdate, by the check itself.
-	ImageDigest     string   `json:"image_digest,omitempty" example:"sha256:4f2a…"`
-	ImageUpdate     string   `json:"image_update,omitempty" example:"sha256:9c1e…"`
-	ImageAutoUpdate bool     `json:"image_auto_update,omitempty"`
-	Limits          Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
-	Budgets         []Budget `json:"budgets" gorm:"serializer:json"`
+	ImageDigest     string `json:"image_digest,omitempty" example:"sha256:4f2a…"`
+	ImageUpdate     string `json:"image_update,omitempty" example:"sha256:9c1e…"`
+	ImageAutoUpdate bool   `json:"image_auto_update,omitempty"`
+	// ImageArchs are the architectures an existing ProjectImage has (linux: amd64, arm64), from its registry along with ImageDigest; empty = amd64.
+	ImageArchs []string `json:"image_archs,omitempty" gorm:"serializer:json"`
+	Limits     Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
+	Budgets    []Budget `json:"budgets" gorm:"serializer:json"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
 	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
 	// LLMMTokens is the project's LLM tokens per 30 days in millions, from the budget tree: one pool (a LiteLLM team) that all members draw from together, not an amount per member.

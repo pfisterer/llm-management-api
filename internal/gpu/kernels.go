@@ -36,6 +36,7 @@ type KernelOwner struct {
 	Profile   string
 	GPUClass  string // chosen at the server's start (label dhbw.cloud/gpu-class, set by the hub); the kernel goes to its queue
 	Image     string
+	Arch      string // the server's node selector kubernetes.io/arch (set by the hub when its image has only that architecture); the kernel keeps it
 	container map[string]any
 	volumes   []any
 }
@@ -182,6 +183,7 @@ func (s *Service) KernelOwnerAt(ctx context.Context, ip string) (*KernelOwner, e
 			}
 		}
 		o.volumes = list(spec, "volumes")
+		o.Arch = str(obj(spec, "nodeSelector"), "kubernetes.io/arch")
 		if o.Profile != SplitProfile || o.Person == "" || o.container == nil {
 			return nil, ErrNoKernelOwner
 		}
@@ -302,6 +304,9 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest) map[string]any {
 	if !s.cfg.Kernels.NoGPU {
 		requests["nvidia.com/gpu"], limits["nvidia.com/gpu"] = "1", "1"
 		spec["tolerations"] = []any{map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}}
+	}
+	if o.Arch != "" {
+		spec["nodeSelector"] = map[string]any{"kubernetes.io/arch": o.Arch}
 	}
 	container := map[string]any{
 		"name":  "kernel",

@@ -276,17 +276,18 @@ func (s *Service) SeedFleet(ctx context.Context) error {
 
 // ClassInfo is a GPU class as the catalogue, the hub and the admin page show it.
 type ClassInfo struct {
-	ID       string  `json:"id" example:"general-medium"`
-	Pool     string  `json:"pool" example:"general"`
-	PoolName string  `json:"pool_name" example:"General"`
-	Tier     string  `json:"tier" example:"medium"`
-	TierName string  `json:"tier_name" example:"medium"`
-	Name     string  `json:"name" example:"General · medium"`
-	Nodes    int     `json:"nodes"`              // assigned nodes, ready or not
-	GPUs     float64 `json:"gpus"`               // GPUs of the ready, schedulable assigned nodes
-	Products string  `json:"products,omitempty"` // GPU types of its nodes, e.g. "NVIDIA-L40S-12Q"
-	Replaces string  `json:"replaces,omitempty"` // the id from before pools this class took over
-	Lends    bool    `json:"lends"`              // its pool lends idle GPUs to the other pools of the tier
+	ID       string   `json:"id" example:"general-medium"`
+	Pool     string   `json:"pool" example:"general"`
+	PoolName string   `json:"pool_name" example:"General"`
+	Tier     string   `json:"tier" example:"medium"`
+	TierName string   `json:"tier_name" example:"medium"`
+	Name     string   `json:"name" example:"General · medium"`
+	Nodes    int      `json:"nodes"`              // assigned nodes, ready or not
+	GPUs     float64  `json:"gpus"`               // GPUs of the ready, schedulable assigned nodes
+	Products string   `json:"products,omitempty"` // GPU types of its nodes, e.g. "NVIDIA-L40S-12Q"
+	Replaces string   `json:"replaces,omitempty"` // the id from before pools this class took over
+	Lends    bool     `json:"lends"`              // its pool lends idle GPUs to the other pools of the tier
+	Archs    []string `json:"archs,omitempty"`    // architectures of its nodes (amd64, arm64)
 }
 
 // GPUClasses lists every class ever created (a class without nodes stays: projects may hold its resources), with its current nodes.
@@ -319,6 +320,7 @@ func (s *Service) GPUClasses(ctx context.Context) ([]ClassInfo, error) {
 		}
 		ci.Name = ci.PoolName + " · " + ci.TierName
 		var products []string
+		ci.Archs = classArchs(nodes, c.ID)
 		for _, n := range nodes {
 			if n.Class != c.ID {
 				continue
@@ -342,7 +344,8 @@ type GPUNode struct {
 	Name     string  `json:"name"`
 	Ready    bool    `json:"ready"` // ready and schedulable
 	Product  string  `json:"product,omitempty"`
-	MemoryGB float64 `json:"memory_gb"` // GPU memory per GPU
+	Arch     string  `json:"arch,omitempty"` // kubernetes.io/arch: amd64, arm64
+	MemoryGB float64 `json:"memory_gb"`      // GPU memory per GPU
 	GPUs     float64 `json:"gpus"`
 	CPU      float64 `json:"cpu"`
 	MemGi    float64 `json:"memory_gi"`
@@ -377,7 +380,7 @@ func (s *Service) GPUNodes(ctx context.Context) ([]GPUNode, error) {
 	}
 	out := make([]GPUNode, 0, len(raw))
 	for _, n := range raw {
-		g := GPUNode{Name: n.Metadata.Name, Product: n.Metadata.Labels["nvidia.com/gpu.product"],
+		g := GPUNode{Name: n.Metadata.Name, Product: n.Metadata.Labels["nvidia.com/gpu.product"], Arch: n.Metadata.Labels["kubernetes.io/arch"],
 			GPUs: parseCPU(n.Status.Allocatable["nvidia.com/gpu"]), CPU: parseCPU(n.Status.Allocatable["cpu"]), MemGi: parseGiB(n.Status.Allocatable["memory"])}
 		if mib := parseCPU(n.Metadata.Labels["nvidia.com/gpu.memory"]); mib > 0 {
 			g.MemoryGB = mib / 1024
@@ -701,7 +704,7 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 				others = append(others, flavorQuota{class: o.ID})
 			}
 		}
-		for _, obj := range []map[string]any{flavorFor(c.ID), clusterQueueFor(c.Tier, quota[c.ID], others), localQueueFor(ns, c.ID)} {
+		for _, obj := range []map[string]any{flavorFor(c.ID, classArchs(nodes, c.ID)), clusterQueueFor(c.Tier, quota[c.ID], others), localQueueFor(ns, c.ID)} {
 			if err := ensureObject(ctx, k, obj); err != nil {
 				errs = append(errs, fmt.Errorf("class %s: %w", c.ID, err))
 			}
@@ -712,11 +715,28 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 
 var gpuToleration = map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}
 
-func flavorFor(class string) map[string]any {
+// classArchs are the architectures of a class's nodes, sorted.
+func classArchs(nodes []GPUNode, class string) []string {
+	var out []string
+	for _, n := range nodes {
+		if n.Class == class && n.Arch != "" && !slices.Contains(out, n.Arch) {
+			out = append(out, n.Arch)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// flavorFor is a class's Kueue flavor. A class of one architecture names it: a pod bound to an architecture (its image has no other) then never gets a flavor of another one when it borrows within the tier.
+func flavorFor(class string, archs []string) map[string]any {
+	labels := map[string]any{labelClass: class}
+	if len(archs) == 1 {
+		labels["kubernetes.io/arch"] = archs[0]
+	}
 	return map[string]any{
 		"apiVersion": "kueue.x-k8s.io/v1beta2", "kind": "ResourceFlavor",
 		"metadata": map[string]any{"name": class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
-		"spec":     map[string]any{"nodeLabels": map[string]any{labelClass: class}, "tolerations": []any{gpuToleration}},
+		"spec":     map[string]any{"nodeLabels": labels, "tolerations": []any{gpuToleration}},
 	}
 }
 

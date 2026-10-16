@@ -300,3 +300,20 @@ func TestRenamePool(t *testing.T) {
 		t.Errorf("node labels: %v", l)
 	}
 }
+
+// A class of one architecture names it in its flavor, so a pod bound to another architecture is never placed on it when borrowing; a mixed or empty class names none.
+func TestFlavorArch(t *testing.T) {
+	nodes := []GPUNode{{Class: "gb10", Arch: "arm64"}, {Class: "mix", Arch: "arm64"}, {Class: "mix", Arch: "amd64"}, {Class: "l4", Arch: "amd64"}}
+	labels := func(c string) map[string]any {
+		return flavorFor(c, classArchs(nodes, c))["spec"].(map[string]any)["nodeLabels"].(map[string]any)
+	}
+	if l := labels("gb10"); l["kubernetes.io/arch"] != "arm64" || l[labelClass] != "gb10" {
+		t.Errorf("gb10 %v", l)
+	}
+	if l := labels("mix"); l["kubernetes.io/arch"] != nil {
+		t.Errorf("mix %v", l)
+	}
+	if l := labels("leer"); l["kubernetes.io/arch"] != nil {
+		t.Errorf("empty %v", l)
+	}
+}

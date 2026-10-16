@@ -332,12 +332,12 @@ func TestCheckProjectImages(t *testing.T) {
 	if err := s.CheckProjectImages(ctx); err == nil {
 		t.Error("unreachable registry not reported")
 	}
-	if images, _ := s.ProjectImages(ctx); slices.ContainsFunc(images, func(i string) bool { return strings.HasPrefix(i, "ghcr.io/kurs/ml") }) {
+	if images := projectImages(ctx, s); slices.ContainsFunc(images, func(i string) bool { return strings.HasPrefix(i, "ghcr.io/kurs/ml") }) {
 		t.Errorf("unreachable image in the prepull: %v", images)
 	}
 	digest["ghcr.io/kurs/ml:latest"] = RegistryImage{Digest: "sha256:c"}
 	_ = s.CheckProjectImages(ctx)
-	if images, _ := s.ProjectImages(ctx); !slices.Contains(images, "ghcr.io/kurs/ml:latest@sha256:c") {
+	if images := projectImages(ctx, s); !slices.Contains(images, "ghcr.io/kurs/ml:latest@sha256:c") {
 		t.Errorf("image back in the prepull: %v", images)
 	}
 
@@ -408,7 +408,7 @@ func TestProjectImageFromGit(t *testing.T) {
 	if p, _ := s.Get(ctx, "kurs"); p.ProjectImage != "reg/envs/kurs:c-v1" {
 		t.Fatalf("after build: %q", p.ProjectImage)
 	}
-	if imgs, _ := s.ProjectImages(ctx); len(imgs) != 1 || imgs[0] != "reg/envs/kurs:c-v1" {
+	if imgs := projectImages(ctx, s); len(imgs) != 1 || imgs[0] != "reg/envs/kurs:c-v1" {
 		t.Fatalf("images %v", imgs)
 	}
 	if _, err := s.RebuildProjectImage(ctx, "kurs"); err != nil || f.started != 2 {
@@ -519,5 +519,45 @@ func TestRenameGPUClass(t *testing.T) {
 	}
 	if n, _ := s.RenameGPUClass(ctx, "l4-3q", "general-small"); n != 0 {
 		t.Errorf("second rename changed %d projects", n)
+	}
+}
+
+// projectImages are the prepull's images without the bases.
+func projectImages(ctx context.Context, s *Service) []string {
+	all, _ := s.PrepullImages(ctx)
+	var out []string
+	for _, a := range all {
+		if !slices.ContainsFunc(s.cfg.Bases, func(b Base) bool { return b.Image == a.Image }) {
+			out = append(out, a.Image)
+		}
+	}
+	return out
+}
+
+func TestPrepullArchs(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	s.cfg.Bases[0].Archs = []string{"amd64", "arm64"}
+	s.SetImageInspector(func(_ context.Context, image string) (RegistryImage, error) {
+		return RegistryImage{Digest: "sha256:" + image[len(image)-1:], Archs: map[bool][]string{true: {"arm64"}, false: nil}[strings.HasSuffix(image, "arm:1")]}, nil
+	})
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	for slug, img := range map[string]string{"arm": "ghcr.io/k/arm:1", "alt": "ghcr.io/k/alt:1", "basis": ""} {
+		_, _ = s.create(ctx, Project{Slug: slug, Profiles: []string{"cpu"}, Members: mgr}, "admin")
+		if _, err := s.Update(ctx, Project{Slug: slug, Members: mgr, ProjectImage: img}, "a@dhbw.de", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string][]string{}
+	all, _ := s.PrepullImages(ctx)
+	for _, a := range all {
+		got[a.Image] = a.Archs
+	}
+	// An image of an architecture keeps it, one from before the architectures were known counts as amd64, a base has its configured ones.
+	if !slices.Equal(got["ghcr.io/k/arm:1@sha256:1"], []string{"arm64"}) || !slices.Equal(got["ghcr.io/k/alt:1@sha256:1"], []string{"amd64"}) || !slices.Equal(got[s.cfg.Bases[0].Image], []string{"amd64", "arm64"}) || all[0].Image != s.cfg.Bases[0].Image {
+		t.Fatalf("prepull images %v", all)
+	}
+	if p, _ := s.Get(ctx, "basis"); !slices.Equal(s.EffectiveArchs(p), s.EffectiveArchs(Project{})) {
+		t.Errorf("base project archs %v", s.EffectiveArchs(p))
 	}
 }

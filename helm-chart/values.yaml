@@ -89,7 +89,7 @@ gpu:
   kernels:
     queue: ""
     noGPU: false
-  # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSet kernel-image-prepull in the workspace namespace, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
+  # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default, archs}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSets kernel-image-prepull and kernel-image-prepull-arm64 in the workspace namespace, one per architecture, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
   workspaces: {}
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:

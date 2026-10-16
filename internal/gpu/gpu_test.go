@@ -1,12 +1,16 @@
 package gpu
 
 import (
+	"slices"
+
 	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 
 	"go.uber.org/zap"
 )
@@ -129,19 +133,26 @@ func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 
 type fakeDaemonSets struct {
 	fakePods
-	cur  map[string]any
+	all  map[string]map[string]any
+	cur  map[string]any // the amd64 one, PrepullName
 	puts int
 }
 
-func (f *fakeDaemonSets) getDaemonSet(context.Context, string, string) (map[string]any, error) {
-	if f.cur == nil {
-		return nil, ErrNotFound
+func (f *fakeDaemonSets) getDaemonSet(_ context.Context, _, name string) (map[string]any, error) {
+	if d, ok := f.all[name]; ok {
+		return d, nil
 	}
-	return f.cur, nil
+	return nil, ErrNotFound
 }
 
-func (f *fakeDaemonSets) putDaemonSet(_ context.Context, _, _ string, ds map[string]any, _ bool) error {
-	f.cur, f.puts = ds, f.puts+1
+func (f *fakeDaemonSets) putDaemonSet(_ context.Context, _, name string, ds map[string]any, _ bool) error {
+	if f.all == nil {
+		f.all = map[string]map[string]any{}
+	}
+	f.all[name], f.puts = ds, f.puts+1
+	if name == PrepullName {
+		f.cur = ds
+	}
 	return nil
 }
 
@@ -229,30 +240,32 @@ func TestEnsurePrepull(t *testing.T) {
 	ctx := context.Background()
 	f := &fakeDaemonSets{}
 	s.pods = f
-	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/b:1", "ghcr.io/k/a:1", "ghcr.io/k/a:1", ""}); err != nil || f.puts != 1 {
+	both := []string{"amd64", "arm64"}
+	base := workspace.ArchImage{Image: "reg/platform/base-python:v2", Archs: both, Base: true}
+	images := []workspace.ArchImage{base, {Image: "ghcr.io/k/b:1", Archs: []string{"amd64"}}, {Image: "ghcr.io/k/a:1", Archs: both}, {Image: "ghcr.io/k/a:1", Archs: both}, {Image: "ghcr.io/k/arm:1", Archs: []string{"arm64"}}, {}}
+	if err := s.EnsurePrepull(ctx, images); err != nil || f.puts != 2 {
 		t.Fatalf("create: %v %d", err, f.puts)
 	}
-	spec := f.cur["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
-	// The first base holds the pod; every other image is an image volume the container mounts (and never runs).
-	hold := spec["containers"].([]any)[0].(map[string]any)
-	volumes := spec["volumes"].([]any)
-	if hold["image"] != s.bases[0] || spec["initContainers"] != nil || len(volumes) != 1+len(s.bases) || len(hold["volumeMounts"].([]any)) != len(volumes) {
-		t.Fatalf("hold %v, volumes %v", hold, volumes)
-	}
-	if ref := volumes[0].(map[string]any)["image"].(map[string]any)["reference"]; ref != "ghcr.io/k/a:1" {
-		t.Errorf("first volume %v", ref)
-	}
-	for _, v := range volumes {
-		if v.(map[string]any)["image"].(map[string]any)["reference"] == s.bases[0] {
-			t.Errorf("hold image also as volume: %v", volumes)
+	// One DaemonSet per architecture, each with the images of its architecture: the first base holds the pod, every other image is an image volume the container mounts (and never runs).
+	for name, want := range map[string][]string{PrepullName: {"ghcr.io/k/a:1", "ghcr.io/k/b:1"}, PrepullName + "-arm64": {"ghcr.io/k/a:1", "ghcr.io/k/arm:1"}} {
+		d := f.all[name]
+		spec := d["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+		hold := spec["containers"].([]any)[0].(map[string]any)
+		var refs []string
+		for _, v := range spec["volumes"].([]any) {
+			refs = append(refs, v.(map[string]any)["image"].(map[string]any)["reference"].(string))
+		}
+		if hold["image"] != base.Image || spec["initContainers"] != nil || !slices.Equal(refs, want) || len(hold["volumeMounts"].([]any)) != len(refs) {
+			t.Fatalf("%s: hold %v, volumes %v", name, hold["image"], refs)
 		}
 	}
 	f.cur["metadata"].(map[string]any)["resourceVersion"] = "7"
-	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/a:1", "ghcr.io/k/b:1"}); err != nil || f.puts != 1 {
+	if err := s.EnsurePrepull(ctx, images); err != nil || f.puts != 2 {
 		t.Fatalf("unchanged list changed the DaemonSet: %v %d", err, f.puts)
 	}
-	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/a:1"}); err != nil || f.puts != 2 || f.cur["metadata"].(map[string]any)["resourceVersion"] != "7" {
-		t.Fatalf("update: %v %d %v", err, f.puts, f.cur["metadata"])
+	// Without a base for arm64 there is nothing to hold its pod: no arm64 DaemonSet is written.
+	if err := s.EnsurePrepull(ctx, []workspace.ArchImage{{Image: base.Image, Archs: []string{"amd64"}, Base: true}, {Image: "ghcr.io/k/arm:1", Archs: []string{"arm64"}}}); err != nil || f.puts != 3 {
+		t.Fatalf("update: %v %d", err, f.puts)
 	}
 }
 

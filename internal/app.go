@@ -235,7 +235,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				classes, err := gpuSvc.GPUClasses(ctx)
 				out := make([]workspace.GPUClass, 0, len(classes))
 				for _, c := range classes {
-					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces, Lends: c.Lends})
+					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces, Lends: c.Lends, Archs: c.Archs})
 				}
 				return out, err
 			})
@@ -249,7 +249,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
 		wsSvc.SetImageInspector(func(ctx context.Context, image string) (workspace.RegistryImage, error) {
 			img, err := ociClient.Inspect(ctx, image)
-			return workspace.RegistryImage{Digest: img.Digest, Labels: img.Labels}, err
+			return workspace.RegistryImage{Digest: img.Digest, Labels: img.Labels, Archs: img.Archs}, err
 		})
 		wsSvc.SetImageBuilder(gpuSvc)
 		var bases []string
@@ -442,7 +442,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				if err := wsSvc.CheckProjectImages(ctx); err != nil {
 					log.Warnw("project images: checking the tags", "error", err)
 				}
-				if images, err := wsSvc.ProjectImages(ctx); err != nil {
+				if images, err := wsSvc.PrepullImages(ctx); err != nil {
 					log.Warnw("project images: listing projects failed", "error", err)
 				} else if err := gpuSvc.EnsurePrepull(ctx, images); err != nil {
 					log.Warnw("project images: prepull", "error", err)

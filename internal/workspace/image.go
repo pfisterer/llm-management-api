@@ -11,10 +11,26 @@ import (
 
 // The project's environment (docs/bauplan.md 10.12), run by every profile: a base of the catalogue (Config.Bases), a Git repository built on it by the GPU part (ImageBuilder, which hands each finished build to the project: ProjectImageBuilt), or an existing image — derived from a base (label in the registry) with everything, any other as it is, without the GPU kernel. An existing image runs at the digest its tag had when it was taken (ImageDigest); a newer one is offered, not taken silently (CheckProjectImages).
 
-// RegistryImage is an image as its registry has it now: the digest its reference points at and its labels.
+// RegistryImage is an image as its registry has it now: the digest its reference points at, its labels and its architectures.
 type RegistryImage struct {
 	Digest string
 	Labels map[string]string
+	Archs  []string
+}
+
+// ArchImage is an image with the architectures it runs on, for the prepull per architecture; Base marks a base of the catalogue (one of ours, which can run the prepull's idle container).
+type ArchImage struct {
+	Image string
+	Archs []string
+	Base  bool
+}
+
+// archsOr is a list of architectures, amd64 when it names none (images and bases from before architectures were known).
+func archsOr(archs []string) []string {
+	if len(archs) == 0 {
+		return []string{"amd64"}
+	}
+	return archs
 }
 
 // ImageInspector looks an image up in its registry (oci.Client.Inspect); nil = no check, the image runs by its tag.
@@ -95,6 +111,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		return nil
 	}
 	p.ImageGitRef = ""
+	p.ImageArchs = nil
 	if cur.ImageGitURL != "" {
 		s.forgetBuilds(ctx, p.Slug)
 	}
@@ -103,7 +120,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		return nil
 	}
 	if p.ProjectImage == cur.ProjectImage && cur.ImageGitURL == "" {
-		p.ImageDerived, p.ImageDigest, p.ImageUpdate = cur.ImageDerived, cur.ImageDigest, cur.ImageUpdate
+		p.ImageDerived, p.ImageDigest, p.ImageUpdate, p.ImageArchs = cur.ImageDerived, cur.ImageDigest, cur.ImageUpdate, cur.ImageArchs
 		return nil
 	}
 	if !imageRE.MatchString(p.ProjectImage) {
@@ -117,7 +134,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	if err != nil {
 		return refuse("Image %s ist nicht abrufbar (es muss öffentlich sein): %v", p.ProjectImage, err)
 	}
-	p.ImageDigest, p.ImageDerived = img.Digest, derivedFrom(img.Labels)
+	p.ImageDigest, p.ImageDerived, p.ImageArchs = img.Digest, derivedFrom(img.Labels), img.Archs
 	return nil
 }
 
@@ -168,12 +185,12 @@ func (s *Service) CheckProjectImages(ctx context.Context) error {
 		s.unpullable.Delete(p.ProjectImage)
 		switch {
 		case img.Digest == p.ImageDigest:
-			if p.ImageUpdate == "" {
+			if p.ImageUpdate == "" && (len(p.ImageArchs) > 0 || len(img.Archs) == 0) {
 				continue
 			}
-			p.ImageUpdate = "" // the tag went back
+			p.ImageUpdate, p.ImageArchs = "", img.Archs // the tag went back, or the architectures were not known yet
 		case p.ImageDigest == "" || p.ImageAutoUpdate:
-			p.ImageDigest, p.ImageDerived, p.ImageUpdate = img.Digest, derivedFrom(img.Labels), ""
+			p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.ImageArchs = img.Digest, derivedFrom(img.Labels), "", img.Archs
 		case img.Digest == p.ImageUpdate:
 			continue
 		default:
@@ -256,19 +273,27 @@ func sameRepo(a, b string) bool {
 	return norm(a) == norm(b)
 }
 
-// ProjectImages are the images the projects people can start in now run, for pulling them onto the nodes ahead of time.
-func (s *Service) ProjectImages(ctx context.Context) ([]string, error) {
+// PrepullImages are the bases (first, in the order of the catalogue) and the images the projects people can start in now run, each with its architectures, for pulling them onto the nodes ahead of time.
+func (s *Service) PrepullImages(ctx context.Context) ([]ArchImage, error) {
 	list, err := s.store.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []ArchImage
+	add := func(img string, archs []string, base bool) {
+		if img != "" && !slices.ContainsFunc(out, func(a ArchImage) bool { return a.Image == img }) {
+			out = append(out, ArchImage{Image: img, Archs: archsOr(archs), Base: base})
+		}
+	}
+	for _, b := range s.cfg.Bases {
+		add(b.Image, b.Archs, true)
+	}
 	for _, p := range list {
 		if _, broken := s.unpullable.Load(p.ProjectImage); broken && finishedImage(p) {
 			continue
 		}
-		if img := s.EffectiveImage(p); img != "" && p.Active(s.now()) && !slices.Contains(out, img) {
-			out = append(out, img)
+		if p.Active(s.now()) {
+			add(s.EffectiveImage(p), s.EffectiveArchs(p), false)
 		}
 	}
 	return out, nil
@@ -339,6 +364,18 @@ func (s *Service) EffectiveImage(p Project) string {
 	}
 	b, _ := s.base(p.ImageBase)
 	return b.Image
+}
+
+// EffectiveArchs are the architectures the project's environment runs on: an existing image's own, a build from Git amd64 (built on the amd64 build nodes), a base its configured ones.
+func (s *Service) EffectiveArchs(p Project) []string {
+	switch {
+	case finishedImage(p):
+		return archsOr(p.ImageArchs)
+	case p.ImageGitURL != "":
+		return []string{"amd64"}
+	}
+	b, _ := s.base(p.ImageBase)
+	return archsOr(b.Archs)
 }
 
 // ImageLabel names the project's environment for people: the base, plus the repository it is built from, or the finished image.

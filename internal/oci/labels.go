@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -62,10 +63,11 @@ type Client struct {
 
 const manifestTypes = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
 
-// Image is what the registry says about an image reference: the digest the reference points at now (for an image built for several platforms, that of the index) and the labels of its linux/amd64 variant (the platform of the cluster).
+// Image is what the registry says about an image reference: the digest the reference points at now (for an image built for several platforms, that of the index), the labels of its linux/amd64 variant (else of its first one) and the architectures it has for linux (amd64, arm64).
 type Image struct {
 	Digest string
 	Labels map[string]string
+	Archs  []string
 }
 
 // Pinned is the reference fixed to the digest ("repo:tag@sha256:…"): every node runs exactly this image, whatever the tag points at later.
@@ -111,17 +113,21 @@ func (c *Client) Inspect(ctx context.Context, image string) (Image, error) {
 		sum := sha256.Sum256(body)
 		digest = "sha256:" + hex.EncodeToString(sum[:])
 	}
+	var archs []string
 	if m.Config.Digest == "" {
-		// An index: the variant for the cluster's platform.
+		// An index: its linux platforms (attestations have the platform unknown), labels from the amd64 variant if there is one.
 		variant := ""
 		for _, x := range m.Manifests {
-			if x.Platform.OS == "linux" && x.Platform.Architecture == "amd64" {
+			if x.Platform.OS != "linux" || x.Platform.Architecture == "" || x.Platform.Architecture == "unknown" || slices.Contains(archs, x.Platform.Architecture) {
+				continue
+			}
+			archs = append(archs, x.Platform.Architecture)
+			if variant == "" || x.Platform.Architecture == "amd64" {
 				variant = x.Digest
-				break
 			}
 		}
 		if variant == "" {
-			return Image{}, fmt.Errorf("image %s has no linux/amd64 variant", image)
+			return Image{}, fmt.Errorf("image %s has no linux variant", image)
 		}
 		m.Manifests = nil
 		if err := s.getJSON(ctx, "manifests/"+variant, manifestTypes, &m); err != nil {
@@ -132,7 +138,8 @@ func (c *Client) Inspect(ctx context.Context, image string) (Image, error) {
 		return Image{}, fmt.Errorf("image %s: manifest without config", image)
 	}
 	var cfg struct {
-		Config struct {
+		Architecture string `json:"architecture"`
+		Config       struct {
 			Labels map[string]string `json:"Labels"`
 		} `json:"config"`
 	}
@@ -142,7 +149,11 @@ func (c *Client) Inspect(ctx context.Context, image string) (Image, error) {
 	if cfg.Config.Labels == nil {
 		cfg.Config.Labels = map[string]string{}
 	}
-	return Image{Digest: digest, Labels: cfg.Config.Labels}, nil
+	if archs == nil && cfg.Architecture != "" {
+		archs = []string{cfg.Architecture}
+	}
+	slices.Sort(archs)
+	return Image{Digest: digest, Labels: cfg.Config.Labels, Archs: archs}, nil
 }
 
 // session is one image's requests, with the anonymous token the registry hands out on the first 401.

@@ -269,7 +269,7 @@ const PrepullName = "kernel-image-prepull"
 const prepullSpecRevision = "3"
 
 // prepullDaemonSet keeps hold (a base, which has sleep) running and mounts every other image as an image volume: the kubelet pulls them and keeps them while the pod runs, but never starts them, so an image without a shell (distroless) or with a broken entrypoint holds up nothing. Images whose registry does not answer are left out before (workspace.Service.ProjectImages), since the pod starts only when all its volumes are pulled.
-func prepullDaemonSet(ns, hold string, images []string) map[string]any {
+func prepullDaemonSet(ns, name, arch, hold string, images []string) map[string]any {
 	// The spec revision goes into the hash, so a change of the spec below reaches a DaemonSet whose images stayed the same.
 	sum := sha256.Sum256([]byte(prepullSpecRevision + "\n" + hold + "\n" + strings.Join(images, "\n")))
 	security := map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []any{"ALL"}}}
@@ -281,15 +281,15 @@ func prepullDaemonSet(ns, hold string, images []string) map[string]any {
 		// The kubelet pulls only volumes a container mounts.
 		mounts = append(mounts, map[string]any{"name": name, "mountPath": "/prepull/" + name, "readOnly": true})
 	}
-	labels := map[string]any{"app": PrepullName}
+	labels := map[string]any{"app": name}
 	podSpec := map[string]any{
 		"automountServiceAccountToken": false,
 		"enableServiceLinks":           false,
 		"affinity": map[string]any{"nodeAffinity": map[string]any{"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
-			// The course images are amd64 only: an arm64 node (GB10) would hang in ErrImagePull.
+			// Only nodes of the DaemonSet's architecture: an image without a variant for the node would hang in ErrImagePull.
 			"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{
 				map[string]any{"key": "dhbw.cloud/node-type", "operator": "In", "values": []any{"cpu", "gpu"}},
-				map[string]any{"key": "kubernetes.io/arch", "operator": "In", "values": []any{"amd64"}},
+				map[string]any{"key": "kubernetes.io/arch", "operator": "In", "values": []any{arch}},
 			}}},
 		}}},
 		"tolerations": []any{map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
@@ -305,7 +305,7 @@ func prepullDaemonSet(ns, hold string, images []string) map[string]any {
 		"apiVersion": "apps/v1",
 		"kind":       "DaemonSet",
 		"metadata": map[string]any{
-			"name": PrepullName, "namespace": ns, "labels": labels,
+			"name": name, "namespace": ns, "labels": labels,
 			"annotations": map[string]any{"dhbw.cloud/images": hex.EncodeToString(sum[:8])},
 		},
 		"spec": map[string]any{
@@ -335,29 +335,58 @@ func (k *kube) putDaemonSet(ctx context.Context, ns, name string, ds map[string]
 	return k.do(ctx, http.MethodPut, "/apis/apps/v1/namespaces/"+ns+"/daemonsets/"+name, ds, nil)
 }
 
-// EnsurePrepull keeps the DaemonSet PrepullName at the bases plus the given images; it changes it only when the list changed.
-func (s *Service) EnsurePrepull(ctx context.Context, images []string) error {
+// EnsurePrepull keeps one DaemonSet per architecture (kernel-image-prepull for amd64, kernel-image-prepull-<arch> for the others) that holds the images of that architecture on its CPU and GPU nodes: the first base of it keeps the pod running (one of ours, with sleep and user 1000), the others are image volumes. An architecture without a base gets none.
+func (s *Service) EnsurePrepull(ctx context.Context, images []workspace.ArchImage) error {
 	ds, ok := s.pods.(daemonSets)
-	if !ok || len(s.bases) == 0 {
+	if !ok {
 		return nil
 	}
 	ns := s.cfg.WorkspaceNamespace
 	if ns == "" {
 		ns = "jupyterhub"
 	}
-	// The first base keeps the pod running; everything else is an image volume.
-	hold := s.bases[0]
-	var list []string
-	for _, img := range append(slices.Clone(s.bases), images...) {
-		if img = strings.TrimSpace(img); img != "" && img != hold && !slices.Contains(list, img) {
-			list = append(list, img)
+	var errs []error
+	for _, arch := range prepullArchs {
+		hold := ""
+		for _, img := range images {
+			if img.Base && slices.Contains(img.Archs, arch) {
+				hold = strings.TrimSpace(img.Image)
+				break
+			}
+		}
+		var list []string
+		for _, img := range images {
+			name := strings.TrimSpace(img.Image)
+			if name != "" && name != hold && slices.Contains(img.Archs, arch) && !slices.Contains(list, name) {
+				list = append(list, name)
+			}
+		}
+		if hold == "" {
+			continue
+		}
+		slices.Sort(list)
+		if err := s.putPrepull(ctx, ds, ns, prepullName(arch), prepullDaemonSet(ns, prepullName(arch), arch, hold, list)); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	slices.Sort(list)
-	want := prepullDaemonSet(ns, hold, list)
-	cur, err := ds.getDaemonSet(ctx, ns, PrepullName)
+	return errors.Join(errs...)
+}
+
+// prepullArchs are the architectures of the cluster's nodes.
+var prepullArchs = []string{"amd64", "arm64"}
+
+// prepullName is the DaemonSet of an architecture; amd64 keeps the name from before there were others.
+func prepullName(arch string) string {
+	if arch == "amd64" {
+		return PrepullName
+	}
+	return PrepullName + "-" + arch
+}
+
+func (s *Service) putPrepull(ctx context.Context, ds daemonSets, ns, name string, want map[string]any) error {
+	cur, err := ds.getDaemonSet(ctx, ns, name)
 	if errors.Is(err, ErrNotFound) {
-		return ds.putDaemonSet(ctx, ns, PrepullName, want, true)
+		return ds.putDaemonSet(ctx, ns, name, want, true)
 	}
 	if err != nil {
 		return err
@@ -369,5 +398,5 @@ func (s *Service) EnsurePrepull(ctx context.Context, images []string) error {
 		return nil
 	}
 	want["metadata"].(map[string]any)["resourceVersion"] = meta["resourceVersion"]
-	return ds.putDaemonSet(ctx, ns, PrepullName, want, false)
+	return ds.putDaemonSet(ctx, ns, name, want, false)
 }

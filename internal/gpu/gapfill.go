@@ -182,8 +182,10 @@ func (s *Service) gapDeployment(ns string, r gapReplica, m CatalogModel) map[str
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": podLabels},
 				"spec": map[string]any{
-					// A gap filler belongs to its node.
-					"nodeSelector": map[string]any{"kubernetes.io/hostname": r.node},
+					// A gap filler belongs to its node; its class in the selector as well, so Kueue only gives it its own flavor: one borrowed from another pool of the tier (while its own GPU is busy) has other nodes and would leave it pending for good.
+					"nodeSelector": map[string]any{"kubernetes.io/hostname": r.node, labelClass: r.class},
+					// Without the variables Kubernetes sets for every service of the namespace: vLLM warns about each one it does not know.
+					"enableServiceLinks": false,
 					// Kueue adds the flavor's toleration on admission; set here too, so the scheduler does not wait out a backoff after a preemption.
 					"tolerations":                   []any{gpuToleration},
 					"terminationGracePeriodSeconds": 60,

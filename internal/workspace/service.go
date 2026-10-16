@@ -30,15 +30,16 @@ type Config struct {
 
 // GPUClass is a combination of pool and tier of the GPU administration (docs/bauplan.md 10.13): what the tree grants (ws-gpus-<id>, ws-gpu-hours-<id>) and what a start chooses.
 type GPUClass struct {
-	ID       string  `json:"id" example:"general-medium"`
-	Name     string  `json:"name" example:"General · medium"`
-	Pool     string  `json:"pool" example:"general"`
-	PoolName string  `json:"pool_name" example:"General"`
-	Tier     string  `json:"tier" example:"medium"`
-	TierName string  `json:"tier_name" example:"medium"`
-	Nodes    int     `json:"nodes"`
-	GPUs     float64 `json:"gpus"` // GPUs of its ready nodes right now
-	Products string  `json:"products,omitempty"`
+	ID       string   `json:"id" example:"general-medium"`
+	Name     string   `json:"name" example:"General · medium"`
+	Pool     string   `json:"pool" example:"general"`
+	PoolName string   `json:"pool_name" example:"General"`
+	Tier     string   `json:"tier" example:"medium"`
+	TierName string   `json:"tier_name" example:"medium"`
+	Nodes    int      `json:"nodes"`
+	GPUs     float64  `json:"gpus"`            // GPUs of its ready nodes right now
+	Archs    []string `json:"archs,omitempty"` // architectures of its nodes (amd64, arm64)
+	Products string   `json:"products,omitempty"`
 	// Replaces is the id from before pools this class took over; the tree renames its resources once.
 	Replaces string `json:"replaces,omitempty"`
 	// Lends: its pool lends idle GPUs to the other pools of the tier.
@@ -86,6 +87,8 @@ type Base struct {
 	Name    string `json:"name" example:"PyTorch"`
 	Image   string `json:"image" example:"registry.gpu.services.dhbw.cloud/platform/base-pytorch:v2.0.0"`
 	Default bool   `json:"default,omitempty"`
+	// Archs are the architectures the base is built for (images.yaml platforms); empty = amd64.
+	Archs []string `json:"archs,omitempty" example:"amd64,arm64"`
 }
 
 // Running is a running (or waiting) workspace pod, for the limits on concurrent use.

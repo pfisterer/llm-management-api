@@ -66,6 +66,8 @@ type HubProject struct {
 	// MaterialGitURL and MaterialGitRef are the project's course material, which the hub checks out into ~/projects/<repo> (empty ref = default branch); empty = none.
 	MaterialGitURL string `json:"material_git_url,omitempty"`
 	MaterialGitRef string `json:"material_git_ref,omitempty"`
+	// ImageArchs are the architectures the environment runs on (amd64, arm64): the hub keeps servers on nodes of these.
+	ImageArchs []string `json:"image_archs"`
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -91,16 +93,22 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 	out := []HubProject{}
 	for _, m := range mine {
 		hubClasses := []HubGPUClass{}
+		archs := ws.EffectiveArchs(m.Project)
 		for _, id := range m.GPUClasses {
 			hc := HubGPUClass{ID: id, Name: id, Available: classes == nil}
+			fits := true
 			for _, cl := range classes {
 				if cl.ID == id {
 					hc.Name, hc.Available = cl.Name, cl.GPUs > 0
+					// A class whose nodes the environment has no image for (an amd64 image, GB10 nodes) is not offered.
+					fits = len(cl.Archs) == 0 || slices.ContainsFunc(cl.Archs, func(a string) bool { return slices.Contains(archs, a) })
 				}
 			}
-			hubClasses = append(hubClasses, hc)
+			if fits {
+				hubClasses = append(hubClasses, hc)
+			}
 		}
-		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef})
+		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs})
 	}
 	return out
 }

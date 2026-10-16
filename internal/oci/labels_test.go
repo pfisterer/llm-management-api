@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -50,7 +51,11 @@ func TestInspect(t *testing.T) {
 		switch r.URL.Path {
 		case "/v2/org/course/manifests/v1", "/v2/org/course/manifests/sha256:index":
 			w.Header().Set("Docker-Content-Digest", "sha256:index")
-			fmt.Fprint(w, `{"manifests":[{"digest":"sha256:arm","platform":{"os":"linux","architecture":"arm64"}},{"digest":"sha256:amd","platform":{"os":"linux","architecture":"amd64"}}]}`)
+			fmt.Fprint(w, `{"manifests":[{"digest":"sha256:arm","platform":{"os":"linux","architecture":"arm64"}},{"digest":"sha256:amd","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:att","platform":{"os":"unknown","architecture":"unknown"}}]}`)
+		case "/v2/org/course/manifests/arm-only":
+			fmt.Fprint(w, `{"config":{"digest":"sha256:armcfg"}}`)
+		case "/v2/org/course/blobs/sha256:armcfg":
+			fmt.Fprint(w, `{"architecture":"arm64","config":{}}`)
 		case "/v2/org/course/manifests/sha256:amd":
 			fmt.Fprint(w, `{"config":{"digest":"sha256:cfg"}}`)
 		case "/v2/org/course/blobs/sha256:cfg":
@@ -64,8 +69,12 @@ func TestInspect(t *testing.T) {
 	c := &Client{HTTP: srv.Client()}
 
 	img, err := c.Inspect(context.Background(), host+"/org/course:v1")
-	if err != nil || img.Labels["cloud.dhbw.base"] != "notebook-v1" || img.Digest != "sha256:index" {
+	if err != nil || img.Labels["cloud.dhbw.base"] != "notebook-v1" || img.Digest != "sha256:index" || !slices.Equal(img.Archs, []string{"amd64", "arm64"}) {
 		t.Fatalf("image = %+v, %v", img, err)
+	}
+	// A single-platform image names its architecture in its config.
+	if one, err := c.Inspect(context.Background(), host+"/org/course:arm-only"); err != nil || !slices.Equal(one.Archs, []string{"arm64"}) {
+		t.Fatalf("single platform = %+v, %v", one, err)
 	}
 	if got := img.Pinned(host + "/org/course:v1"); got != host+"/org/course:v1@sha256:index" {
 		t.Errorf("pinned = %s", got)
