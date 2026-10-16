@@ -83,7 +83,8 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 	want := map[string]gapReplica{}
 	for _, n := range nodes {
 		if m, ok := gapModelFor(n, models, tiers); ok {
-			r := gapReplica{name: "gap-" + n.Name, node: n.Name, class: n.Class, model: m.Key}
+			// Object names without dots: a Service may not have any, and nodes outside the cluster are named by their FQDN (dell-gb10-2.dhbw.cloud).
+			r := gapReplica{name: "gap-" + strings.ReplaceAll(n.Name, ".", "-"), node: n.Name, class: n.Class, model: m.Key}
 			if len("vllm-"+r.name) <= 63 {
 				want["vllm-"+r.name] = r
 			}
