@@ -38,8 +38,9 @@ type GPUClass struct {
 	Tier     string   `json:"tier" example:"medium"`
 	TierName string   `json:"tier_name" example:"medium"`
 	Nodes    int      `json:"nodes"`
-	GPUs     float64  `json:"gpus"`            // GPUs of its ready nodes right now
-	Archs    []string `json:"archs,omitempty"` // architectures of its nodes (amd64, arm64)
+	GPUs     float64  `json:"gpus"`               // GPUs of its ready nodes right now
+	Archs    []string `json:"archs,omitempty"`    // architectures of its nodes (amd64, arm64)
+	Hardware string   `json:"hardware,omitempty"` // what a GPU of the class is, e.g. "L4-3Q · 3 GB"
 	Products string   `json:"products,omitempty"`
 	// Replaces is the id from before pools this class took over; the tree renames its resources once.
 	Replaces string `json:"replaces,omitempty"`
@@ -82,15 +83,28 @@ func (s *Service) RenameGPUClass(ctx context.Context, old, new string) (int, err
 	return n, nil
 }
 
-// Base is a base of the projects' environments (dhbw-workspace-images at its release): a project runs it, or an image built on it from Git.
+// Base is one version of a base of the projects' environments (dhbw-workspace-images at its release): a project runs it, or an image built on it from Git. A project keeps its version (ImageBase is the version's id) until somebody changes it; a new version is a new entry, not a replacement (base_versions.go).
 type Base struct {
-	ID      string `json:"id" example:"pytorch"`
-	Name    string `json:"name" example:"PyTorch"`
+	ID      string `json:"id" example:"pytorch-2.11-cu13"`
+	Name    string `json:"name" example:"PyTorch 2.11 · CUDA 13"`
 	Image   string `json:"image" example:"registry.gpu.services.dhbw.cloud/platform/base-pytorch:v2.0.0"`
-	Default bool   `json:"default,omitempty"`
+	Default bool   `json:"default,omitempty"` // the version new projects get
 	// Archs are the architectures the base is built for (images.yaml platforms); empty = amd64.
 	Archs []string `json:"archs,omitempty" example:"amd64,arm64"`
+	// Family groups the versions of one base (python, pytorch, tensorflow); also the id projects had before versions.
+	Family  string `json:"family,omitempty" example:"pytorch"`
+	Version string `json:"version,omitempty" example:"2.11-cu13"`
+	// Status "deprecated": the version runs out: no new project can choose it, the projects on it keep it until ReplacedBy takes its place at EndOfLife (YYYY-MM-DD; empty = when the last project on it has ended). Empty = current.
+	Status     string `json:"status,omitempty" enums:"deprecated"`
+	ReplacedBy string `json:"replaced_by,omitempty" example:"pytorch-2.12-cu13"`
+	EndOfLife  string `json:"end_of_life,omitempty" example:"2027-03-31"`
+	// Projects and LastEnd: in the catalogue, how many active projects run the version and the latest day one of them ends (nil when one has no end).
+	Projects int        `json:"projects"`
+	LastEnd  *time.Time `json:"last_end,omitempty"`
 }
+
+// Deprecated tells whether the version runs out.
+func (b Base) Deprecated() bool { return b.Status == "deprecated" }
 
 // Running is a running (or waiting) workspace pod, for the limits on concurrent use.
 type Running struct {
@@ -182,7 +196,7 @@ func (s *Service) Catalog(ctx context.Context) Config {
 	if classes == nil {
 		classes = []GPUClass{}
 	}
-	return Config{Profiles: s.cfg.Profiles, GPUClasses: classes, Bases: s.cfg.Bases}
+	return Config{Profiles: s.cfg.Profiles, GPUClasses: classes, Bases: s.basesInUse(ctx)}
 }
 
 func (s *Service) profile(slug string) (Profile, bool) {
@@ -259,10 +273,13 @@ func (s *Service) validate(p *Project) error {
 		p.Members[i] = m
 	}
 	p.Profiles = s.knownProfiles(p.Profiles)
-	if p.ImageBase != "" {
-		if _, ok := s.base(p.ImageBase); !ok {
+	// The version is stored as chosen: an empty base or the id of a family from before versions becomes the version it stands for, so a new default version changes nothing for the project.
+	if len(s.cfg.Bases) > 0 {
+		b, ok := s.base(p.ImageBase)
+		if !ok {
 			return refuse("Basis %q gibt es nicht.", p.ImageBase)
 		}
+		p.ImageBase = b.ID
 	}
 	for _, c := range p.GPUClasses {
 		if !s.knownClass(c) {
@@ -307,6 +324,9 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	}
 	if err := s.validate(&p); err != nil {
 		return Project{}, err
+	}
+	if b, _ := s.base(p.ImageBase); b.Deprecated() && b.ID != cur.ImageBase {
+		return Project{}, refuse("%s läuft aus und ist für Projekte nicht mehr wählbar; stattdessen %s.", b.Name, s.baseName(b.ReplacedBy))
 	}
 	if err := s.applyProjectImage(ctx, &p, cur); err != nil {
 		return Project{}, err

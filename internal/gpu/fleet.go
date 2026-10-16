@@ -288,6 +288,8 @@ type ClassInfo struct {
 	Replaces string   `json:"replaces,omitempty"` // the id from before pools this class took over
 	Lends    bool     `json:"lends"`              // its pool lends idle GPUs to the other pools of the tier
 	Archs    []string `json:"archs,omitempty"`    // architectures of its nodes (amd64, arm64)
+	// Hardware says what a GPU of the class is, for the choice at the start: per kind of node its GPU and memory, arm64 named, e.g. "L4-3Q · 3 GB" or "GB10 · 120 GB · ARM".
+	Hardware string `json:"hardware,omitempty" example:"L40S-12Q · 12 GB"`
 }
 
 // GPUClasses lists every class ever created (a class without nodes stays: projects may hold its resources), with its current nodes.
@@ -319,7 +321,7 @@ func (s *Service) GPUClasses(ctx context.Context) ([]ClassInfo, error) {
 			ci.TierName = t.Name
 		}
 		ci.Name = ci.PoolName + " · " + ci.TierName
-		var products []string
+		var products, hardware []string
 		ci.Archs = classArchs(nodes, c.ID)
 		for _, n := range nodes {
 			if n.Class != c.ID {
@@ -332,8 +334,13 @@ func (s *Service) GPUClasses(ctx context.Context) ([]ClassInfo, error) {
 			if n.Product != "" && !slices.Contains(products, n.Product) {
 				products = append(products, n.Product)
 			}
+			if h := hardwareOf(n); h != "" && !slices.Contains(hardware, h) {
+				hardware = append(hardware, h)
+			}
 		}
 		ci.Products = strings.Join(products, ", ")
+		slices.Sort(hardware)
+		ci.Hardware = strings.Join(hardware, ", ")
 		out = append(out, ci)
 	}
 	return out, nil
@@ -714,6 +721,21 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 }
 
 var gpuToleration = map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}
+
+// hardwareOf names a node's GPU for people: the product without the vendor, its memory, and ARM for an arm64 node.
+func hardwareOf(n GPUNode) string {
+	if n.Product == "" {
+		return ""
+	}
+	parts := []string{strings.TrimPrefix(n.Product, "NVIDIA-")}
+	if n.MemoryGB > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f GB", n.MemoryGB))
+	}
+	if n.Arch == "arm64" {
+		parts = append(parts, "ARM")
+	}
+	return strings.Join(parts, " · ")
+}
 
 // classArchs are the architectures of a class's nodes, sorted.
 func classArchs(nodes []GPUNode, class string) []string {

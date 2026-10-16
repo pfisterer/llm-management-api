@@ -326,3 +326,15 @@ func TestClusterQueuePrefersOwnFlavor(t *testing.T) {
 		t.Fatalf("flavorFungibility %v", ff)
 	}
 }
+
+func TestHardwareOf(t *testing.T) {
+	for want, n := range map[string]GPUNode{
+		"L4-3Q · 3 GB":        {Product: "NVIDIA-L4-3Q", MemoryGB: 3, Arch: "amd64"},
+		"GB10 · 120 GB · ARM": {Product: "NVIDIA-GB10", MemoryGB: 119.6, Arch: "arm64"},
+		"":                    {MemoryGB: 3},
+	} {
+		if got := hardwareOf(n); got != want {
+			t.Errorf("%+v: %q, want %q", n, got, want)
+		}
+	}
+}

@@ -78,6 +78,8 @@ type HubGPUClass struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Available bool   `json:"available"`
+	// Hardware says what a GPU of the class is (e.g. "L4-3Q · 3 GB"), shown dimmed next to the name.
+	Hardware string `json:"hardware,omitempty"`
 }
 
 // GPUHubAccessResponse is the access decision for one person, for JupyterHub: whether they may log in (a project, or admin), and how many GPUs they may use at the same time (the most any of their projects allows per person).
@@ -102,7 +104,7 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 			fits := true
 			for _, cl := range classes {
 				if cl.ID == id {
-					hc.Name, hc.Available = cl.Name, cl.GPUs > 0
+					hc.Name, hc.Available, hc.Hardware = cl.Name, cl.GPUs > 0, cl.Hardware
 					// A class whose nodes the environment has no image for (an amd64 image, GB10 nodes) is not offered.
 					fits = len(cl.Archs) == 0 || slices.ContainsFunc(cl.Archs, func(a string) bool { return slices.Contains(archs, a) })
 				}

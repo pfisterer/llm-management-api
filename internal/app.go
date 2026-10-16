@@ -241,7 +241,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				classes, err := gpuSvc.GPUClasses(ctx)
 				out := make([]workspace.GPUClass, 0, len(classes))
 				for _, c := range classes {
-					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces, Lends: c.Lends, Archs: c.Archs})
+					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces, Lends: c.Lends, Archs: c.Archs, Hardware: c.Hardware})
 				}
 				return out, err
 			})
@@ -280,6 +280,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// The profiles went into CPU, CPU + GPU-Kernel and GPU on 14.10.2026: stored projects follow once.
 		if err := wsSvc.MigrateProfiles(context.Background()); err != nil {
 			log.Warnw("workspace profiles not migrated", "error", err)
+		}
+		// Bases have versions since 17.10.2026: every project keeps the version it runs now.
+		if err := wsSvc.MigrateBases(context.Background()); err != nil {
+			log.Warnw("workspace bases not migrated", "error", err)
 		}
 		// A GPU kernel counts like a GPU server against the project's limits and budgets (docs/bauplan.md 6.2).
 		gpuSvc.SetKernelCheck(func(ctx context.Context, o *gpu.KernelOwner) error {
@@ -457,6 +461,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
 				if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
 					log.Warnw("project images: rebuild on new base", "error", err)
+				}
+				// Versions of the bases at their end of life: their projects move to the successor.
+				if err := wsSvc.RetireBases(ctx); err != nil {
+					log.Warnw("bases: end of life", "error", err)
 				}
 				// The projects' pull and Git secrets, also after a restart or a secret deleted by hand.
 				if err := wsSvc.SyncCredentialSecrets(ctx); err != nil {

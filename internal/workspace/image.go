@@ -295,8 +295,11 @@ func (s *Service) PrepullImages(ctx context.Context) ([]ArchImage, error) {
 			out = append(out, ArchImage{Image: img, Archs: archsOr(archs), Base: base, PullSecret: secret})
 		}
 	}
+	// The current versions always; a deprecated one only while a project runs it (below).
 	for _, b := range s.cfg.Bases {
-		add(b.Image, b.Archs, true, "")
+		if !b.Deprecated() {
+			add(b.Image, b.Archs, true, "")
+		}
 	}
 	for _, p := range list {
 		if _, broken := s.unpullable.Load(p.ProjectImage); broken && finishedImage(p) {
@@ -355,7 +358,7 @@ func (s *Service) MigrateProfiles(ctx context.Context) error {
 	return nil
 }
 
-// base is a base of the catalogue by id; "" is the default one.
+// base is a version of a base of the catalogue by its id; "" is the default version, the id of a family (from before versions) its default or else first current version.
 func (s *Service) base(id string) (Base, bool) {
 	for _, b := range s.cfg.Bases {
 		if b.ID == id || (id == "" && b.Default) {
@@ -365,7 +368,30 @@ func (s *Service) base(id string) (Base, bool) {
 	if id == "" && len(s.cfg.Bases) > 0 {
 		return s.cfg.Bases[0], true
 	}
+	// A version no longer in the catalogue counts as its family's current one, so its projects keep running.
+	var found *Base
+	for _, family := range []string{id, familyOf(id)} {
+		for i, b := range s.cfg.Bases {
+			if b.Family == family && !b.Deprecated() && (found == nil || b.Default) {
+				found = &s.cfg.Bases[i]
+			}
+		}
+		if found != nil {
+			break
+		}
+	}
+	if found != nil {
+		return *found, true
+	}
 	return Base{}, false
+}
+
+// baseName is a version's name for messages, its id when it is not in the catalogue.
+func (s *Service) baseName(id string) string {
+	if b, ok := s.base(id); ok {
+		return b.Name
+	}
+	return id
 }
 
 // EffectiveImage is what the project's servers run: its finished image at its digest, its built image, else its base; "" without a catalogue (the hub's own default).
