@@ -252,6 +252,31 @@ func (s *Server) rebuildProjectImage(c *gin.Context) {
 	c.JSON(http.StatusOK, b)
 }
 
+// updateProjectImage godoc
+//
+//	@ID				updateProjectImage
+//	@Summary		Take the newer version of a project's finished image
+//	@Description	A finished image runs at the digest its tag had when it was entered; when the tag points at another image now (image_update), this takes it, its label checked again.
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string	true	"short name"
+//	@Success		200		{object}	workspace.Project
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		403		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/image/update [post]
+func (s *Server) updateProjectImage(c *gin.Context) {
+	slug := c.Param("slug")
+	if !s.manager(c, slug) {
+		return
+	}
+	p, err := s.ws.UpdateProjectImage(c.Request.Context(), slug, caller(c).Email)
+	if s.workspaceError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
 // getProjectImageLog godoc
 //
 //	@ID				getProjectImageLog

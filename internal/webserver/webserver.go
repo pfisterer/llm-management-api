@@ -141,6 +141,7 @@ func (s *Server) Router() *gin.Engine {
 		w.GET("/projects", s.listWorkspaceProjects)
 		w.PUT("/projects/:slug", s.updateWorkspaceProject)
 		w.POST("/projects/:slug/image/rebuild", s.rebuildProjectImage)
+		w.POST("/projects/:slug/image/update", s.updateProjectImage)
 		w.GET("/projects/:slug/image/log", s.getProjectImageLog)
 		w.DELETE("/projects/:slug", require(access.RoleAdmin), s.deleteWorkspaceProject)
 		w.GET("/storage", require(access.RoleAdmin), s.getWorkspaceStorage)

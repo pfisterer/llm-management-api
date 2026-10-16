@@ -243,21 +243,42 @@ func (s *Service) RebaseProjectImages(ctx context.Context) error {
 // PrepullName is the DaemonSet that keeps the course images on the CPU and GPU nodes, so that the first start of a server or GPU kernel in a course does not wait for a pull of several GB.
 const PrepullName = "kernel-image-prepull"
 
-// prepullSpecRevision changes with the DaemonSet's spec (2: amd64 nodes only).
-const prepullSpecRevision = "2"
+// prepullSpecRevision changes with the DaemonSet's spec (2: amd64 nodes only; 3: images as image volumes).
+const prepullSpecRevision = "3"
 
-// prepullDaemonSet pulls every image as an init container (which ends at once) and keeps the pod with the first one, so the images count as in use and the kubelet does not clean them up.
-func prepullDaemonSet(ns string, images []string) map[string]any {
+// prepullDaemonSet keeps hold (a base, which has sleep) running and mounts every other image as an image volume: the kubelet pulls them and keeps them while the pod runs, but never starts them, so an image without a shell (distroless) or with a broken entrypoint holds up nothing. Images whose registry does not answer are left out before (workspace.Service.ProjectImages), since the pod starts only when all its volumes are pulled.
+func prepullDaemonSet(ns, hold string, images []string) map[string]any {
 	// The spec revision goes into the hash, so a change of the spec below reaches a DaemonSet whose images stayed the same.
-	sum := sha256.Sum256([]byte(prepullSpecRevision + "\n" + strings.Join(images, "\n")))
-	security := map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}
+	sum := sha256.Sum256([]byte(prepullSpecRevision + "\n" + hold + "\n" + strings.Join(images, "\n")))
+	security := map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []any{"ALL"}}}
 	resources := map[string]any{"requests": map[string]any{"cpu": "1m", "memory": "8Mi"}, "limits": map[string]any{"memory": "32Mi"}}
-	var inits []any
+	var volumes, mounts []any
 	for i, img := range images {
-		inits = append(inits, map[string]any{"name": fmt.Sprintf("pull-%d", i), "image": img, "imagePullPolicy": "IfNotPresent",
-			"command": []any{"true"}, "securityContext": security, "resources": resources})
+		name := fmt.Sprintf("image-%d", i)
+		volumes = append(volumes, map[string]any{"name": name, "image": map[string]any{"reference": img, "pullPolicy": "IfNotPresent"}})
+		// The kubelet pulls only volumes a container mounts.
+		mounts = append(mounts, map[string]any{"name": name, "mountPath": "/prepull/" + name, "readOnly": true})
 	}
 	labels := map[string]any{"app": PrepullName}
+	podSpec := map[string]any{
+		"automountServiceAccountToken": false,
+		"enableServiceLinks":           false,
+		"affinity": map[string]any{"nodeAffinity": map[string]any{"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+			// The course images are amd64 only: an arm64 node (GB10) would hang in ErrImagePull.
+			"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{
+				map[string]any{"key": "dhbw.cloud/node-type", "operator": "In", "values": []any{"cpu", "gpu"}},
+				map[string]any{"key": "kubernetes.io/arch", "operator": "In", "values": []any{"amd64"}},
+			}}},
+		}}},
+		"tolerations": []any{map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
+		"containers": []any{map[string]any{"name": "hold", "image": hold, "imagePullPolicy": "IfNotPresent",
+			"command": []any{"sleep", "infinity"}, "securityContext": security, "resources": resources, "volumeMounts": mounts}},
+	}
+	if len(volumes) > 0 {
+		podSpec["volumes"] = volumes
+	} else {
+		delete(podSpec["containers"].([]any)[0].(map[string]any), "volumeMounts")
+	}
 	return map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "DaemonSet",
@@ -268,24 +289,7 @@ func prepullDaemonSet(ns string, images []string) map[string]any {
 		"spec": map[string]any{
 			"selector":       map[string]any{"matchLabels": labels},
 			"updateStrategy": map[string]any{"type": "RollingUpdate", "rollingUpdate": map[string]any{"maxUnavailable": "100%"}},
-			"template": map[string]any{
-				"metadata": map[string]any{"labels": labels},
-				"spec": map[string]any{
-					"automountServiceAccountToken": false,
-					"enableServiceLinks":           false,
-					"affinity": map[string]any{"nodeAffinity": map[string]any{"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
-						// The course images are amd64 only: an arm64 node (GB10) would hang in ErrImagePull.
-						"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{
-							map[string]any{"key": "dhbw.cloud/node-type", "operator": "In", "values": []any{"cpu", "gpu"}},
-							map[string]any{"key": "kubernetes.io/arch", "operator": "In", "values": []any{"amd64"}},
-						}}},
-					}}},
-					"tolerations":    []any{map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
-					"initContainers": inits,
-					"containers": []any{map[string]any{"name": "hold", "image": images[0], "imagePullPolicy": "IfNotPresent",
-						"command": []any{"sleep", "infinity"}, "securityContext": security, "resources": resources}},
-				},
-			},
+			"template":       map[string]any{"metadata": map[string]any{"labels": labels}, "spec": podSpec},
 		},
 	}
 }
@@ -319,14 +323,16 @@ func (s *Service) EnsurePrepull(ctx context.Context, images []string) error {
 	if ns == "" {
 		ns = "jupyterhub"
 	}
+	// The first base keeps the pod running; everything else is an image volume.
+	hold := s.bases[0]
 	var list []string
 	for _, img := range append(slices.Clone(s.bases), images...) {
-		if img = strings.TrimSpace(img); img != "" && !slices.Contains(list, img) {
+		if img = strings.TrimSpace(img); img != "" && img != hold && !slices.Contains(list, img) {
 			list = append(list, img)
 		}
 	}
 	slices.Sort(list)
-	want := prepullDaemonSet(ns, list)
+	want := prepullDaemonSet(ns, hold, list)
 	cur, err := ds.getDaemonSet(ctx, ns, PrepullName)
 	if errors.Is(err, ErrNotFound) {
 		return ds.putDaemonSet(ctx, ns, PrepullName, want, true)

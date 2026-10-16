@@ -1,8 +1,10 @@
-// Package oci reads the labels of a container image from its registry (OCI distribution API), anonymously as a node would pull it: public images only.
+// Package oci reads a container image's digest and labels from its registry (OCI distribution API), anonymously as a node would pull it: public images only.
 package oci
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +22,7 @@ type Ref struct {
 	Host, Repo, Ref string
 }
 
-// ParseRef splits "ghcr.io/org/img:tag", "org/img" (Docker Hub, tag latest) or "host/img@sha256:…".
+// ParseRef splits "ghcr.io/org/img:tag", "org/img" (Docker Hub, tag latest), "host/img@sha256:…" or "host/img:tag@sha256:…".
 func ParseRef(s string) (Ref, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.ContainsAny(s, " \t") {
@@ -32,6 +34,10 @@ func ParseRef(s string) (Ref, error) {
 	}
 	repo, ref := rest, "latest"
 	if r, d, ok := strings.Cut(rest, "@"); ok {
+		// "repo:tag@sha256:…": the digest wins, the tag is only a name for people.
+		if i := strings.LastIndex(r, ":"); i > strings.LastIndex(r, "/") {
+			r = r[:i]
+		}
 		repo, ref = r, d
 	} else if i := strings.LastIndex(rest, ":"); i > strings.LastIndex(rest, "/") {
 		repo, ref = rest[:i], rest[i+1:]
@@ -56,11 +62,25 @@ type Client struct {
 
 const manifestTypes = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
 
-// Labels returns the labels of the image's linux/amd64 variant (the platform of the cluster).
-func (c *Client) Labels(ctx context.Context, image string) (map[string]string, error) {
+// Image is what the registry says about an image reference: the digest the reference points at now (for an image built for several platforms, that of the index) and the labels of its linux/amd64 variant (the platform of the cluster).
+type Image struct {
+	Digest string
+	Labels map[string]string
+}
+
+// Pinned is the reference fixed to the digest ("repo:tag@sha256:…"): every node runs exactly this image, whatever the tag points at later.
+func (i Image) Pinned(image string) string {
+	if at := strings.LastIndex(image, "@"); at >= 0 {
+		image = image[:at]
+	}
+	return image + "@" + i.Digest
+}
+
+// Inspect resolves the reference to its digest and reads the labels of that digest.
+func (c *Client) Inspect(ctx context.Context, image string) (Image, error) {
 	r, err := ParseRef(image)
 	if err != nil {
-		return nil, err
+		return Image{}, err
 	}
 	s := &session{c: c, r: r}
 	var m struct {
@@ -75,28 +95,41 @@ func (c *Client) Labels(ctx context.Context, image string) (map[string]string, e
 			Digest string `json:"digest"`
 		} `json:"config"`
 	}
-	if err := s.getJSON(ctx, "manifests/"+r.Ref, manifestTypes, &m); err != nil {
-		return nil, err
+	body, header, err := s.get(ctx, "manifests/"+r.Ref, manifestTypes)
+	if err != nil {
+		return Image{}, err
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return Image{}, err
+	}
+	// The registry names the digest; if not, it is the hash of the manifest as served.
+	digest := header.Get("Docker-Content-Digest")
+	if strings.HasPrefix(r.Ref, "sha256:") {
+		digest = r.Ref
+	}
+	if digest == "" {
+		sum := sha256.Sum256(body)
+		digest = "sha256:" + hex.EncodeToString(sum[:])
 	}
 	if m.Config.Digest == "" {
 		// An index: the variant for the cluster's platform.
-		digest := ""
+		variant := ""
 		for _, x := range m.Manifests {
 			if x.Platform.OS == "linux" && x.Platform.Architecture == "amd64" {
-				digest = x.Digest
+				variant = x.Digest
 				break
 			}
 		}
-		if digest == "" {
-			return nil, fmt.Errorf("image %s has no linux/amd64 variant", image)
+		if variant == "" {
+			return Image{}, fmt.Errorf("image %s has no linux/amd64 variant", image)
 		}
 		m.Manifests = nil
-		if err := s.getJSON(ctx, "manifests/"+digest, manifestTypes, &m); err != nil {
-			return nil, err
+		if err := s.getJSON(ctx, "manifests/"+variant, manifestTypes, &m); err != nil {
+			return Image{}, err
 		}
 	}
 	if m.Config.Digest == "" {
-		return nil, fmt.Errorf("image %s: manifest without config", image)
+		return Image{}, fmt.Errorf("image %s: manifest without config", image)
 	}
 	var cfg struct {
 		Config struct {
@@ -104,12 +137,12 @@ func (c *Client) Labels(ctx context.Context, image string) (map[string]string, e
 		} `json:"config"`
 	}
 	if err := s.getJSON(ctx, "blobs/"+m.Config.Digest, "*/*", &cfg); err != nil {
-		return nil, err
+		return Image{}, err
 	}
 	if cfg.Config.Labels == nil {
-		return map[string]string{}, nil
+		cfg.Config.Labels = map[string]string{}
 	}
-	return cfg.Config.Labels, nil
+	return Image{Digest: digest, Labels: cfg.Config.Labels}, nil
 }
 
 // session is one image's requests, with the anonymous token the registry hands out on the first 401.
@@ -120,6 +153,15 @@ type session struct {
 }
 
 func (s *session) getJSON(ctx context.Context, path, accept string, v any) error {
+	body, _, err := s.get(ctx, path, accept)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, v)
+}
+
+// get fetches one path of the repository, with an anonymous token after the first 401.
+func (s *session) get(ctx context.Context, path, accept string) ([]byte, http.Header, error) {
 	scheme := s.c.Scheme
 	if scheme == "" {
 		scheme = "https"
@@ -128,7 +170,7 @@ func (s *session) getJSON(ctx context.Context, path, accept string, v any) error
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		req.Header.Set("Accept", accept)
 		if s.token != "" {
@@ -136,24 +178,24 @@ func (s *session) getJSON(ctx context.Context, path, accept string, v any) error
 		}
 		resp, err := s.c.HTTP.Do(req)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		switch {
 		case resp.StatusCode == http.StatusOK:
-			return json.Unmarshal(body, v)
+			return body, resp.Header, nil
 		case resp.StatusCode == http.StatusUnauthorized && attempt == 0:
 			if err := s.fetchToken(ctx, resp.Header.Get("WWW-Authenticate")); err != nil {
-				return err
+				return nil, nil, err
 			}
 		case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
-			return ErrNotFound
+			return nil, nil, ErrNotFound
 		default:
-			return fmt.Errorf("registry %s: %s %d", s.r.Host, path, resp.StatusCode)
+			return nil, nil, fmt.Errorf("registry %s: %s %d", s.r.Host, path, resp.StatusCode)
 		}
 	}
 }

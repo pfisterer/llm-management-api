@@ -193,15 +193,15 @@ func TestProjectImageFinished(t *testing.T) {
 	ctx := context.Background()
 	s := service()
 	checked := 0
-	s.SetImageLabels(func(_ context.Context, image string) (map[string]string, error) {
+	s.SetImageInspector(func(_ context.Context, image string) (RegistryImage, error) {
 		checked++
 		switch image {
 		case "ghcr.io/kurs/ml:1":
-			return map[string]string{BaseLabel: "notebook-v1"}, nil
+			return RegistryImage{Digest: "sha256:m1", Labels: map[string]string{BaseLabel: "notebook-v1"}}, nil
 		case "ghcr.io/kurs/fremd:1":
-			return map[string]string{}, nil
+			return RegistryImage{Digest: "sha256:f1", Labels: map[string]string{}}, nil
 		}
-		return nil, errors.New("not found")
+		return RegistryImage{}, errors.New("not found")
 	})
 	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}}, "admin")
 	for image, want := range map[string]string{"ghcr.io/kurs/weg:1": "nicht abrufbar", "Kein Image": "kein Image-Name"} {
@@ -211,7 +211,7 @@ func TestProjectImageFinished(t *testing.T) {
 	}
 	// Any image is taken; one not derived from a base runs without the GPU kernel.
 	out, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: "ghcr.io/kurs/fremd:1"}, "manager@dhbw.de", false)
-	if err != nil || out.ProjectImage != "ghcr.io/kurs/fremd:1" || out.Derived() || s.EffectiveImage(out) != "ghcr.io/kurs/fremd:1" {
+	if err != nil || out.ProjectImage != "ghcr.io/kurs/fremd:1" || out.Derived() || s.EffectiveImage(out) != "ghcr.io/kurs/fremd:1@sha256:f1" {
 		t.Fatalf("foreign image: %+v %v", out, err)
 	}
 	out, err = s.Update(ctx, Project{Slug: "kurs", ProjectImage: " ghcr.io/kurs/ml:1 "}, "manager@dhbw.de", false)
@@ -227,6 +227,83 @@ func TestProjectImageFinished(t *testing.T) {
 	}
 	if _, err := s.Update(ctx, Project{Slug: "kurs", ImageBase: "cobol"}, "manager@dhbw.de", false); !strings.Contains(reason(err), "Basis") {
 		t.Errorf("unknown base: %v", err)
+	}
+}
+
+// A finished image runs at its digest; the periodic check offers a moved tag, takes it with automatic updates, and keeps an unreachable image out of the prepull.
+func TestCheckProjectImages(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	digest := map[string]RegistryImage{"ghcr.io/kurs/ml:latest": {Digest: "sha256:a", Labels: map[string]string{BaseLabel: "notebook-v1"}}}
+	s.SetImageInspector(func(_ context.Context, image string) (RegistryImage, error) {
+		img, ok := digest[image]
+		if !ok {
+			return RegistryImage{}, errors.New("not found")
+		}
+		return img, nil
+	})
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}}, "admin")
+	out, err := s.Update(ctx, Project{Slug: "kurs", ProjectImage: "ghcr.io/kurs/ml:latest"}, "manager@dhbw.de", false)
+	if err != nil || out.ImageDigest != "sha256:a" || s.EffectiveImage(out) != "ghcr.io/kurs/ml:latest@sha256:a" {
+		t.Fatalf("pinned: %+v %v", out, err)
+	}
+
+	// The tag moves to an image without the label: offered, not taken; the servers keep running the old one.
+	digest["ghcr.io/kurs/ml:latest"] = RegistryImage{Digest: "sha256:b", Labels: map[string]string{}}
+	if err := s.CheckProjectImages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.Get(ctx, "kurs")
+	if p.ImageUpdate != "sha256:b" || p.ImageDigest != "sha256:a" || !p.Derived() {
+		t.Fatalf("offered: %+v", p)
+	}
+	// Saving the project unchanged keeps the offer.
+	if out, _ := s.Update(ctx, Project{Slug: "kurs", ProjectImage: "ghcr.io/kurs/ml:latest", Description: "neu"}, "manager@dhbw.de", false); out.ImageUpdate != "sha256:b" || out.ImageDigest != "sha256:a" {
+		t.Errorf("unchanged save: %+v", out)
+	}
+	// Taken: the new digest, and its label is checked again.
+	if p, err = s.UpdateProjectImage(ctx, "kurs", "manager@dhbw.de"); err != nil || p.ImageDigest != "sha256:b" || p.ImageUpdate != "" || p.Derived() {
+		t.Fatalf("updated: %+v %v", p, err)
+	}
+
+	// With automatic updates the check takes a moved tag itself.
+	p.ImageAutoUpdate = true
+	if _, err := s.Update(ctx, p, "manager@dhbw.de", false); err != nil {
+		t.Fatal(err)
+	}
+	digest["ghcr.io/kurs/ml:latest"] = RegistryImage{Digest: "sha256:c", Labels: map[string]string{BaseLabel: "notebook-v1"}}
+	_ = s.CheckProjectImages(ctx)
+	if p, _ = s.Get(ctx, "kurs"); p.ImageDigest != "sha256:c" || p.ImageUpdate != "" || !p.Derived() {
+		t.Fatalf("auto update: %+v", p)
+	}
+
+	// A project from before the pinning gets its digest from the check.
+	_ = s.store.Create(ctx, &Project{Slug: "alt", Profiles: []string{"cpu"}, ProjectImage: "ghcr.io/kurs/ml:latest"})
+	_ = s.CheckProjectImages(ctx)
+	if p, _ := s.Get(ctx, "alt"); p.ImageDigest != "sha256:c" || p.ImageUpdate != "" {
+		t.Errorf("old project: %+v", p)
+	}
+
+	// An image whose registry no longer answers stays with its digest, but leaves the prepull until it answers again.
+	delete(digest, "ghcr.io/kurs/ml:latest")
+	if err := s.CheckProjectImages(ctx); err == nil {
+		t.Error("unreachable registry not reported")
+	}
+	if images, _ := s.ProjectImages(ctx); slices.ContainsFunc(images, func(i string) bool { return strings.HasPrefix(i, "ghcr.io/kurs/ml") }) {
+		t.Errorf("unreachable image in the prepull: %v", images)
+	}
+	digest["ghcr.io/kurs/ml:latest"] = RegistryImage{Digest: "sha256:c"}
+	_ = s.CheckProjectImages(ctx)
+	if images, _ := s.ProjectImages(ctx); !slices.Contains(images, "ghcr.io/kurs/ml:latest@sha256:c") {
+		t.Errorf("image back in the prepull: %v", images)
+	}
+
+	// Without a finished image there is nothing to update.
+	if _, err := s.Update(ctx, Project{Slug: "kurs"}, "manager@dhbw.de", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateProjectImage(ctx, "kurs", "manager@dhbw.de"); !strings.Contains(reason(err), "kein fertiges Image") {
+		t.Errorf("update without image: %v", err)
 	}
 }
 

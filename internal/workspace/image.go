@@ -2,19 +2,39 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 )
 
-// The project's environment (docs/bauplan.md 10.12), run by every profile: a base of the catalogue (Config.Bases), a Git repository built on it by the GPU part (ImageBuilder, which hands each finished build to the project: ProjectImageBuilt), or an existing image — derived from a base (label in the registry) with everything, any other as it is, without the GPU kernel.
+// The project's environment (docs/bauplan.md 10.12), run by every profile: a base of the catalogue (Config.Bases), a Git repository built on it by the GPU part (ImageBuilder, which hands each finished build to the project: ProjectImageBuilt), or an existing image — derived from a base (label in the registry) with everything, any other as it is, without the GPU kernel. An existing image runs at the digest its tag had when it was taken (ImageDigest); a newer one is offered, not taken silently (CheckProjectImages).
 
-// ImageLabels reads an image's labels from its registry, for the check of finished project images; nil = no check.
-type ImageLabels func(ctx context.Context, image string) (map[string]string, error)
+// RegistryImage is an image as its registry has it now: the digest its reference points at and its labels.
+type RegistryImage struct {
+	Digest string
+	Labels map[string]string
+}
 
-// SetImageLabels adds the check of finished project images to Update.
-func (s *Service) SetImageLabels(f ImageLabels) { s.labels = f }
+// ImageInspector looks an image up in its registry (oci.Client.Inspect); nil = no check, the image runs by its tag.
+type ImageInspector func(ctx context.Context, image string) (RegistryImage, error)
+
+// SetImageInspector adds the check and pinning of finished project images.
+func (s *Service) SetImageInspector(f ImageInspector) { s.inspect = f }
+
+// pinned is the image fixed to a digest ("repo:tag@sha256:…").
+func pinned(image, digest string) string {
+	if at := strings.LastIndex(image, "@"); at >= 0 {
+		image = image[:at]
+	}
+	return image + "@" + digest
+}
+
+// derivedFrom tells from an image's labels whether it is derived from a base.
+func derivedFrom(labels map[string]string) bool {
+	return slices.Contains(BaseVersions, labels[BaseLabel])
+}
 
 // ImageBuild is the state of a project image's build from Git.
 type ImageBuild struct {
@@ -51,7 +71,7 @@ var BaseVersions = []string{"notebook-v1"}
 
 var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:@-]+$`)
 
-// applyProjectImage takes the environment of an update: from Git it starts (or keeps) the build on the base, and the project keeps its current image until the build is ready; an existing image is looked up in its registry unless unchanged — it must be pullable, and its label decides whether it is derived from a base.
+// applyProjectImage takes the environment of an update: from Git it starts (or keeps) the build on the base, and the project keeps its current image until the build is ready; an existing image is looked up in its registry unless unchanged — it must be pullable, its digest is kept (ImageDigest), and its label decides whether it is derived from a base.
 func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project) error {
 	p.ProjectImage, p.ImageGitURL, p.ImageGitRef = strings.TrimSpace(p.ProjectImage), strings.TrimSpace(p.ImageGitURL), strings.TrimSpace(p.ImageGitRef)
 	if p.ImageGitURL != "" {
@@ -63,7 +83,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		if err != nil {
 			return refuse("Projekt-Image: %v", err)
 		}
-		p.ProjectImage, p.ImageDerived = cur.ProjectImage, true
+		p.ProjectImage, p.ImageDerived, p.ImageDigest, p.ImageUpdate = cur.ProjectImage, true, "", ""
 		if cur.ImageGitURL == "" || cur.ImageBase != p.ImageBase {
 			p.ProjectImage = "" // until the build is ready, the base itself
 		}
@@ -77,25 +97,88 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		s.forgetBuilds(ctx, p.Slug)
 	}
 	if p.ProjectImage == "" {
-		p.ImageDerived = false
+		p.ImageDerived, p.ImageDigest, p.ImageUpdate = false, "", ""
 		return nil
 	}
 	if p.ProjectImage == cur.ProjectImage && cur.ImageGitURL == "" {
-		p.ImageDerived = cur.ImageDerived
+		p.ImageDerived, p.ImageDigest, p.ImageUpdate = cur.ImageDerived, cur.ImageDigest, cur.ImageUpdate
 		return nil
 	}
 	if !imageRE.MatchString(p.ProjectImage) {
 		return refuse("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.ProjectImage)
 	}
-	if s.labels == nil {
+	p.ImageDigest, p.ImageUpdate = "", ""
+	if s.inspect == nil {
 		return nil
 	}
-	labels, err := s.labels(ctx, p.ProjectImage)
+	img, err := s.inspect(ctx, p.ProjectImage)
 	if err != nil {
 		return refuse("Image %s ist nicht abrufbar (es muss öffentlich sein): %v", p.ProjectImage, err)
 	}
-	p.ImageDerived = slices.Contains(BaseVersions, labels[BaseLabel])
+	p.ImageDigest, p.ImageDerived = img.Digest, derivedFrom(img.Labels)
 	return nil
+}
+
+// finishedImage tells whether the project runs an existing image (not built from Git).
+func finishedImage(p Project) bool { return p.ProjectImage != "" && p.ImageGitURL == "" }
+
+// CheckProjectImages looks up the tag of every finished project image again (run periodically): a new digest is offered at the project (ImageUpdate), or taken at once with ImageAutoUpdate, its label checked again either way; a project from before the pinning gets its current digest. An image whose registry does not answer is left out of the prepull until it answers again.
+func (s *Service) CheckProjectImages(ctx context.Context) error {
+	if s.inspect == nil {
+		return nil
+	}
+	list, err := s.store.List(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, p := range list {
+		if !finishedImage(p) || !p.Active(s.now()) {
+			continue
+		}
+		img, err := s.inspect(ctx, p.ProjectImage)
+		if err != nil {
+			s.unpullable.Store(p.ProjectImage, true)
+			errs = append(errs, err)
+			continue
+		}
+		s.unpullable.Delete(p.ProjectImage)
+		switch {
+		case img.Digest == p.ImageDigest:
+			if p.ImageUpdate == "" {
+				continue
+			}
+			p.ImageUpdate = "" // the tag went back
+		case p.ImageDigest == "" || p.ImageAutoUpdate:
+			p.ImageDigest, p.ImageDerived, p.ImageUpdate = img.Digest, derivedFrom(img.Labels), ""
+		case img.Digest == p.ImageUpdate:
+			continue
+		default:
+			p.ImageUpdate = img.Digest
+		}
+		p.UpdatedBy = "image-check"
+		if err := s.store.Update(ctx, &p); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// UpdateProjectImage takes the digest the finished image's tag points at now, its label checked again.
+func (s *Service) UpdateProjectImage(ctx context.Context, slug, by string) (Project, error) {
+	p, err := s.store.Get(ctx, slug)
+	if err != nil {
+		return Project{}, err
+	}
+	if !finishedImage(p) || s.inspect == nil {
+		return Project{}, refuse("Das Projekt nutzt kein fertiges Image.")
+	}
+	img, err := s.inspect(ctx, p.ProjectImage)
+	if err != nil {
+		return Project{}, refuse("Image %s ist nicht abrufbar (es muss öffentlich sein): %v", p.ProjectImage, err)
+	}
+	p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.UpdatedBy = img.Digest, derivedFrom(img.Labels), "", by
+	return p, s.store.Update(ctx, &p)
 }
 
 func (s *Service) forgetBuilds(ctx context.Context, slug string) {
@@ -158,6 +241,9 @@ func (s *Service) ProjectImages(ctx context.Context) ([]string, error) {
 	}
 	var out []string
 	for _, p := range list {
+		if _, broken := s.unpullable.Load(p.ProjectImage); broken && finishedImage(p) {
+			continue
+		}
 		if img := s.EffectiveImage(p); img != "" && p.Active(s.now()) && !slices.Contains(out, img) {
 			out = append(out, img)
 		}
@@ -220,8 +306,11 @@ func (s *Service) base(id string) (Base, bool) {
 	return Base{}, false
 }
 
-// EffectiveImage is what the project's servers run: its finished or built image, else its base; "" without a catalogue (the hub's own default).
+// EffectiveImage is what the project's servers run: its finished image at its digest, its built image, else its base; "" without a catalogue (the hub's own default).
 func (s *Service) EffectiveImage(p Project) string {
+	if finishedImage(p) && p.ImageDigest != "" {
+		return pinned(p.ProjectImage, p.ImageDigest)
+	}
 	if p.ProjectImage != "" {
 		return p.ProjectImage
 	}

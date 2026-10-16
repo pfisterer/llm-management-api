@@ -247,7 +247,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		wsSvc.SetUsage(st.usage)
 		// Finished project images are checked in their registry, anonymously like a node pulls them; images from Git are built by the GPU part.
 		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
-		wsSvc.SetImageLabels(ociClient.Labels)
+		wsSvc.SetImageInspector(func(ctx context.Context, image string) (workspace.RegistryImage, error) {
+			img, err := ociClient.Inspect(ctx, image)
+			return workspace.RegistryImage{Digest: img.Digest, Labels: img.Labels}, err
+		})
 		wsSvc.SetImageBuilder(gpuSvc)
 		var bases []string
 		for _, b := range wsCfg.Bases {
@@ -434,6 +437,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
 				if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
 					log.Warnw("project images: rebuild on new base", "error", err)
+				}
+				// Finished project images: a moved tag is offered at the project (or taken, if it updates itself); before the prepull, which leaves out images whose registry does not answer.
+				if err := wsSvc.CheckProjectImages(ctx); err != nil {
+					log.Warnw("project images: checking the tags", "error", err)
 				}
 				if images, err := wsSvc.ProjectImages(ctx); err != nil {
 					log.Warnw("project images: listing projects failed", "error", err)

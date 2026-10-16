@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -116,9 +117,11 @@ type Service struct {
 	llm     LLMUsed
 	now     func() time.Time
 	storage storageState
-	labels  ImageLabels
-	builds  ImageBuilder
-	classes func(ctx context.Context) ([]GPUClass, error)
+	inspect ImageInspector
+	// unpullable are finished project images whose registry did not answer at the last check; the prepull leaves them out, so one broken image does not hold up the others.
+	unpullable sync.Map
+	builds     ImageBuilder
+	classes    func(ctx context.Context) ([]GPUClass, error)
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.
@@ -278,16 +281,16 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the environment (base, project image), in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the environment (base, project image, its automatic updates), in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
 	if !asAdmin {
-		desc, members, base, image, gitURL, gitRef := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef
+		desc, members, base, image, gitURL, gitRef, auto := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate
 		p = cur
-		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef = desc, members, base, image, gitURL, gitRef
+		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate = desc, members, base, image, gitURL, gitRef, auto
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)

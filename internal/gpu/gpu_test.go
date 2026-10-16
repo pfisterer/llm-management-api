@@ -233,9 +233,19 @@ func TestEnsurePrepull(t *testing.T) {
 		t.Fatalf("create: %v %d", err, f.puts)
 	}
 	spec := f.cur["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
-	inits := spec["initContainers"].([]any)
-	if len(inits) != 4 || inits[0].(map[string]any)["image"] != "ghcr.io/k/a:1" || inits[2].(map[string]any)["image"] != "reg/platform/base-python:v2.0.0" {
-		t.Fatalf("init containers %v", inits)
+	// The first base holds the pod; every other image is an image volume the container mounts (and never runs).
+	hold := spec["containers"].([]any)[0].(map[string]any)
+	volumes := spec["volumes"].([]any)
+	if hold["image"] != s.bases[0] || spec["initContainers"] != nil || len(volumes) != 1+len(s.bases) || len(hold["volumeMounts"].([]any)) != len(volumes) {
+		t.Fatalf("hold %v, volumes %v", hold, volumes)
+	}
+	if ref := volumes[0].(map[string]any)["image"].(map[string]any)["reference"]; ref != "ghcr.io/k/a:1" {
+		t.Errorf("first volume %v", ref)
+	}
+	for _, v := range volumes {
+		if v.(map[string]any)["image"].(map[string]any)["reference"] == s.bases[0] {
+			t.Errorf("hold image also as volume: %v", volumes)
+		}
 	}
 	f.cur["metadata"].(map[string]any)["resourceVersion"] = "7"
 	if err := s.EnsurePrepull(ctx, []string{"ghcr.io/k/a:1", "ghcr.io/k/b:1"}); err != nil || f.puts != 1 {
