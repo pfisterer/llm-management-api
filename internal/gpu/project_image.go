@@ -152,6 +152,28 @@ func (s *Service) BuildProjectImage(ctx context.Context, slug, base, gitURL, ref
 	return buildOf(e), nil
 }
 
+// CheckGitBranch checks a repository for a project's course material (workspace.Project.MaterialGitURL): public, on an allowed Git host, with that branch (empty = its default branch). The servers' checkout follows a branch, so a tag or commit is refused.
+func (s *Service) CheckGitBranch(ctx context.Context, gitURL, branch string) (string, error) {
+	canonical, _, err := s.normaliseRepo(gitURL)
+	if err != nil {
+		return "", err
+	}
+	refs, err := s.refs(ctx, canonical)
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		if refs.DefaultBranch == "" {
+			return "", errors.New("das Repository hat keinen Standard-Branch")
+		}
+		return canonical, nil
+	}
+	if refs.Refs["refs/heads/"+branch] == "" {
+		return "", fmt.Errorf("Branch %q nicht gefunden (Material folgt einem Branch, nicht einem Tag oder Commit)", branch)
+	}
+	return canonical, nil
+}
+
 func (s *Service) forgetOthers(ctx context.Context, slug string, keep uint) error {
 	envs, err := s.store.List(ctx, projectOwner(slug))
 	if err != nil {

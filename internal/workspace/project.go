@@ -54,9 +54,12 @@ type Project struct {
 	// The project's environment, run by every profile but the free images (docs/bauplan.md 10.12; Service.EffectiveImage): ImageBase is the chosen base (Config.Bases, empty = the default). ProjectImage is a finished image derived from a base (label BaseLabel), or, with ImageGitURL, the last successful build from that repository on ImageBase; empty = the base itself.
 	ImageBase    string `json:"image_base,omitempty" example:"pytorch"`
 	ProjectImage string `json:"project_image,omitempty" example:"ghcr.io/dozent/ml-kurs:2026"`
-	// ImageGitURL builds ProjectImage from a public repository (requirements.txt, environment.yml, apt.txt, postBuild) on ImageBase, rebuilt on its new releases; ImageGitRef is a branch, tag or commit (empty = default branch).
+	// ImageGitURL builds ProjectImage from a public repository (requirements.txt, environment.yml, apt.txt, postBuild) on ImageBase, rebuilt on its new releases; ImageGitRef is a branch, tag or commit (empty = default branch). Only the build's source: its files reach the servers as material only when MaterialGitURL names it too.
 	ImageGitURL string `json:"image_git_url,omitempty" example:"https://github.com/dozent/ml-kurs"`
 	ImageGitRef string `json:"image_git_ref,omitempty" example:"main"`
+	// MaterialGitURL is the project's course material, whatever its environment: a public repository every server clones into ~/projects/<repo> at its start and later pulls without overwriting the person's own changes (the hub's git-checkout init container); MaterialGitRef is its branch (empty = default branch).
+	MaterialGitURL string `json:"material_git_url,omitempty" example:"https://github.com/dozent/ml-kurs"`
+	MaterialGitRef string `json:"material_git_ref,omitempty" example:"main"`
 	// ImageDerived tells whether an existing ProjectImage is derived from a base (label BaseLabel of the image at ImageDigest). Any image may be the project's; one that is not derived runs as it is (its own jupyterhub-singleuser), without the GPU kernel (Derived).
 	ImageDerived bool `json:"image_derived,omitempty"`
 	// ImageDigest is what an existing ProjectImage's tag pointed at when it was taken: servers run exactly this image (EffectiveImage), so a moved tag (latest) changes nothing unnoticed and every node runs the same. ImageUpdate is a newer digest the tag points at now (CheckProjectImages), taken with UpdateProjectImage or, with ImageAutoUpdate, by the check itself.

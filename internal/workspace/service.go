@@ -281,16 +281,16 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members and the environment (base, project image, its automatic updates), in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates) and the material, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
 	if !asAdmin {
-		desc, members, base, image, gitURL, gitRef, auto := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate
+		desc, members, base, image, gitURL, gitRef, auto, material, materialRef := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef
 		p = cur
-		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate = desc, members, base, image, gitURL, gitRef, auto
+		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef = desc, members, base, image, gitURL, gitRef, auto, material, materialRef
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)
@@ -299,6 +299,9 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		return Project{}, err
 	}
 	if err := s.applyProjectImage(ctx, &p, cur); err != nil {
+		return Project{}, err
+	}
+	if err := s.applyMaterial(ctx, &p, cur); err != nil {
 		return Project{}, err
 	}
 	if err := withinTree(p); err != nil {

@@ -85,7 +85,15 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 	if err := migrateProjectGPUs(db); err != nil {
 		return nil, err
 	}
+	if err := migrateMaterial(db); err != nil {
+		return nil, err
+	}
 	return &GormStore{db: db}, nil
+}
+
+// migrateMaterial gives the projects built from Git their repository as course material (16.10.2026: until then the build's repository was checked out on its own, now the material is a field of its own). Once: the column is NULL only in rows from before it.
+func migrateMaterial(db *gorm.DB) error {
+	return db.Exec(`UPDATE workspace_projects SET material_git_url = COALESCE(image_git_url, ''), material_git_ref = COALESCE(image_git_ref, '') WHERE material_git_url IS NULL`).Error
 }
 
 // migrateProjectGPUs turns the one number of GPUs a project could use at the same time (Limits.GPUs, which GORM named limit_gp_us) into a number per GPU class: the same number for each class the project allows. A no-op once the column is gone.

@@ -63,6 +63,9 @@ type HubProject struct {
 	// ImagePending: the environment is built from Git and has no finished image yet; starts are refused until it has. ImageBuild is the build's state (building, failed with its message), when there is one.
 	ImagePending bool                  `json:"image_pending,omitempty"`
 	ImageBuild   *workspace.ImageBuild `json:"image_build,omitempty"`
+	// MaterialGitURL and MaterialGitRef are the project's course material, which the hub checks out into ~/projects/<repo> (empty ref = default branch); empty = none.
+	MaterialGitURL string `json:"material_git_url,omitempty"`
+	MaterialGitRef string `json:"material_git_ref,omitempty"`
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -97,7 +100,7 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 			}
 			hubClasses = append(hubClasses, hc)
 		}
-		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild})
+		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef})
 	}
 	return out
 }

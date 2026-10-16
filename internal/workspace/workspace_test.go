@@ -158,6 +158,7 @@ func TestForPerson(t *testing.T) {
 type fakeBuilder struct {
 	builds  map[string]ImageBuild
 	started int
+	checked int
 	bases   []string
 }
 
@@ -187,6 +188,48 @@ func (f *fakeBuilder) ProjectImageLog(context.Context, string) (BuildLog, error)
 func (f *fakeBuilder) ForgetProjectImage(_ context.Context, slug string) error {
 	delete(f.builds, slug)
 	return nil
+}
+func (f *fakeBuilder) CheckGitBranch(_ context.Context, gitURL, branch string) (string, error) {
+	f.checked++
+	if !strings.HasPrefix(gitURL, "https://github.com/") {
+		return "", errors.New("nicht zugelassen")
+	}
+	if branch != "" && branch != "main" {
+		return "", errors.New("Branch nicht gefunden")
+	}
+	return strings.TrimSuffix(gitURL, ".git"), nil
+}
+
+func TestMaterial(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Members: mgr}, "admin")
+	if _, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, MaterialGitURL: "https://github.com/o/kurs"}, "a@dhbw.de", false); !strings.Contains(reason(err), "nicht eingerichtet") {
+		t.Fatalf("without builder: %v", err)
+	}
+	f := &fakeBuilder{builds: map[string]ImageBuild{}}
+	s.SetImageBuilder(f)
+	for _, bad := range []Project{{MaterialGitURL: "https://evil.example/o/kurs"}, {MaterialGitURL: "https://github.com/o/kurs", MaterialGitRef: "v1"}} {
+		bad.Slug, bad.Members = "kurs", mgr
+		if _, err := s.Update(ctx, bad, "a@dhbw.de", false); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+	// A manager sets the material next to a free image; it is stored in its canonical form, and no build starts.
+	out, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, MaterialGitURL: " https://github.com/o/kurs.git ", MaterialGitRef: "main"}, "a@dhbw.de", false)
+	if err != nil || out.MaterialGitURL != "https://github.com/o/kurs" || out.MaterialGitRef != "main" || f.started != 0 {
+		t.Fatalf("material: %+v %v", out, err)
+	}
+	// Unchanged material is not checked again; removing it drops the branch too.
+	checked := f.checked
+	if _, err := s.Update(ctx, out, "a@dhbw.de", false); err != nil || f.checked != checked {
+		t.Fatalf("checked again: %v %d", err, f.checked)
+	}
+	out.MaterialGitURL = ""
+	if out, err = s.Update(ctx, out, "a@dhbw.de", false); err != nil || out.MaterialGitRef != "" {
+		t.Fatalf("removed: %+v %v", out, err)
+	}
 }
 
 func TestProjectImageFinished(t *testing.T) {

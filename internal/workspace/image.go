@@ -59,6 +59,8 @@ type ImageBuilder interface {
 	ProjectImageBuild(ctx context.Context, slug string) (*ImageBuild, error)
 	ProjectImageLog(ctx context.Context, slug string) (BuildLog, error)
 	ForgetProjectImage(ctx context.Context, slug string) error
+	// CheckGitBranch checks a repository for course material: public, on an allowed host, with that branch (empty = its default branch); it returns the repository's canonical address.
+	CheckGitBranch(ctx context.Context, gitURL, branch string) (string, error)
 }
 
 // SetImageBuilder adds project images from Git; without it a Git source is refused.
@@ -116,6 +118,27 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		return refuse("Image %s ist nicht abrufbar (es muss öffentlich sein): %v", p.ProjectImage, err)
 	}
 	p.ImageDigest, p.ImageDerived = img.Digest, derivedFrom(img.Labels)
+	return nil
+}
+
+// applyMaterial checks the course material of an update when it changed, and keeps the repository's canonical address.
+func (s *Service) applyMaterial(ctx context.Context, p *Project, cur Project) error {
+	p.MaterialGitURL, p.MaterialGitRef = strings.TrimSpace(p.MaterialGitURL), strings.TrimSpace(p.MaterialGitRef)
+	if p.MaterialGitURL == "" {
+		p.MaterialGitRef = ""
+		return nil
+	}
+	if p.MaterialGitURL == cur.MaterialGitURL && p.MaterialGitRef == cur.MaterialGitRef {
+		return nil
+	}
+	if s.builds == nil {
+		return refuse("Material aus Git ist hier nicht eingerichtet.")
+	}
+	canonical, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef)
+	if err != nil {
+		return refuse("Material: %v", err)
+	}
+	p.MaterialGitURL = canonical
 	return nil
 }
 
