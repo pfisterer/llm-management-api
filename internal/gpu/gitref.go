@@ -128,4 +128,4 @@ func (g gitRefs) resolve(ref string) (commit, branch string, err error) {
 	return "", "", fmt.Errorf("%w: %s", ErrRefNotFound, ref)
 }
 
-func newGitClient() *http.Client { return withDNSRetry(&http.Client{Timeout: 20 * time.Second}) }
+func newGitClient() *http.Client { return withDNSRetry(&http.Client{Timeout: 30 * time.Second}) }

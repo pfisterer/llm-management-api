@@ -252,7 +252,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		}
 		wsSvc.SetUsage(st.usage)
 		// Finished project images are checked in their registry, anonymously like a node pulls them; images from Git are built by the GPU part.
-		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
+		ociClient := &oci.Client{HTTP: gpu.RetryingClient(30 * time.Second)}
 		wsSvc.SetImageInspector(func(ctx context.Context, image string, auth *workspace.Basic) (workspace.RegistryImage, error) {
 			var a *oci.Auth
 			if auth != nil {

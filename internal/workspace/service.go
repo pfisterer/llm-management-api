@@ -458,7 +458,7 @@ func (s *Service) checkMaterial(ctx context.Context, p Project) error {
 	if at, ok := s.materialOK.Load(key); ok && s.now().Sub(at.(time.Time)) < materialFresh {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL))); err != nil {
 		return refuse("Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Server nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
