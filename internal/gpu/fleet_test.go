@@ -317,3 +317,12 @@ func TestFlavorArch(t *testing.T) {
 		t.Errorf("empty %v", l)
 	}
 }
+
+// A class's queue preempts within its own flavor (its gap filler) before it borrows another pool's GPU.
+func TestClusterQueuePrefersOwnFlavor(t *testing.T) {
+	q := clusterQueueFor("large", flavorQuota{class: "gb10", gpus: 1}, []flavorQuota{{class: "rtx"}})
+	ff, _ := q["spec"].(map[string]any)["flavorFungibility"].(map[string]any)
+	if ff["whenCanPreempt"] != "MayStopSearch" {
+		t.Fatalf("flavorFungibility %v", ff)
+	}
+}

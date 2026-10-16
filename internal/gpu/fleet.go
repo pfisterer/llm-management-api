@@ -778,6 +778,8 @@ func clusterQueueFor(tier string, own flavorQuota, others []flavorQuota) map[str
 			"cohortName":        "tier-" + tier,
 			// A workload with higher priority evicts lower ones in the same queue: that is what makes the inference gap fillers give the GPU back. Lent GPUs come back to their pool at once.
 			"preemption": map[string]any{"withinClusterQueue": "LowerPriority", "reclaimWithinCohort": "Any"},
+			// The class's own GPUs first, even when that means evicting its gap filler: by default Kueue tries the next flavor before preempting, so a workspace of a class whose GPU a gap filler holds went to another pool of the tier (16.10.2026: the GB10 test server on an RTX PRO 6000). Borrowing stays for when the own GPUs are really taken.
+			"flavorFungibility": map[string]any{"whenCanPreempt": "MayStopSearch"},
 			"resourceGroups": []any{map[string]any{
 				"coveredResources": []any{"cpu", "memory", "nvidia.com/gpu"},
 				"flavors":          flavors,
