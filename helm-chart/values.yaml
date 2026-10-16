@@ -25,6 +25,8 @@ secrets:
   gpuHubToken: ""
   # VLLM_API_KEY of the inference pool (gpu.inference).
   gpuInferenceApiKey: ""
+  # Seals the projects' tokens for private repositories and registries (base64 of 32 random bytes); empty = projects get no credentials. Changing it makes the stored tokens unreadable.
+  workspaceCredentialsKey: ""
   # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
   treeApiToken: ""
   # Token LibreChat sends to the chat exchange (:8089) as its API key; empty = the exchange refuses every request.

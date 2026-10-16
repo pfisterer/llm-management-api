@@ -78,13 +78,19 @@ func (i Image) Pinned(image string) string {
 	return image + "@" + i.Digest
 }
 
-// Inspect resolves the reference to its digest and reads the labels of that digest.
-func (c *Client) Inspect(ctx context.Context, image string) (Image, error) {
+// Auth is a user name and token for a registry; nil = anonymous.
+type Auth struct {
+	Username string
+	Password string
+}
+
+// Inspect resolves the reference to its digest and reads the labels of that digest, anonymously or with auth.
+func (c *Client) Inspect(ctx context.Context, image string, auth *Auth) (Image, error) {
 	r, err := ParseRef(image)
 	if err != nil {
 		return Image{}, err
 	}
-	s := &session{c: c, r: r}
+	s := &session{c: c, r: r, auth: auth}
 	var m struct {
 		Manifests []struct {
 			Digest   string `json:"digest"`
@@ -156,11 +162,13 @@ func (c *Client) Inspect(ctx context.Context, image string) (Image, error) {
 	return Image{Digest: digest, Labels: cfg.Config.Labels, Archs: archs}, nil
 }
 
-// session is one image's requests, with the anonymous token the registry hands out on the first 401.
+// session is one image's requests, with the token the registry hands out on the first 401 (anonymously, or for auth), or auth itself where the registry asks for Basic.
 type session struct {
 	c     *Client
 	r     Ref
+	auth  *Auth
 	token string
+	basic bool
 }
 
 func (s *session) getJSON(ctx context.Context, path, accept string, v any) error {
@@ -184,8 +192,11 @@ func (s *session) get(ctx context.Context, path, accept string) ([]byte, http.He
 			return nil, nil, err
 		}
 		req.Header.Set("Accept", accept)
-		if s.token != "" {
+		switch {
+		case s.token != "":
 			req.Header.Set("Authorization", "Bearer "+s.token)
+		case s.basic && s.auth != nil:
+			req.SetBasicAuth(s.auth.Username, s.auth.Password)
 		}
 		resp, err := s.c.HTTP.Do(req)
 		if err != nil {
@@ -200,7 +211,12 @@ func (s *session) get(ctx context.Context, path, accept string) ([]byte, http.He
 		case resp.StatusCode == http.StatusOK:
 			return body, resp.Header, nil
 		case resp.StatusCode == http.StatusUnauthorized && attempt == 0:
-			if err := s.fetchToken(ctx, resp.Header.Get("WWW-Authenticate")); err != nil {
+			challenge := resp.Header.Get("WWW-Authenticate")
+			if s.auth != nil && strings.HasPrefix(strings.ToLower(challenge), "basic") {
+				s.basic = true
+				continue
+			}
+			if err := s.fetchToken(ctx, challenge); err != nil {
 				return nil, nil, err
 			}
 		case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
@@ -237,6 +253,9 @@ func (s *session) fetchToken(ctx context.Context, challenge string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p["realm"]+"?"+q.Encode(), nil)
 	if err != nil {
 		return err
+	}
+	if s.auth != nil {
+		req.SetBasicAuth(s.auth.Username, s.auth.Password)
 	}
 	resp, err := s.c.HTTP.Do(req)
 	if err != nil {

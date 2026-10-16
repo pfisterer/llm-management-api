@@ -18,11 +18,12 @@ type RegistryImage struct {
 	Archs  []string
 }
 
-// ArchImage is an image with the architectures it runs on, for the prepull per architecture; Base marks a base of the catalogue (one of ours, which can run the prepull's idle container).
+// ArchImage is an image with the architectures it runs on, for the prepull per architecture; Base marks a base of the catalogue (one of ours, which can run the prepull's idle container); PullSecret is the project's pull secret for a private image.
 type ArchImage struct {
-	Image string
-	Archs []string
-	Base  bool
+	Image      string
+	Archs      []string
+	Base       bool
+	PullSecret string
 }
 
 // archsOr is a list of architectures, amd64 when it names none (images and bases from before architectures were known).
@@ -33,8 +34,8 @@ func archsOr(archs []string) []string {
 	return archs
 }
 
-// ImageInspector looks an image up in its registry (oci.Client.Inspect); nil = no check, the image runs by its tag.
-type ImageInspector func(ctx context.Context, image string) (RegistryImage, error)
+// ImageInspector looks an image up in its registry (oci.Client.Inspect), with the project's access to that registry if it has one; nil = no check, the image runs by its tag.
+type ImageInspector func(ctx context.Context, image string, auth *Basic) (RegistryImage, error)
 
 // SetImageInspector adds the check and pinning of finished project images.
 func (s *Service) SetImageInspector(f ImageInspector) { s.inspect = f }
@@ -75,8 +76,8 @@ type ImageBuilder interface {
 	ProjectImageBuild(ctx context.Context, slug string) (*ImageBuild, error)
 	ProjectImageLog(ctx context.Context, slug string) (BuildLog, error)
 	ForgetProjectImage(ctx context.Context, slug string) error
-	// CheckGitBranch checks a repository for course material: public, on an allowed host, with that branch (empty = its default branch); it returns the repository's canonical address.
-	CheckGitBranch(ctx context.Context, gitURL, branch string) (string, error)
+	// CheckGitBranch checks a repository for course material: reachable (public, or with the project's access auth), on an allowed host, with that branch (empty = its default branch); it returns the repository's canonical address.
+	CheckGitBranch(ctx context.Context, gitURL, branch string, auth *Basic) (string, error)
 }
 
 // SetImageBuilder adds project images from Git; without it a Git source is refused.
@@ -130,9 +131,9 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	if s.inspect == nil {
 		return nil
 	}
-	img, err := s.inspect(ctx, p.ProjectImage)
+	img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
 	if err != nil {
-		return refuse("Image %s ist nicht abrufbar (es muss öffentlich sein): %v", p.ProjectImage, err)
+		return refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
 	}
 	p.ImageDigest, p.ImageDerived, p.ImageArchs = img.Digest, derivedFrom(img.Labels), img.Archs
 	return nil
@@ -151,12 +152,21 @@ func (s *Service) applyMaterial(ctx context.Context, p *Project, cur Project) er
 	if s.builds == nil {
 		return refuse("Material aus Git ist hier nicht eingerichtet.")
 	}
-	canonical, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef)
+	canonical, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL)))
 	if err != nil {
 		return refuse("Material: %v", err)
 	}
 	p.MaterialGitURL = canonical
 	return nil
+}
+
+// imageHost is the registry of an image reference (Docker Hub for one without a host).
+func imageHost(image string) string {
+	first, _, found := strings.Cut(image, "/")
+	if !found || (!strings.ContainsAny(first, ".:") && first != "localhost") {
+		return "docker.io"
+	}
+	return normaliseHost(first)
 }
 
 // finishedImage tells whether the project runs an existing image (not built from Git).
@@ -176,7 +186,7 @@ func (s *Service) CheckProjectImages(ctx context.Context) error {
 		if !finishedImage(p) || !p.Active(s.now()) {
 			continue
 		}
-		img, err := s.inspect(ctx, p.ProjectImage)
+		img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
 		if err != nil {
 			s.unpullable.Store(p.ProjectImage, true)
 			errs = append(errs, err)
@@ -213,11 +223,11 @@ func (s *Service) UpdateProjectImage(ctx context.Context, slug, by string) (Proj
 	if !finishedImage(p) || s.inspect == nil {
 		return Project{}, refuse("Das Projekt nutzt kein fertiges Image.")
 	}
-	img, err := s.inspect(ctx, p.ProjectImage)
+	img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
 	if err != nil {
-		return Project{}, refuse("Image %s ist nicht abrufbar (es muss öffentlich sein): %v", p.ProjectImage, err)
+		return Project{}, refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
 	}
-	p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.UpdatedBy = img.Digest, derivedFrom(img.Labels), "", by
+	p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.ImageArchs, p.UpdatedBy = img.Digest, derivedFrom(img.Labels), "", img.Archs, by
 	return p, s.store.Update(ctx, &p)
 }
 
@@ -280,20 +290,24 @@ func (s *Service) PrepullImages(ctx context.Context) ([]ArchImage, error) {
 		return nil, err
 	}
 	var out []ArchImage
-	add := func(img string, archs []string, base bool) {
+	add := func(img string, archs []string, base bool, secret string) {
 		if img != "" && !slices.ContainsFunc(out, func(a ArchImage) bool { return a.Image == img }) {
-			out = append(out, ArchImage{Image: img, Archs: archsOr(archs), Base: base})
+			out = append(out, ArchImage{Image: img, Archs: archsOr(archs), Base: base, PullSecret: secret})
 		}
 	}
 	for _, b := range s.cfg.Bases {
-		add(b.Image, b.Archs, true)
+		add(b.Image, b.Archs, true, "")
 	}
 	for _, p := range list {
 		if _, broken := s.unpullable.Load(p.ProjectImage); broken && finishedImage(p) {
 			continue
 		}
 		if p.Active(s.now()) {
-			add(s.EffectiveImage(p), s.EffectiveArchs(p), false)
+			secret := ""
+			if finishedImage(p) && s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)) != nil {
+				secret = PullSecretName(p.Slug)
+			}
+			add(s.EffectiveImage(p), s.EffectiveArchs(p), false, secret)
 		}
 	}
 	return out, nil

@@ -68,25 +68,82 @@ func TestInspect(t *testing.T) {
 	host := strings.TrimPrefix(srv.URL, "https://")
 	c := &Client{HTTP: srv.Client()}
 
-	img, err := c.Inspect(context.Background(), host+"/org/course:v1")
+	img, err := c.Inspect(context.Background(), host+"/org/course:v1", nil)
 	if err != nil || img.Labels["cloud.dhbw.base"] != "notebook-v1" || img.Digest != "sha256:index" || !slices.Equal(img.Archs, []string{"amd64", "arm64"}) {
 		t.Fatalf("image = %+v, %v", img, err)
 	}
 	// A single-platform image names its architecture in its config.
-	if one, err := c.Inspect(context.Background(), host+"/org/course:arm-only"); err != nil || !slices.Equal(one.Archs, []string{"arm64"}) {
+	if one, err := c.Inspect(context.Background(), host+"/org/course:arm-only", nil); err != nil || !slices.Equal(one.Archs, []string{"arm64"}) {
 		t.Fatalf("single platform = %+v, %v", one, err)
 	}
 	if got := img.Pinned(host + "/org/course:v1"); got != host+"/org/course:v1@sha256:index" {
 		t.Errorf("pinned = %s", got)
 	}
 	// A pinned reference is read by its digest and keeps it.
-	if again, err := c.Inspect(context.Background(), img.Pinned(host+"/org/course:v1")); err != nil || again.Digest != "sha256:index" {
+	if again, err := c.Inspect(context.Background(), img.Pinned(host+"/org/course:v1"), nil); err != nil || again.Digest != "sha256:index" {
 		t.Errorf("by digest = %+v, %v", again, err)
 	}
-	if _, err := c.Inspect(context.Background(), host+"/org/course:v2"); !errors.Is(err, ErrNotFound) {
+	if _, err := c.Inspect(context.Background(), host+"/org/course:v2", nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing tag: %v", err)
 	}
-	if _, err := c.Inspect(context.Background(), host+"/org/private:v1"); !errors.Is(err, ErrNotFound) {
+	if _, err := c.Inspect(context.Background(), host+"/org/private:v1", nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("private repository: %v", err)
+	}
+}
+
+// A private image: the token endpoint hands out a token only for the right user and password; a registry that asks for Basic gets them directly.
+func TestInspectAuth(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		authorized := ok && u == "dozent" && p == "geheim"
+		switch {
+		case r.URL.Path == "/token":
+			if !authorized {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, `{"token":"t2"}`)
+		case strings.HasPrefix(r.URL.Path, "/v2/basic/"):
+			if !authorized {
+				w.Header().Set("WWW-Authenticate", `Basic realm="reg"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			serveOne(w, r)
+		case r.Header.Get("Authorization") != "Bearer t2":
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s/token",service="reg",scope="repository:org/private:pull"`, srv.URL))
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			serveOne(w, r)
+		}
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "https://")
+	c := &Client{HTTP: srv.Client()}
+	good := &Auth{Username: "dozent", Password: "geheim"}
+	for _, repo := range []string{"org/private", "basic/private"} {
+		if _, err := c.Inspect(context.Background(), host+"/"+repo+":v1", nil); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s anonymously: %v", repo, err)
+		}
+		if _, err := c.Inspect(context.Background(), host+"/"+repo+":v1", &Auth{Username: "dozent", Password: "falsch"}); err == nil {
+			t.Errorf("%s with a wrong password", repo)
+		}
+		if img, err := c.Inspect(context.Background(), host+"/"+repo+":v1", good); err != nil || img.Digest != "sha256:one" {
+			t.Errorf("%s with access: %+v %v", repo, img, err)
+		}
+	}
+}
+
+// serveOne answers for a single-platform image: manifest sha256:one with config sha256:c1.
+func serveOne(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/manifests/v1"):
+		w.Header().Set("Docker-Content-Digest", "sha256:one")
+		fmt.Fprint(w, `{"config":{"digest":"sha256:c1"}}`)
+	case strings.HasSuffix(r.URL.Path, "/blobs/sha256:c1"):
+		fmt.Fprint(w, `{"architecture":"amd64","config":{}}`)
+	default:
+		w.WriteHeader(http.StatusNotFound)
 	}
 }

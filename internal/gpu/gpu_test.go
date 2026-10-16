@@ -123,7 +123,7 @@ func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 	b := &fakeBuilds{status: map[string]jobStatus{}}
 	i := &fakeImages{have: map[string]bool{}}
 	h := &fakeHub{started: map[string]map[string]any{}}
-	refs := func(context.Context, string) (gitRefs, error) {
+	refs := func(context.Context, string, *workspace.Basic) (gitRefs, error) {
 		return gitRefs{Refs: map[string]string{"refs/heads/main": "0123456789abcdef0123456789abcdef01234567"}, DefaultBranch: "main"}, nil
 	}
 	s := newService(Config{Registry: "reg", JupyterURL: "https://hub"}, NewMemoryStore(), b, i, h, refs, zap.NewNop().Sugar())
@@ -305,15 +305,26 @@ func TestCheckGitBranch(t *testing.T) {
 	ctx := context.Background()
 	s, _, _, _ := testService()
 	s.cfg.GitHosts = []string{"github.com"}
-	if u, err := s.CheckGitBranch(ctx, "https://github.com/o/kurs.git/", ""); err != nil || u != "https://github.com/o/kurs" {
+	if u, err := s.CheckGitBranch(ctx, "https://github.com/o/kurs.git/", "", nil); err != nil || u != "https://github.com/o/kurs" {
 		t.Fatalf("default branch: %q %v", u, err)
 	}
-	if _, err := s.CheckGitBranch(ctx, "https://github.com/o/kurs", "main"); err != nil {
+	if _, err := s.CheckGitBranch(ctx, "https://github.com/o/kurs", "main", nil); err != nil {
 		t.Fatalf("branch: %v", err)
 	}
 	for _, bad := range [][2]string{{"https://github.com/o/kurs", "v1"}, {"https://gitlab.example/o/kurs", ""}, {"http://github.com/o/kurs", ""}} {
-		if _, err := s.CheckGitBranch(ctx, bad[0], bad[1]); err == nil {
+		if _, err := s.CheckGitBranch(ctx, bad[0], bad[1], nil); err == nil {
 			t.Fatalf("accepted %v", bad)
+		}
+	}
+}
+
+// A wildcard entry allows the domain and every host under it, nothing that merely ends in the same letters.
+func TestGitHostWildcard(t *testing.T) {
+	s, _, _, _ := testService()
+	s.cfg.GitHosts = []string{"github.com", "*.dhbw.de"}
+	for host, ok := range map[string]bool{"github.com": true, "dhbw.de": true, "gitlab.dhbw.de": true, "git.mosbach.dhbw.de": true, "evil-dhbw.de": false, "dhbw.de.evil.com": false, "gitlab.com": false} {
+		if _, _, err := s.normaliseRepo("https://" + host + "/o/kurs"); (err == nil) != ok {
+			t.Errorf("%s: %v", host, err)
 		}
 	}
 }

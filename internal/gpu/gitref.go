@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"io"
 	"net/http"
 	"regexp"
@@ -24,19 +25,25 @@ var ErrRefNotFound = errors.New("Branch, Tag oder Commit nicht gefunden")
 
 // fetchRefs reads the refs of a public repository over Git's smart HTTP
 // protocol (what `git ls-remote` does), so the service needs no git binary.
-func fetchRefs(ctx context.Context, client *http.Client, repoURL string) (gitRefs, error) {
+func fetchRefs(ctx context.Context, client *http.Client, repoURL string, auth *workspace.Basic) (gitRefs, error) {
 	u := strings.TrimSuffix(repoURL, "/") + "/info/refs?service=git-upload-pack"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return gitRefs{}, err
 	}
 	req.Header.Set("User-Agent", "git/2.45.0 (llm-management-api)")
+	if auth != nil {
+		req.SetBasicAuth(auth.Username, auth.Token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return gitRefs{}, fmt.Errorf("Git-Server nicht erreichbar: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if auth != nil {
+			return gitRefs{}, fmt.Errorf("Repository nicht gefunden, oder der Zugang des Projekts reicht nicht (HTTP %d)", resp.StatusCode)
+		}
 		return gitRefs{}, fmt.Errorf("Repository nicht gefunden oder nicht öffentlich (HTTP %d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {

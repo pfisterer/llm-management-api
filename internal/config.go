@@ -68,6 +68,8 @@ type Config struct {
 	GPUHubToken string
 	// Workspaces (docs/bauplan.md, Stufe 4): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
 	WorkspacesJSON string
+	// WorkspaceCredentialsKey seals the projects' tokens for private repositories and registries (base64, 32 bytes); empty = no credentials.
+	WorkspaceCredentialsKey string
 	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off) and where people get a project. The LLM tokens, rate limits and extra models come from the tree's projects, one pool (a LiteLLM team) per project.
 	TreeToken      string
 	SelfServiceURL string
@@ -162,6 +164,7 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
 	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")
+	cfg.WorkspaceCredentialsKey = envconf.String("WORKSPACE_CREDENTIALS_KEY", "")
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
 	cfg.LLMDefaultRPM = envconf.Int("LLM_DEFAULT_RPM", 60)

@@ -277,6 +277,95 @@ func (s *Server) updateProjectImage(c *gin.Context) {
 	c.JSON(http.StatusOK, p)
 }
 
+// CredentialRequest is a project's access to a host: user name and token (stored encrypted, never handed out again).
+type CredentialRequest struct {
+	Host     string `json:"host" binding:"required" example:"gitlab.dhbw.de"`
+	Username string `json:"username" binding:"required" example:"gitlab+deploy-token-12"`
+	Token    string `json:"token" binding:"required"`
+}
+
+// listProjectCredentials godoc
+//
+//	@ID				listProjectCredentials
+//	@Summary		A project's access to private repositories and registries
+//	@Description	Per host the user name, who set it and when; never the token.
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string	true	"short name"
+//	@Success		200		{array}		workspace.CredentialInfo
+//	@Failure		403		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/credentials [get]
+func (s *Server) listProjectCredentials(c *gin.Context) {
+	slug := c.Param("slug")
+	if !s.manager(c, slug) {
+		return
+	}
+	list, err := s.ws.Credentials(c.Request.Context(), slug)
+	if s.workspaceError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+// setProjectCredential godoc
+//
+//	@ID				setProjectCredential
+//	@Summary		Set a project's access to a host
+//	@Description	User name and token for a private Git repository or registry on this host (GitHub: classic token with repo and read:packages; GitLab: deploy token with read_repository and read_registry; Forgejo: token with read:repository and read:package). Replaces the host's previous access. The project's servers get it as pull secret and for the material's checkout.
+//	@Tags			workspaces
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string				true	"short name"
+//	@Param			body	body		CredentialRequest	true	"access"
+//	@Success		200		{array}		workspace.CredentialInfo
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		403		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/credentials [put]
+func (s *Server) setProjectCredential(c *gin.Context) {
+	slug := c.Param("slug")
+	if !s.manager(c, slug) {
+		return
+	}
+	var req CredentialRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Host, Benutzername und Token angeben."})
+		return
+	}
+	if s.workspaceError(c, s.ws.SetCredential(c.Request.Context(), slug, req.Host, req.Username, req.Token, caller(c).Email)) {
+		return
+	}
+	list, err := s.ws.Credentials(c.Request.Context(), slug)
+	if s.workspaceError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+// deleteProjectCredential godoc
+//
+//	@ID				deleteProjectCredential
+//	@Summary		Remove a project's access to a host
+//	@Tags			workspaces
+//	@Security		BearerAuth
+//	@Param			slug	path	string	true	"short name"
+//	@Param			host	path	string	true	"host"
+//	@Success		204
+//	@Failure		403	{object}	ErrorResponse
+//	@Failure		404	{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/credentials/{host} [delete]
+func (s *Server) deleteProjectCredential(c *gin.Context) {
+	slug := c.Param("slug")
+	if !s.manager(c, slug) {
+		return
+	}
+	if s.workspaceError(c, s.ws.DeleteCredential(c.Request.Context(), slug, c.Param("host"))) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // getProjectImageLog godoc
 //
 //	@ID				getProjectImageLog

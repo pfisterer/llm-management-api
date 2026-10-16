@@ -159,6 +159,7 @@ type fakeBuilder struct {
 	builds  map[string]ImageBuild
 	started int
 	checked int
+	auth    *Basic
 	bases   []string
 }
 
@@ -189,7 +190,8 @@ func (f *fakeBuilder) ForgetProjectImage(_ context.Context, slug string) error {
 	delete(f.builds, slug)
 	return nil
 }
-func (f *fakeBuilder) CheckGitBranch(_ context.Context, gitURL, branch string) (string, error) {
+func (f *fakeBuilder) CheckGitBranch(_ context.Context, gitURL, branch string, auth *Basic) (string, error) {
+	f.auth = auth
 	f.checked++
 	if !strings.HasPrefix(gitURL, "https://github.com/") {
 		return "", errors.New("nicht zugelassen")
@@ -236,7 +238,7 @@ func TestProjectImageFinished(t *testing.T) {
 	ctx := context.Background()
 	s := service()
 	checked := 0
-	s.SetImageInspector(func(_ context.Context, image string) (RegistryImage, error) {
+	s.SetImageInspector(func(_ context.Context, image string, _ *Basic) (RegistryImage, error) {
 		checked++
 		switch image {
 		case "ghcr.io/kurs/ml:1":
@@ -278,7 +280,7 @@ func TestCheckProjectImages(t *testing.T) {
 	ctx := context.Background()
 	s := service()
 	digest := map[string]RegistryImage{"ghcr.io/kurs/ml:latest": {Digest: "sha256:a", Labels: map[string]string{BaseLabel: "notebook-v1"}}}
-	s.SetImageInspector(func(_ context.Context, image string) (RegistryImage, error) {
+	s.SetImageInspector(func(_ context.Context, image string, _ *Basic) (RegistryImage, error) {
 		img, ok := digest[image]
 		if !ok {
 			return RegistryImage{}, errors.New("not found")
@@ -538,7 +540,7 @@ func TestPrepullArchs(t *testing.T) {
 	ctx := context.Background()
 	s := service()
 	s.cfg.Bases[0].Archs = []string{"amd64", "arm64"}
-	s.SetImageInspector(func(_ context.Context, image string) (RegistryImage, error) {
+	s.SetImageInspector(func(_ context.Context, image string, _ *Basic) (RegistryImage, error) {
 		return RegistryImage{Digest: "sha256:" + image[len(image)-1:], Archs: map[bool][]string{true: {"arm64"}, false: nil}[strings.HasSuffix(image, "arm:1")]}, nil
 	})
 	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}

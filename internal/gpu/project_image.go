@@ -153,12 +153,12 @@ func (s *Service) BuildProjectImage(ctx context.Context, slug, base, gitURL, ref
 }
 
 // CheckGitBranch checks a repository for a project's course material (workspace.Project.MaterialGitURL): public, on an allowed Git host, with that branch (empty = its default branch). The servers' checkout follows a branch, so a tag or commit is refused.
-func (s *Service) CheckGitBranch(ctx context.Context, gitURL, branch string) (string, error) {
+func (s *Service) CheckGitBranch(ctx context.Context, gitURL, branch string, auth *workspace.Basic) (string, error) {
 	canonical, _, err := s.normaliseRepo(gitURL)
 	if err != nil {
 		return "", err
 	}
-	refs, err := s.refs(ctx, canonical)
+	refs, err := s.refs(ctx, canonical, auth)
 	if err != nil {
 		return "", err
 	}
@@ -269,9 +269,9 @@ const PrepullName = "kernel-image-prepull"
 const prepullSpecRevision = "3"
 
 // prepullDaemonSet keeps hold (a base, which has sleep) running and mounts every other image as an image volume: the kubelet pulls them and keeps them while the pod runs, but never starts them, so an image without a shell (distroless) or with a broken entrypoint holds up nothing. Images whose registry does not answer are left out before (workspace.Service.ProjectImages), since the pod starts only when all its volumes are pulled.
-func prepullDaemonSet(ns, name, arch, hold string, images []string) map[string]any {
+func prepullDaemonSet(ns, name, arch, hold string, images, pullSecrets []string) map[string]any {
 	// The spec revision goes into the hash, so a change of the spec below reaches a DaemonSet whose images stayed the same.
-	sum := sha256.Sum256([]byte(prepullSpecRevision + "\n" + hold + "\n" + strings.Join(images, "\n")))
+	sum := sha256.Sum256([]byte(prepullSpecRevision + "\n" + hold + "\n" + strings.Join(images, "\n") + "\n" + strings.Join(pullSecrets, "\n")))
 	security := map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []any{"ALL"}}}
 	resources := map[string]any{"requests": map[string]any{"cpu": "1m", "memory": "8Mi"}, "limits": map[string]any{"memory": "32Mi"}}
 	var volumes, mounts []any
@@ -295,6 +295,13 @@ func prepullDaemonSet(ns, name, arch, hold string, images []string) map[string]a
 		"tolerations": []any{map[string]any{"key": "dhbw.cloud/gpu-lab", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
 		"containers": []any{map[string]any{"name": "hold", "image": hold, "imagePullPolicy": "IfNotPresent",
 			"command": []any{"sleep", "infinity"}, "securityContext": security, "resources": resources, "volumeMounts": mounts}},
+	}
+	if len(pullSecrets) > 0 {
+		var refs []any
+		for _, n := range pullSecrets {
+			refs = append(refs, map[string]any{"name": n})
+		}
+		podSpec["imagePullSecrets"] = refs
 	}
 	if len(volumes) > 0 {
 		podSpec["volumes"] = volumes
@@ -354,18 +361,23 @@ func (s *Service) EnsurePrepull(ctx context.Context, images []workspace.ArchImag
 				break
 			}
 		}
-		var list []string
+		var list, secrets []string
 		for _, img := range images {
 			name := strings.TrimSpace(img.Image)
 			if name != "" && name != hold && slices.Contains(img.Archs, arch) && !slices.Contains(list, name) {
 				list = append(list, name)
+				// A private image is pulled with its project's secret; the kubelet still checks every other pod's own credentials before it uses the image (KubeletEnsureSecretPulledImages).
+				if img.PullSecret != "" && !slices.Contains(secrets, img.PullSecret) {
+					secrets = append(secrets, img.PullSecret)
+				}
 			}
 		}
 		if hold == "" {
 			continue
 		}
 		slices.Sort(list)
-		if err := s.putPrepull(ctx, ds, ns, prepullName(arch), prepullDaemonSet(ns, prepullName(arch), arch, hold, list)); err != nil {
+		slices.Sort(secrets)
+		if err := s.putPrepull(ctx, ds, ns, prepullName(arch), prepullDaemonSet(ns, prepullName(arch), arch, hold, list, secrets)); err != nil {
 			errs = append(errs, err)
 		}
 	}

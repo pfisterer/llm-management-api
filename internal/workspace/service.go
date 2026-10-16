@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/cipher"
 	"errors"
 	"fmt"
 	"regexp"
@@ -127,6 +128,10 @@ type Service struct {
 	materialOK sync.Map
 	builds     ImageBuilder
 	classes    func(ctx context.Context) ([]GPUClass, error)
+	// Credentials (credentials.go): their store, the cipher of the tokens and where the projects' secrets go; nil = none.
+	creds       CredentialStore
+	aead        cipher.AEAD
+	credSecrets func(ctx context.Context, want map[string]ProjectSecrets) error
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.
@@ -321,6 +326,15 @@ func (s *Service) Delete(ctx context.Context, slug string) error {
 		return err
 	}
 	s.forgetBuilds(ctx, slug)
+	if s.creds != nil {
+		list, _ := s.creds.List(ctx, slug)
+		for _, c := range list {
+			_ = s.creds.Delete(ctx, slug, c.Host)
+		}
+		if len(list) > 0 {
+			_ = s.SyncCredentialSecrets(ctx)
+		}
+	}
 	return nil
 }
 
@@ -446,7 +460,7 @@ func (s *Service) checkMaterial(ctx context.Context, p Project) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef); err != nil {
+	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL))); err != nil {
 		return refuse("Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Server nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
 	}
 	s.materialOK.Store(key, s.now())

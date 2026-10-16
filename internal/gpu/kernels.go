@@ -27,18 +27,19 @@ type KernelConfig struct {
 
 // KernelOwner is the server pod a kernel belongs to.
 type KernelOwner struct {
-	Pod       string
-	UID       string
-	IP        string
-	Person    string // JupyterHub user name (annotation hub.jupyter.org/username)
-	UserLabel string // its label hub.jupyter.org/username (escaped), shared by the person's servers and kernels
-	Project   string
-	Profile   string
-	GPUClass  string // chosen at the server's start (label dhbw.cloud/gpu-class, set by the hub); the kernel goes to its queue
-	Image     string
-	Arch      string // the server's node selector kubernetes.io/arch (set by the hub when its image has only that architecture); the kernel keeps it
-	container map[string]any
-	volumes   []any
+	Pod         string
+	UID         string
+	IP          string
+	Person      string // JupyterHub user name (annotation hub.jupyter.org/username)
+	UserLabel   string // its label hub.jupyter.org/username (escaped), shared by the person's servers and kernels
+	Project     string
+	Profile     string
+	GPUClass    string // chosen at the server's start (label dhbw.cloud/gpu-class, set by the hub); the kernel goes to its queue
+	Image       string
+	Arch        string // the server's node selector kubernetes.io/arch (set by the hub when its image has only that architecture); the kernel keeps it
+	pullSecrets []any  // the server's imagePullSecrets (its project's, for a private image); the kernel runs the same image
+	container   map[string]any
+	volumes     []any
 }
 
 // KernelRequest is what the notebook server's provisioner knows about a kernel to start (gateway_provisioners' launch arguments).
@@ -184,6 +185,7 @@ func (s *Service) KernelOwnerAt(ctx context.Context, ip string) (*KernelOwner, e
 		}
 		o.volumes = list(spec, "volumes")
 		o.Arch = str(obj(spec, "nodeSelector"), "kubernetes.io/arch")
+		o.pullSecrets = list(spec, "imagePullSecrets")
 		if o.Profile != SplitProfile || o.Person == "" || o.container == nil {
 			return nil, ErrNoKernelOwner
 		}
@@ -307,6 +309,9 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest) map[string]any {
 	}
 	if o.Arch != "" {
 		spec["nodeSelector"] = map[string]any{"kubernetes.io/arch": o.Arch}
+	}
+	if len(o.pullSecrets) > 0 {
+		spec["imagePullSecrets"] = o.pullSecrets
 	}
 	container := map[string]any{
 		"name":  "kernel",

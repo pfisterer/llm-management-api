@@ -68,6 +68,9 @@ type HubProject struct {
 	MaterialGitRef string `json:"material_git_ref,omitempty"`
 	// ImageArchs are the architectures the environment runs on (amd64, arm64): the hub keeps servers on nodes of these.
 	ImageArchs []string `json:"image_archs"`
+	// PullSecret and GitSecret are the project's secrets for private images and repositories (credentials); empty = none.
+	PullSecret string `json:"pull_secret,omitempty"`
+	GitSecret  string `json:"git_secret,omitempty"`
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -108,7 +111,11 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 				hubClasses = append(hubClasses, hc)
 			}
 		}
-		out = append(out, HubProject{GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs})
+		pull, git := "", ""
+		if ws.HasCredentials(ctx, m.Slug) {
+			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
+		}
+		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs})
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +73,7 @@ type allStores struct {
 	gpu      gpu.Store
 	usage    usage.Store
 	projects workspace.Store
+	creds    workspace.CredentialStore
 	gpuFleet gpu.FleetStore
 	models   gpu.ModelStore
 }
@@ -79,7 +81,7 @@ type allStores struct {
 // stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -118,6 +120,10 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
+	wc, err := workspace.NewGormCredentials(db)
+	if err != nil {
+		return allStores{}, err
+	}
 	gf, err := gpu.NewGormFleetStore(db)
 	if err != nil {
 		return allStores{}, err
@@ -126,7 +132,7 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, gf, gm}, nil
+	return allStores{fs, cs, gs, us, ws, wc, gf, gm}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -247,11 +253,25 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		wsSvc.SetUsage(st.usage)
 		// Finished project images are checked in their registry, anonymously like a node pulls them; images from Git are built by the GPU part.
 		ociClient := &oci.Client{HTTP: &http.Client{Timeout: 20 * time.Second}}
-		wsSvc.SetImageInspector(func(ctx context.Context, image string) (workspace.RegistryImage, error) {
-			img, err := ociClient.Inspect(ctx, image)
+		wsSvc.SetImageInspector(func(ctx context.Context, image string, auth *workspace.Basic) (workspace.RegistryImage, error) {
+			var a *oci.Auth
+			if auth != nil {
+				a = &oci.Auth{Username: auth.Username, Password: auth.Token}
+			}
+			img, err := ociClient.Inspect(ctx, image, a)
 			return workspace.RegistryImage{Digest: img.Digest, Labels: img.Labels, Archs: img.Archs}, err
 		})
 		wsSvc.SetImageBuilder(gpuSvc)
+		// Access to private repositories and registries (docs/todo.md private_images): only with a key to seal the tokens.
+		if cfg.WorkspaceCredentialsKey != "" {
+			key, err := base64.StdEncoding.DecodeString(cfg.WorkspaceCredentialsKey)
+			if err == nil {
+				err = wsSvc.SetCredentials(st.creds, key, gpuSvc.EnsureCredentialSecrets)
+			}
+			if err != nil {
+				return fmt.Errorf("WORKSPACE_CREDENTIALS_KEY: %w", err)
+			}
+		}
 		var bases []string
 		for _, b := range wsCfg.Bases {
 			bases = append(bases, b.Image)
@@ -437,6 +457,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
 				if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
 					log.Warnw("project images: rebuild on new base", "error", err)
+				}
+				// The projects' pull and Git secrets, also after a restart or a secret deleted by hand.
+				if err := wsSvc.SyncCredentialSecrets(ctx); err != nil {
+					log.Warnw("credentials: secrets", "error", err)
 				}
 				// Finished project images: a moved tag is offered at the project (or taken, if it updates itself); before the prepull, which leaves out images whose registry does not answer.
 				if err := wsSvc.CheckProjectImages(ctx); err != nil {

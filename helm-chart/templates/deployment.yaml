@@ -153,6 +153,8 @@ spec:
             - {name: GPU_HUB_BIND, value: ":8091"}
             - name: GPU_HUB_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-hub-token}}
+            - name: WORKSPACE_CREDENTIALS_KEY
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: workspace-credentials-key, optional: true}}
             {{- end }}
             {{- if .Values.fleet.filesConfigMap }}
             - {name: FLEET_SCRIPTS_DIR, value: /etc/llm-mgmt/fleet}

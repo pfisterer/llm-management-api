@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/workspace"
+
 	"go.uber.org/zap"
 )
 
@@ -39,7 +41,7 @@ type servers interface {
 	progress(ctx context.Context, user, server string) (Progress, error)
 }
 
-type refResolver func(ctx context.Context, repoURL string) (gitRefs, error)
+type refResolver func(ctx context.Context, repoURL string, auth *workspace.Basic) (gitRefs, error)
 
 // Service is the GPU part's logic.
 type Service struct {
@@ -81,7 +83,9 @@ func New(cfg Config, store Store, log *zap.SugaredLogger) (*Service, error) {
 	git := newGitClient()
 	h := newHub(cfg.JupyterURL, cfg.JupyterAPIToken)
 	s := newService(cfg, store, k, newRegistry(cfg.Registry), h,
-		func(ctx context.Context, u string) (gitRefs, error) { return fetchRefs(ctx, git, u) }, log)
+		func(ctx context.Context, u string, auth *workspace.Basic) (gitRefs, error) {
+			return fetchRefs(ctx, git, u, auth)
+		}, log)
 	s.whoami = h.whoami
 	s.pods = k
 	s.k8s = k
@@ -120,7 +124,11 @@ func (s *Service) normaliseRepo(raw string) (string, string, error) {
 	host := strings.ToLower(u.Hostname())
 	allowed := false
 	for _, h := range s.cfg.GitHosts {
-		if host == strings.ToLower(h) {
+		h = strings.ToLower(h)
+		// "*.dhbw.de" allows dhbw.de and every host under it.
+		if domain, ok := strings.CutPrefix(h, "*."); ok {
+			allowed = allowed || host == domain || strings.HasSuffix(host, "."+domain)
+		} else if host == h {
 			allowed = true
 		}
 	}
@@ -148,7 +156,7 @@ func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name str
 	if err != nil {
 		return Environment{}, err
 	}
-	refs, err := s.refs(ctx, canonical)
+	refs, err := s.refs(ctx, canonical, nil)
 	if err != nil {
 		return Environment{}, fmt.Errorf("%w: %v", ErrInvalidRepo, err)
 	}
