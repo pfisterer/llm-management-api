@@ -162,6 +162,14 @@ type podInfo struct {
 			Type   string `json:"type"`
 			Status string `json:"status"`
 		} `json:"conditions"`
+		InitContainerStatuses []struct {
+			Name  string `json:"name"`
+			State struct {
+				Terminated *struct {
+					Message string `json:"message"`
+				} `json:"terminated"`
+			} `json:"state"`
+		} `json:"initContainerStatuses"`
 	} `json:"status"`
 }
 

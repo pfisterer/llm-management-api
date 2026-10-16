@@ -64,3 +64,18 @@ func TestHubProgress(t *testing.T) {
 		t.Fatalf("missing: %v", err)
 	}
 }
+
+// What an init container of the server reports (its termination message, e.g. the course material could not be fetched) is a line of the start's progress; another person's pod of the same server name adds nothing.
+func TestServerProgressInitMessages(t *testing.T) {
+	s, _, _, _ := testService()
+	s.pods = fakePods{items: `[
+		{"metadata":{"name":"p1","annotations":{"hub.jupyter.org/username":"a@x"}},"status":{"initContainerStatuses":[
+			{"name":"dhbw-dirs","state":{"terminated":{"message":""}}},
+			{"name":"git-checkout","state":{"terminated":{"message":"Material aus https://github.com/o/kurs konnte nicht geholt werden.\n"}}}]}},
+		{"metadata":{"name":"p2","annotations":{"hub.jupyter.org/username":"b@x"}},"status":{"initContainerStatuses":[
+			{"name":"git-checkout","state":{"terminated":{"message":"fremd"}}}]}}]`}
+	p, err := s.ServerProgress(context.Background(), "a@x", "srv")
+	if err != nil || len(p.Events) != 1 || p.Events[0].Message != "Material aus https://github.com/o/kurs konnte nicht geholt werden." {
+		t.Fatalf("progress %+v %v", p, err)
+	}
+}

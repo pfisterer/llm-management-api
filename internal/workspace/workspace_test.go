@@ -561,3 +561,37 @@ func TestPrepullArchs(t *testing.T) {
 		t.Errorf("base project archs %v", s.EffectiveArchs(p))
 	}
 }
+
+// A start is refused while the project's material cannot be fetched, a GPU kernel is not; a success is remembered for a while.
+func TestStartChecksMaterial(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	f := &fakeBuilder{builds: map[string]ImageBuild{}}
+	s.SetImageBuilder(f)
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Members: mgr}, "admin")
+	p, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, MaterialGitURL: "https://github.com/o/kurs"}, "a@dhbw.de", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := StartRequest{Project: "kurs", Profile: "cpu", Person: "a@dhbw.de"}
+	if err := s.CheckStart(ctx, []string{"user:a@dhbw.de"}, start); err != nil {
+		t.Fatalf("material fine: %v", err)
+	}
+	checked := f.checked
+	if err := s.CheckStart(ctx, []string{"user:a@dhbw.de"}, start); err != nil || f.checked != checked {
+		t.Fatalf("not remembered: %v %d", err, f.checked)
+	}
+	// The repository moved away after it was saved (here: a branch the fake does not know).
+	p.MaterialGitRef = "weg"
+	if err := s.store.Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckStart(ctx, []string{"user:a@dhbw.de"}, start); !strings.Contains(reason(err), "Material") {
+		t.Fatalf("broken material: %v", err)
+	}
+	start.Kernel = true
+	if err := s.CheckStart(ctx, []string{"user:a@dhbw.de"}, start); err != nil {
+		t.Fatalf("kernel refused for material: %v", err)
+	}
+}

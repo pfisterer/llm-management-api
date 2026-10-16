@@ -380,7 +380,33 @@ func (s *Service) StopServer(ctx context.Context, user, name string) error {
 
 // ServerProgress is how far the start of one of the person's servers got (the hub's event log), or why it failed.
 func (s *Service) ServerProgress(ctx context.Context, user, name string) (Progress, error) {
-	return s.servers.progress(ctx, user, name)
+	p, err := s.servers.progress(ctx, user, name)
+	if err != nil {
+		return p, err
+	}
+	// Steps of the start that are no Kubernetes events: what the server's init containers reported (their termination message), e.g. that the course material could not be fetched.
+	if s.pods == nil {
+		return p, nil
+	}
+	pods, err := s.pods.listPods(ctx, s.kernelNamespace(), "component=singleuser-server,hub.jupyter.org/servername="+name)
+	if err != nil {
+		return p, nil
+	}
+	last := 0
+	if n := len(p.Events); n > 0 {
+		last = p.Events[n-1].Progress
+	}
+	for _, pod := range pods {
+		if pod.Metadata.Annotations["hub.jupyter.org/username"] != user {
+			continue
+		}
+		for _, c := range pod.Status.InitContainerStatuses {
+			if t := c.State.Terminated; t != nil && strings.TrimSpace(t.Message) != "" {
+				p.Events = append(p.Events, ProgressEvent{Progress: last, Message: strings.TrimSpace(t.Message)})
+			}
+		}
+	}
+	return p, nil
 }
 
 // NewForTest builds a service without cluster connections (memory store only, a hub without users), for tests of other packages.

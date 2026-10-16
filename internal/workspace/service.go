@@ -123,6 +123,8 @@ type Service struct {
 	inspect ImageInspector
 	// unpullable are finished project images whose registry did not answer at the last check; the prepull leaves them out, so one broken image does not hold up the others.
 	unpullable sync.Map
+	// materialOK is when the material of a repository and branch was last fetchable (checkMaterial).
+	materialOK sync.Map
 	builds     ImageBuilder
 	classes    func(ctx context.Context) ([]GPUClass, error)
 }
@@ -419,9 +421,35 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	case r.GPUs > 0 && p.GPUsByClass[class] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[class]):
 		return refuse("Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[class], s.ClassName(ctx, class), p.Name)
 	}
+	if !r.Kernel {
+		if err := s.checkMaterial(ctx, p); err != nil {
+			return err
+		}
+	}
 	if s.budget != nil {
 		return s.budget(ctx, p, r.Person, class)
 	}
+	return nil
+}
+
+// materialFresh is how long a successful check of a project's material counts, so not every start asks the Git server.
+const materialFresh = 10 * time.Minute
+
+// checkMaterial refuses a start whose course material cannot be fetched (repository gone, private, branch deleted, server unreachable): the server would start without it, which nobody notices until the folder is empty. A success is remembered for materialFresh.
+func (s *Service) checkMaterial(ctx context.Context, p Project) error {
+	if p.MaterialGitURL == "" || s.builds == nil {
+		return nil
+	}
+	key := p.MaterialGitURL + "#" + p.MaterialGitRef
+	if at, ok := s.materialOK.Load(key); ok && s.now().Sub(at.(time.Time)) < materialFresh {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef); err != nil {
+		return refuse("Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Server nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
+	}
+	s.materialOK.Store(key, s.now())
 	return nil
 }
 
