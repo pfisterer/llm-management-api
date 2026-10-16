@@ -2,7 +2,7 @@
 
 Self-service API of the DHBW LLM service: API keys, usage, workspaces and the Mac fleet, with access from the projects of the budget tree and roles from the configuration. Consumed by the LLM section of [self-service-ui](https://github.com/pfisterer/self-service-ui) through the generated client `@dhbw-cloud/llm-client`.
 
-It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the aiaas-deployment project (Ansible, `docs/bauplan.md, Stufe 1` and `docs/bauplan.md` there).
+It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the aiaas-deployment project (Ansible; `docs/architektur.md` and `docs/todo.md` there).
 
 ## Access model
 
