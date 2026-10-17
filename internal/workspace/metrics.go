@@ -127,6 +127,8 @@ func (s *Service) Metrics(ctx context.Context) ([]byte, error) {
 	w.Header("aiaas_workspace_project_image_updates_offered", "gauge", "Active projects whose finished image's tag moved and whose managers have not taken the new image yet.")
 	w.Sample("aiaas_workspace_project_image_updates_offered", float64(updates))
 
+	s.writeImages(&w, active)
+
 	w.Header("aiaas_workspace_project_end_timestamp_seconds", "gauge", "Unix time after which nobody can start in the project (the end of its last day); only active projects with an end.")
 	for _, p := range active {
 		if p.EndsAt != nil {
@@ -282,4 +284,44 @@ func (s *Service) MetricsProfiles() []string {
 		}
 	}
 	return out
+}
+
+// writeImages writes what the checks know about the images of active projects (image_checks.go): each project's download, the downloads the prepull puts on every node of an architecture (each image once, only those of known size: the bases are not counted), the projects with warnings, and Harbor's scans. Compared with the nodes' free image filesystem (node_filesystem_avail_bytes) it tells whether the prepull still fits.
+func (s *Service) writeImages(w *promtext.Writer, active []Project) {
+	w.Header("aiaas_workspace_project_image_bytes", "gauge", "Download of the image an active project runs (its compressed layers), when known: finished images and builds from Git.")
+	prepull := map[string]float64{"amd64": 0, "arm64": 0}
+	seen := map[string]bool{}
+	warned := 0
+	for _, p := range active {
+		if len(p.ImageWarnings) > 0 {
+			warned++
+		}
+		if p.ImageSize <= 0 {
+			continue
+		}
+		w.Sample("aiaas_workspace_project_image_bytes", float64(p.ImageSize), "project", p.Slug)
+		img := s.EffectiveImage(p)
+		if _, broken := s.unpullable.Load(p.ProjectImage); seen[img] || (broken && finishedImage(p)) {
+			continue
+		}
+		seen[img] = true
+		for _, a := range s.EffectiveArchs(p) {
+			if _, ok := prepull[a]; ok {
+				prepull[a] += float64(p.ImageSize)
+			}
+		}
+	}
+	w.Header("aiaas_workspace_prepull_project_image_bytes", "gauge", "Sum of the downloads of the project images the prepull keeps on every node of an architecture (each image once; the bases are not included).")
+	for _, a := range []string{"amd64", "arm64"} {
+		w.Sample("aiaas_workspace_prepull_project_image_bytes", prepull[a], "arch", a)
+	}
+	w.Header("aiaas_workspace_project_images_warned", "gauge", "Active projects whose image got warnings from the checks (root or another user, HOME elsewhere, own entrypoint, jupyterhub-singleuser not recognisable, large).")
+	w.Sample("aiaas_workspace_project_images_warned", float64(warned))
+	w.Header("aiaas_workspace_project_image_vulnerabilities", "gauge", "Vulnerabilities with a fix in the image an active project runs, by severity, from Harbor's last finished scan (Trivy); only images in Harbor that were scanned.")
+	for _, p := range active {
+		if p.ImageScan != nil && p.ImageScan.Status == "Success" {
+			w.Sample("aiaas_workspace_project_image_vulnerabilities", float64(p.ImageScan.Critical), "project", p.Slug, "severity", "critical")
+			w.Sample("aiaas_workspace_project_image_vulnerabilities", float64(p.ImageScan.High), "project", p.Slug, "severity", "high")
+		}
+	}
 }

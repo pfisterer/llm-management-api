@@ -92,7 +92,7 @@ func (s *Service) RetireBases(ctx context.Context) error {
 			}
 			p := cur
 			p.ImageBase = next.ID
-			if err := s.applyProjectImage(ctx, &p, cur); err != nil {
+			if err := s.applyProjectImage(ctx, &p, cur, true); err != nil {
 				errs = append(errs, err)
 				continue
 			}

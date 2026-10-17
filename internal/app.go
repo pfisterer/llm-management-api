@@ -259,8 +259,23 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				a = &oci.Auth{Username: auth.Username, Password: auth.Token}
 			}
 			img, err := ociClient.Inspect(ctx, image, a)
-			return workspace.RegistryImage{Digest: img.Digest, Labels: img.Labels, Archs: img.Archs}, err
+			return workspace.RegistryImage{Digest: img.Digest, Labels: img.Labels, Archs: img.Archs, Size: img.Size, User: img.User, Entrypoint: img.Entrypoint, Cmd: img.Cmd, Env: img.Env, WorkingDir: img.WorkingDir}, err
 		})
+		wsSvc.SetImageLimits(int64(cfg.WorkspaceImageMaxGB*1e9), int64(cfg.WorkspaceImageHintGB*1e9))
+		// Harbor's vulnerability scans (Trivy) of the images in the platform's registry, shown with the project; anonymously for the public projects unless a read-only robot account is configured.
+		if cfg.GPU.Registry != "" {
+			var scanAuth *oci.Auth
+			if cfg.HarborScanUser != "" {
+				scanAuth = &oci.Auth{Username: cfg.HarborScanUser, Password: cfg.HarborScanToken}
+			}
+			wsSvc.SetImageScans(func(ctx context.Context, image string) (*workspace.ImageScan, error) {
+				sc, err := ociClient.HarborScan(ctx, image, scanAuth)
+				if err != nil || sc == nil {
+					return nil, err
+				}
+				return &workspace.ImageScan{Status: sc.Status, Critical: sc.Critical, High: sc.High, ScannedAt: sc.ScannedAt, URL: sc.URL}, nil
+			}, cfg.GPU.Registry)
+		}
 		wsSvc.SetImageBuilder(gpuSvc)
 		// Access to private repositories and registries (docs/todo.md private_images): only with a key to seal the tokens.
 		if cfg.WorkspaceCredentialsKey != "" {

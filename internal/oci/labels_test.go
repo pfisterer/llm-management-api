@@ -57,9 +57,13 @@ func TestInspect(t *testing.T) {
 		case "/v2/org/course/blobs/sha256:armcfg":
 			fmt.Fprint(w, `{"architecture":"arm64","config":{}}`)
 		case "/v2/org/course/manifests/sha256:amd":
-			fmt.Fprint(w, `{"config":{"digest":"sha256:cfg"}}`)
+			fmt.Fprint(w, `{"schemaVersion":2,"config":{"digest":"sha256:cfg","size":7023},"layers":[{"digest":"sha256:l1","size":30000000},{"digest":"sha256:l2","size":1970000000}]}`)
 		case "/v2/org/course/blobs/sha256:cfg":
-			fmt.Fprint(w, `{"config":{"Labels":{"cloud.dhbw.base":"notebook-v1"}}}`)
+			fmt.Fprint(w, `{"architecture":"amd64","os":"linux","config":{"User":"1000","Env":["PATH=/opt/conda/bin:/usr/bin","HOME=/home/jovyan"],"Entrypoint":["tini","-g","--"],"Cmd":["start-notebook.py"],"WorkingDir":"/home/jovyan","Labels":{"cloud.dhbw.base":"notebook-v1"}}}`)
+		case "/v2/org/course/manifests/windows":
+			fmt.Fprint(w, `{"config":{"digest":"sha256:wincfg"}}`)
+		case "/v2/org/course/blobs/sha256:wincfg":
+			fmt.Fprint(w, `{"architecture":"amd64","os":"windows","config":{}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -71,6 +75,13 @@ func TestInspect(t *testing.T) {
 	img, err := c.Inspect(context.Background(), host+"/org/course:v1", nil)
 	if err != nil || img.Labels["cloud.dhbw.base"] != "notebook-v1" || img.Digest != "sha256:index" || !slices.Equal(img.Archs, []string{"amd64", "arm64"}) {
 		t.Fatalf("image = %+v, %v", img, err)
+	}
+	// The run settings and the download of the amd64 variant (its layers, not the config).
+	if img.Size != 2_000_000_000 || img.User != "1000" || !slices.Equal(img.Entrypoint, []string{"tini", "-g", "--"}) || !slices.Equal(img.Cmd, []string{"start-notebook.py"}) || img.WorkingDir != "/home/jovyan" || !slices.Contains(img.Env, "HOME=/home/jovyan") {
+		t.Errorf("config = %+v", img)
+	}
+	if _, err := c.Inspect(context.Background(), host+"/org/course:windows", nil); err == nil || !strings.Contains(err.Error(), "no linux variant") {
+		t.Errorf("windows image: %v", err)
 	}
 	// A single-platform image names its architecture in its config.
 	if one, err := c.Inspect(context.Background(), host+"/org/course:arm-only", nil); err != nil || !slices.Equal(one.Archs, []string{"arm64"}) {

@@ -63,11 +63,19 @@ type Client struct {
 
 const manifestTypes = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
 
-// Image is what the registry says about an image reference: the digest the reference points at now (for an image built for several platforms, that of the index), the labels of its linux/amd64 variant (else of its first one) and the architectures it has for linux (amd64, arm64).
+// Image is what the registry says about an image reference: the digest the reference points at now (for an image built for several platforms, that of the index), the labels and run settings of its linux/amd64 variant (else of its first one) and the architectures it has for linux (amd64, arm64).
 type Image struct {
 	Digest string
 	Labels map[string]string
 	Archs  []string
+	// Size is the sum of the variant's compressed layers (what a node downloads), from its manifest; 0 = unknown.
+	Size int64
+	// User, Entrypoint, Cmd, Env and WorkingDir are the variant's run settings from its config (USER, ENTRYPOINT, CMD, ENV, WORKDIR of its Dockerfile).
+	User       string
+	Entrypoint []string
+	Cmd        []string
+	Env        []string
+	WorkingDir string
 }
 
 // Pinned is the reference fixed to the digest ("repo:tag@sha256:…"): every node runs exactly this image, whatever the tag points at later.
@@ -102,6 +110,9 @@ func (c *Client) Inspect(ctx context.Context, image string, auth *Auth) (Image, 
 		Config struct {
 			Digest string `json:"digest"`
 		} `json:"config"`
+		Layers []struct {
+			Size int64 `json:"size"`
+		} `json:"layers"`
 	}
 	body, header, err := s.get(ctx, "manifests/"+r.Ref, manifestTypes)
 	if err != nil {
@@ -145,8 +156,14 @@ func (c *Client) Inspect(ctx context.Context, image string, auth *Auth) (Image, 
 	}
 	var cfg struct {
 		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
 		Config       struct {
-			Labels map[string]string `json:"Labels"`
+			Labels     map[string]string `json:"Labels"`
+			User       string            `json:"User"`
+			Entrypoint []string          `json:"Entrypoint"`
+			Cmd        []string          `json:"Cmd"`
+			Env        []string          `json:"Env"`
+			WorkingDir string            `json:"WorkingDir"`
 		} `json:"config"`
 	}
 	if err := s.getJSON(ctx, "blobs/"+m.Config.Digest, "*/*", &cfg); err != nil {
@@ -155,11 +172,18 @@ func (c *Client) Inspect(ctx context.Context, image string, auth *Auth) (Image, 
 	if cfg.Config.Labels == nil {
 		cfg.Config.Labels = map[string]string{}
 	}
+	if cfg.OS != "" && cfg.OS != "linux" {
+		return Image{}, fmt.Errorf("image %s has no linux variant (only %s)", image, cfg.OS)
+	}
 	if archs == nil && cfg.Architecture != "" {
 		archs = []string{cfg.Architecture}
 	}
 	slices.Sort(archs)
-	return Image{Digest: digest, Labels: cfg.Config.Labels, Archs: archs}, nil
+	var size int64
+	for _, l := range m.Layers {
+		size += l.Size
+	}
+	return Image{Digest: digest, Labels: cfg.Config.Labels, Archs: archs, Size: size, User: cfg.Config.User, Entrypoint: cfg.Config.Entrypoint, Cmd: cfg.Config.Cmd, Env: cfg.Config.Env, WorkingDir: cfg.Config.WorkingDir}, nil
 }
 
 // session is one image's requests, with the token the registry hands out on the first 401 (anonymously, or for auth), or auth itself where the registry asks for Basic.

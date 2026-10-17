@@ -68,8 +68,14 @@ type Project struct {
 	ImageAutoUpdate bool   `json:"image_auto_update,omitempty"`
 	// ImageArchs are the architectures an existing ProjectImage has (linux: amd64, arm64), from its registry along with ImageDigest; empty = amd64.
 	ImageArchs []string `json:"image_archs,omitempty" gorm:"serializer:json"`
-	Limits     Limits   `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
-	Budgets    []Budget `json:"budgets" gorm:"serializer:json"`
+	// ImageSize is the project image's download (sum of its compressed layers, bytes), ImageUser the user its config names (USER), ImageWarnings what the checks at saving and at every recheck found about it (imageWarnings: runs as root or another UID, HOME elsewhere, its own entrypoint, jupyterhub-singleuser not recognisable, large); they only inform, a saved image is never refused later. Also for an image built from Git, read once its build is ready.
+	ImageSize     int64    `json:"image_size,omitempty"`
+	ImageUser     string   `json:"image_user,omitempty"`
+	ImageWarnings []string `json:"image_warnings,omitempty" gorm:"serializer:json"`
+	// ImageScan is Harbor's vulnerability scan (Trivy) of the image the project runs, for images in the platform's Harbor; nil = not there, not scanned yet or no scanner. It never blocks anything.
+	ImageScan *ImageScan `json:"image_scan,omitempty" gorm:"serializer:json"`
+	Limits    Limits     `json:"limits" gorm:"embedded;embeddedPrefix:limit_"`
+	Budgets   []Budget   `json:"budgets" gorm:"serializer:json"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
 	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
 	// LLMMTokens is the project's LLM tokens per 30 days in millions, from the budget tree: one pool (a LiteLLM team) that all members draw from together, not an amount per member.

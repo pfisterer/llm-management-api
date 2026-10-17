@@ -16,6 +16,13 @@ type RegistryImage struct {
 	Digest string
 	Labels map[string]string
 	Archs  []string
+	// Size is the download (compressed layers, bytes); User, Entrypoint, Cmd, Env and WorkingDir are its config's run settings (image_checks.go).
+	Size       int64
+	User       string
+	Entrypoint []string
+	Cmd        []string
+	Env        []string
+	WorkingDir string
 }
 
 // ArchImage is an image with the architectures it runs on, for the prepull per architecture; Base marks a base of the catalogue (one of ours, which can run the prepull's idle container); PullSecret is the project's pull secret for a private image.
@@ -90,8 +97,10 @@ var BaseVersions = []string{"notebook-v1"}
 
 var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:@-]+$`)
 
-// applyProjectImage takes the environment of an update: from Git it starts (or keeps) the build on the base, and the project keeps its current image until the build is ready; an existing image is looked up in its registry unless unchanged — it must be pullable, its digest is kept (ImageDigest), and its label decides whether it is derived from a base.
-func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project) error {
+// applyProjectImage takes the environment of an update: from Git it starts (or keeps) the build on the base, and the project keeps its current image until the build is ready; an existing image is looked up in its registry unless unchanged — it must be pullable, for amd64 or arm64 and, unless an admin saves it, within the size limit (imageRefusal), its digest is kept (ImageDigest), its label decides whether it is derived from a base, and what else its config says is kept as warnings (imageWarnings).
+func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project, asAdmin bool) error {
+	// What the checks found is the service's, never what an update sends.
+	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan = cur.ImageSize, cur.ImageUser, cur.ImageWarnings, cur.ImageScan
 	p.ProjectImage, p.ImageGitURL, p.ImageGitRef = strings.TrimSpace(p.ProjectImage), strings.TrimSpace(p.ImageGitURL), strings.TrimSpace(p.ImageGitRef)
 	if p.ImageGitURL != "" {
 		if s.builds == nil {
@@ -109,6 +118,10 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		if b.Status == "ready" {
 			p.ProjectImage = b.Image
 		}
+		if p.ProjectImage != cur.ProjectImage || cur.ImageGitURL == "" {
+			s.clearImageFacts(p)
+			s.inspectBuilt(ctx, p)
+		}
 		return nil
 	}
 	p.ImageGitRef = ""
@@ -118,6 +131,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	}
 	if p.ProjectImage == "" {
 		p.ImageDerived, p.ImageDigest, p.ImageUpdate = false, "", ""
+		s.clearImageFacts(p)
 		return nil
 	}
 	if p.ProjectImage == cur.ProjectImage && cur.ImageGitURL == "" {
@@ -128,6 +142,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		return refuse("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.ProjectImage)
 	}
 	p.ImageDigest, p.ImageUpdate = "", ""
+	s.clearImageFacts(p)
 	if s.inspect == nil {
 		return nil
 	}
@@ -135,7 +150,12 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	if err != nil {
 		return refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
 	}
+	maxBytes, _ := s.imageLimits()
+	if err := imageRefusal(p.ProjectImage, img, maxBytes, asAdmin); err != nil {
+		return err
+	}
 	p.ImageDigest, p.ImageDerived, p.ImageArchs = img.Digest, derivedFrom(img.Labels), img.Archs
+	s.takeImageFacts(p, img)
 	return nil
 }
 
@@ -172,9 +192,9 @@ func imageHost(image string) string {
 // finishedImage tells whether the project runs an existing image (not built from Git).
 func finishedImage(p Project) bool { return p.ProjectImage != "" && p.ImageGitURL == "" }
 
-// CheckProjectImages looks up the tag of every finished project image again (run periodically): a new digest is offered at the project (ImageUpdate), or taken at once with ImageAutoUpdate, its label checked again either way; a project from before the pinning gets its current digest. An image whose registry does not answer is left out of the prepull until it answers again.
+// CheckProjectImages looks up the tag of every finished project image again (run periodically): a new digest is offered at the project (ImageUpdate), or taken at once with ImageAutoUpdate, its label checked again either way; a project from before the pinning gets its current digest. An image whose registry does not answer is left out of the prepull until it answers again. The warnings about the image the project runs are brought up to date (never refusing it), an image built from Git is read once, and Harbor's scan of the image is read again now and then (refreshScan).
 func (s *Service) CheckProjectImages(ctx context.Context) error {
-	if s.inspect == nil {
+	if s.inspect == nil && s.scans == nil {
 		return nil
 	}
 	list, err := s.store.List(ctx)
@@ -183,28 +203,29 @@ func (s *Service) CheckProjectImages(ctx context.Context) error {
 	}
 	var errs []error
 	for _, p := range list {
-		if !finishedImage(p) || !p.Active(s.now()) {
+		if !p.Active(s.now()) {
 			continue
 		}
-		img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
-		if err != nil {
-			s.unpullable.Store(p.ProjectImage, true)
-			errs = append(errs, err)
-			continue
-		}
-		s.unpullable.Delete(p.ProjectImage)
+		changed := false
 		switch {
-		case img.Digest == p.ImageDigest:
-			if p.ImageUpdate == "" && (len(p.ImageArchs) > 0 || len(img.Archs) == 0) {
-				continue
+		case s.inspect == nil:
+		case finishedImage(p):
+			img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
+			if err != nil {
+				s.unpullable.Store(p.ProjectImage, true)
+				errs = append(errs, err)
+				break
 			}
-			p.ImageUpdate, p.ImageArchs = "", img.Archs // the tag went back, or the architectures were not known yet
-		case p.ImageDigest == "" || p.ImageAutoUpdate:
-			p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.ImageArchs = img.Digest, derivedFrom(img.Labels), "", img.Archs
-		case img.Digest == p.ImageUpdate:
+			s.unpullable.Delete(p.ProjectImage)
+			changed = s.checkedImage(&p, img)
+		case p.ImageGitURL != "" && p.ProjectImage != "" && p.ImageSize == 0:
+			changed = s.inspectBuilt(ctx, &p)
+		}
+		if s.refreshScan(ctx, &p) {
+			changed = true
+		}
+		if !changed {
 			continue
-		default:
-			p.ImageUpdate = img.Digest
 		}
 		p.UpdatedBy = "image-check"
 		if err := s.store.Update(ctx, &p); err != nil {
@@ -212,6 +233,51 @@ func (s *Service) CheckProjectImages(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// checkedImage takes what the registry says now about a finished image's tag and tells whether the project changed.
+func (s *Service) checkedImage(p *Project, img RegistryImage) bool {
+	switch {
+	case img.Digest == p.ImageDigest:
+		changed := false
+		if p.ImageUpdate != "" || (len(p.ImageArchs) == 0 && len(img.Archs) > 0) {
+			p.ImageUpdate, p.ImageArchs = "", img.Archs // the tag went back, or the architectures were not known yet
+			changed = true
+		}
+		if !s.sameImageFacts(*p, img) {
+			s.takeImageFacts(p, img)
+			changed = true
+		}
+		return changed
+	case p.ImageDigest == "" || p.ImageAutoUpdate:
+		p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.ImageArchs = img.Digest, derivedFrom(img.Labels), "", img.Archs
+		s.takeImageFacts(p, img)
+		p.ImageScan = nil
+		return true
+	case img.Digest == p.ImageUpdate:
+		return false
+	default:
+		p.ImageUpdate = img.Digest
+		return true
+	}
+}
+
+// clearImageFacts forgets what the checks found about the project's image (it runs another one now).
+func (s *Service) clearImageFacts(p *Project) {
+	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan = 0, "", nil, nil
+}
+
+// inspectBuilt reads a finished build from Git like a saved image (size, warnings), never refusing it; it is in the public project envs. Its registry not answering leaves the facts empty for the next check to fill; it tells whether it read them.
+func (s *Service) inspectBuilt(ctx context.Context, p *Project) bool {
+	if s.inspect == nil || p.ProjectImage == "" {
+		return false
+	}
+	img, err := s.inspect(ctx, p.ProjectImage, nil)
+	if err != nil {
+		return false
+	}
+	s.takeImageFacts(p, img)
+	return true
 }
 
 // UpdateProjectImage takes the digest the finished image's tag points at now, its label checked again.
@@ -227,7 +293,11 @@ func (s *Service) UpdateProjectImage(ctx context.Context, slug, by string) (Proj
 	if err != nil {
 		return Project{}, refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
 	}
+	if img.Digest != p.ImageDigest {
+		p.ImageScan = nil
+	}
 	p.ImageDigest, p.ImageDerived, p.ImageUpdate, p.ImageArchs, p.UpdatedBy = img.Digest, derivedFrom(img.Labels), "", img.Archs, by
+	s.takeImageFacts(&p, img)
 	return p, s.store.Update(ctx, &p)
 }
 
@@ -272,6 +342,8 @@ func (s *Service) ProjectImageBuilt(ctx context.Context, slug, gitURL, image str
 		return nil // project gone or changed meanwhile: nothing to follow
 	}
 	p.ProjectImage, p.UpdatedBy = image, "project-image-build"
+	s.clearImageFacts(&p)
+	s.inspectBuilt(ctx, &p)
 	return s.store.Update(ctx, &p)
 }
 

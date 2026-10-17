@@ -72,6 +72,12 @@ type Config struct {
 	WorkspacesJSON string
 	// WorkspaceCredentialsKey seals the projects' tokens for private repositories and registries (base64, 32 bytes); empty = no credentials.
 	WorkspaceCredentialsKey string
+	// WorkspaceImageMaxGB is the size (compressed, GB) above which a project image is refused when saved (admins may save larger ones); WorkspaceImageHintGB the size from which it gets a hint.
+	WorkspaceImageMaxGB  float64
+	WorkspaceImageHintGB float64
+	// HarborScanUser and HarborScanToken read Harbor's vulnerability scans of project images (a robot account that may read artifacts and scans); empty = anonymously, which suffices for the public projects.
+	HarborScanUser  string
+	HarborScanToken string
 	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off) and where people get a project. The LLM tokens, rate limits and extra models come from the tree's projects, one pool (a LiteLLM team) per project.
 	TreeToken      string
 	SelfServiceURL string
@@ -168,6 +174,17 @@ func LoadConfig() (Config, error) {
 	cfg.GPUHubBind = envconf.String("GPU_HUB_BIND", ":8091")
 	cfg.WorkspacesJSON = envconf.String("WORKSPACES", "")
 	cfg.WorkspaceCredentialsKey = envconf.String("WORKSPACE_CREDENTIALS_KEY", "")
+	cfg.HarborScanUser = envconf.String("HARBOR_SCAN_USER", "")
+	cfg.HarborScanToken = envconf.String("HARBOR_SCAN_TOKEN", "")
+	for name, dst := range map[string]*float64{"WORKSPACE_IMAGE_MAX_GB": &cfg.WorkspaceImageMaxGB, "WORKSPACE_IMAGE_HINT_GB": &cfg.WorkspaceImageHintGB} {
+		if raw := envconf.String(name, ""); raw != "" {
+			v, err := strconv.ParseFloat(raw, 64)
+			if err != nil || v < 0 {
+				return Config{}, fmt.Errorf("%s is not a size in GB: %q", name, raw)
+			}
+			*dst = v
+		}
+	}
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
 	cfg.LLMDefaultRPM = envconf.Int("LLM_DEFAULT_RPM", 60)

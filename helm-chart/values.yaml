@@ -27,6 +27,8 @@ secrets:
   gpuInferenceApiKey: ""
   # Seals the projects' tokens for private repositories and registries (base64 of 32 random bytes); empty = projects get no credentials. Changing it makes the stored tokens unreadable.
   workspaceCredentialsKey: ""
+  # Token of the robot account gpu.harborScanUser (reads Harbor's vulnerability scans); empty = anonymously.
+  harborScanToken: ""
   # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
   treeApiToken: ""
   # Token LibreChat sends to the chat exchange (:8089) as its API key; empty = the exchange refuses every request.
@@ -93,6 +95,10 @@ gpu:
     noGPU: false
   # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default, archs}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSets kernel-image-prepull and kernel-image-prepull-arm64 in the workspace namespace, one per architecture, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
   workspaces: {}
+  # Project images (docs/todo.md image_hardening): refused when saved above imageMaxGB (compressed; admins may save larger ones), a hint from imageHintGB; empty = 15 and 5. Harbor's vulnerability scans of images in the registry are read anonymously (public projects) unless harborScanUser and secrets.harborScanToken name a robot account that may read artifacts and scans.
+  imageMaxGB: ""
+  imageHintGB: ""
+  harborScanUser: ""
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:
     externalIPs: []

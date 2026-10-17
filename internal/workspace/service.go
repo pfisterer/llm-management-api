@@ -146,6 +146,12 @@ type Service struct {
 	now     func() time.Time
 	storage storageState
 	inspect ImageInspector
+	// imageMax and imageHint are the size limit and hint of project images (SetImageLimits); 0 = the defaults.
+	imageMax, imageHint int64
+	// scans reads Harbor's vulnerability scans (SetImageScans); scanRead is when the scan of a project's image was last read (key: slug and image).
+	scans    ImageScanReader
+	scanHost string
+	scanRead sync.Map
 	// unpullable are finished project images whose registry did not answer at the last check; the prepull leaves them out, so one broken image does not hold up the others.
 	unpullable sync.Map
 	// materialOK is when the material of a repository and branch was last fetchable (checkMaterial).
@@ -340,7 +346,7 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	if b, _ := s.base(p.ImageBase); b.Deprecated() && b.ID != cur.ImageBase {
 		return Project{}, refuse("%s läuft aus und ist für Projekte nicht mehr wählbar; stattdessen %s.", b.Name, s.baseName(b.ReplacedBy))
 	}
-	if err := s.applyProjectImage(ctx, &p, cur); err != nil {
+	if err := s.applyProjectImage(ctx, &p, cur, asAdmin); err != nil {
 		return Project{}, err
 	}
 	if err := s.applyMaterial(ctx, &p, cur); err != nil {

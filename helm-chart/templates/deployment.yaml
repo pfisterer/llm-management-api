@@ -157,6 +157,17 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-hub-token}}
             - name: WORKSPACE_CREDENTIALS_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: workspace-credentials-key, optional: true}}
+            {{- with .Values.gpu.imageMaxGB }}
+            - {name: WORKSPACE_IMAGE_MAX_GB, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.gpu.imageHintGB }}
+            - {name: WORKSPACE_IMAGE_HINT_GB, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.gpu.harborScanUser }}
+            - {name: HARBOR_SCAN_USER, value: {{ . | quote }}}
+            - name: HARBOR_SCAN_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: harbor-scan-token, optional: true}}
+            {{- end }}
             {{- end }}
             {{- if .Values.fleet.filesConfigMap }}
             - {name: FLEET_SCRIPTS_DIR, value: /etc/llm-mgmt/fleet}
