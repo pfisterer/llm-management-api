@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/promtext"
 )
 
 // Profile is one entry of JupyterHub's profile list, as far as projects need it. GPU: its servers or kernels use a GPU, of the class chosen at the start.
@@ -118,12 +120,20 @@ type Running struct {
 	GPUs     float64
 }
 
-// Refusal is a start that the project does not allow, with a reason for the person.
-type Refusal struct{ Reason string }
+// Refusal is a start that the project does not allow, with a reason for the person. Kind is what refused it, for the metrics (StartResults); empty for refusals outside a start.
+type Refusal struct {
+	Reason string
+	Kind   string
+}
 
 func (r *Refusal) Error() string { return r.Reason }
 
 func refuse(format string, args ...any) error { return &Refusal{Reason: fmt.Sprintf(format, args...)} }
+
+// refuseStart is a refusal of a start, of a kind of StartResults.
+func refuseStart(kind, format string, args ...any) error {
+	return &Refusal{Reason: fmt.Sprintf(format, args...), Kind: kind}
+}
 
 // Service is the projects' logic.
 type Service struct {
@@ -146,13 +156,15 @@ type Service struct {
 	creds       CredentialStore
 	aead        cipher.AEAD
 	credSecrets func(ctx context.Context, want map[string]ProjectSecrets) error
+	// starts counts the start decisions (metrics.go); in memory, back to zero on a restart.
+	starts *promtext.CounterVec
 }
 
 // BudgetCheck refuses a start whose budget is used up (W4); nil = no budgets.
 type BudgetCheck func(ctx context.Context, p Project, person string, gpuClass string) error
 
 func NewService(store Store, cfg Config, running func(ctx context.Context) ([]Running, error)) *Service {
-	return &Service{store: store, cfg: cfg, running: running, now: time.Now}
+	return &Service{store: store, cfg: cfg, running: running, now: time.Now, starts: newStartCounter(cfg)}
 }
 
 // SetBudgetCheck adds the budget check to CheckStart.
@@ -373,50 +385,56 @@ type StartRequest struct {
 	Kernel bool `json:"-"`
 }
 
-// CheckStart decides whether a person may start a profile in a project now. The reason of a refusal is shown in JupyterHub.
+// CheckStart decides whether a person may start a profile in a project now. The reason of a refusal is shown in JupyterHub. Every decision is counted (aiaas_workspace_starts_total, metrics.go).
 func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartRequest) error {
+	err := s.checkStart(ctx, tokens, r)
+	s.countStart(r, err)
+	return err
+}
+
+func (s *Service) checkStart(ctx context.Context, tokens []string, r StartRequest) error {
 	if r.Project == "" {
-		return refuse("Kein Projekt gewählt.")
+		return refuseStart("project", "Kein Projekt gewählt.")
 	}
 	p, err := s.store.Get(ctx, r.Project)
 	if errors.Is(err, ErrNotFound) {
-		return refuse("Projekt %q gibt es nicht.", r.Project)
+		return refuseStart("project", "Projekt %q gibt es nicht.", r.Project)
 	}
 	if err != nil {
 		return err
 	}
 	if p.RoleOf(tokens) == "" {
-		return refuse("Kein Mitglied im Projekt „%s“.", p.Name)
+		return refuseStart("project", "Kein Mitglied im Projekt „%s“.", p.Name)
 	}
 	if !p.Active(s.now()) {
-		return refuse("Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))
+		return refuseStart("project", "Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))
 	}
 	if p.NoWorkspaces {
-		return refuse("Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", p.Name)
+		return refuseStart("project", "Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", p.Name)
 	}
 	if p.ImagePending() {
-		return refuse("Die Umgebung von Projekt „%s“ ist noch nicht gebaut. Der Bau und sein Protokoll stehen in den Projekteinstellungen (Workspaces); gestartet werden kann, sobald er fertig ist.", p.Name)
+		return refuseStart("image_error", "Die Umgebung von Projekt „%s“ ist noch nicht gebaut. Der Bau und sein Protokoll stehen in den Projekteinstellungen (Workspaces); gestartet werden kann, sobald er fertig ist.", p.Name)
 	}
 	if !p.Allows(r.Profile) {
-		return refuse("Profil %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
+		return refuseStart("no_profile", "Profil %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
 	}
 	if r.Profile == SplitProfile && !p.Derived() {
-		return refuse("„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", p.Name)
+		return refuseStart("no_profile", "„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", p.Name)
 	}
 	class := ""
 	if r.GPUs > 0 {
 		if p.Limits.GPUsPerPerson == 0 || len(p.GPUClasses) == 0 {
-			return refuse("Im Projekt „%s“ sind keine GPUs freigegeben.", p.Name)
+			return refuseStart("gpu_class", "Im Projekt „%s“ sind keine GPUs freigegeben.", p.Name)
 		}
 		class = r.GPUClass
 		if class == "" && len(p.GPUClasses) == 1 {
 			class = p.GPUClasses[0]
 		}
 		if class == "" {
-			return refuse("Bitte eine GPU-Klasse wählen.")
+			return refuseStart("gpu_class", "Bitte eine GPU-Klasse wählen.")
 		}
 		if !p.AllowsGPUClass(class) {
-			return refuse("GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", s.ClassName(ctx, class), p.Name)
+			return refuseStart("gpu_class", "GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", s.ClassName(ctx, class), p.Name)
 		}
 	}
 	running, err := s.running(ctx)
@@ -445,15 +463,15 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 	l := p.Limits
 	switch {
 	case !r.Kernel && l.ServersPerPerson > 0 && servers >= l.ServersPerPerson:
-		return refuse("Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Server zuerst beenden.", p.Name, plural(l.ServersPerPerson, "ist 1 Server", "sind %d Server"), servers)
+		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Server zuerst beenden.", p.Name, plural(l.ServersPerPerson, "ist 1 Server", "sind %d Server"), servers)
 	case l.CPUPerPerson > 0 && cpu+r.CPU > l.CPUPerPerson+1e-9:
-		return refuse("Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Server bräuchte %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)
+		return refuseStart("limit", "Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Server bräuchte %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)
 	case l.RAMGBPerPerson > 0 && ram+r.RAMGB > l.RAMGBPerPerson+1e-9:
-		return refuse("Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Server bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
+		return refuseStart("limit", "Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Server bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
 	case r.GPUs > 0 && gpus+r.GPUs > float64(l.GPUsPerPerson):
-		return refuse("Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", p.Name, plural(l.GPUsPerPerson, "ist 1 GPU", "sind %d GPUs"), gpus)
+		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", p.Name, plural(l.GPUsPerPerson, "ist 1 GPU", "sind %d GPUs"), gpus)
 	case r.GPUs > 0 && p.GPUsByClass[class] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[class]):
-		return refuse("Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[class], s.ClassName(ctx, class), p.Name)
+		return refuseStart("gpu_busy", "Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[class], s.ClassName(ctx, class), p.Name)
 	}
 	if !r.Kernel {
 		if err := s.checkMaterial(ctx, p); err != nil {
@@ -461,7 +479,11 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 		}
 	}
 	if s.budget != nil {
-		return s.budget(ctx, p, r.Person, class)
+		err := s.budget(ctx, p, r.Person, class)
+		if rf := (*Refusal)(nil); errors.As(err, &rf) && rf.Kind == "" {
+			rf.Kind = "budget"
+		}
+		return err
 	}
 	return nil
 }
@@ -481,7 +503,7 @@ func (s *Service) checkMaterial(ctx context.Context, p Project) error {
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL))); err != nil {
-		return refuse("Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Server nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
+		return refuseStart("material_error", "Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Server nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
 	}
 	s.materialOK.Store(key, s.now())
 	return nil

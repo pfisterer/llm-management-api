@@ -59,7 +59,7 @@ func TestWorkspaceKeyNotFromDefaultPool(t *testing.T) {
 	f.keys["ws-b"] = map[string]any{"token": "ws-b", "user_id": "kc-abc", "team_id": "t-a", "key_alias": ownAlias("kc-abc", workspaceAlias("t-b"))}
 	_, _, _ = svc.Create(ctx, p, grant(poolA, poolB), "laptop", "t-a")
 	info, _, _, _ := svc.lite.GetUser(ctx, "kc-abc")
-	if _, err := svc.SyncKeys(ctx, info, grant(poolA, poolB)); err != nil {
+	if _, err := svc.SyncKeys(ctx, info, grant(poolA, poolB), nil); err != nil {
 		t.Fatal(err)
 	}
 	if f.keys["ws-old"] != nil || f.team("ws-b") != "t-b" || len(f.keys) != 2 {

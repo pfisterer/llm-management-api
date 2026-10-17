@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/workspace"
@@ -70,6 +71,8 @@ type Service struct {
 	ready func(ctx context.Context, e Environment) error
 	// bases are the current bases of the projects' environments at their release (SetBases).
 	bases []string
+	// prepulled is how many images the prepull DaemonSet of an architecture holds since its last update (EnsurePrepull), for the metrics.
+	prepulled sync.Map
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
 	OnClassRenamed func(ctx context.Context, old, new string) error
 }

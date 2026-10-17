@@ -159,8 +159,9 @@ type podInfo struct {
 			} `json:"lastState"`
 		} `json:"containerStatuses"`
 		Conditions []struct {
-			Type   string `json:"type"`
-			Status string `json:"status"`
+			Type               string    `json:"type"`
+			Status             string    `json:"status"`
+			LastTransitionTime time.Time `json:"lastTransitionTime"`
 		} `json:"conditions"`
 		InitContainerStatuses []struct {
 			Name  string `json:"name"`

@@ -396,8 +396,12 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	}
 
 	if cfg.MetricsBind != "" {
-		// Prometheus metrics (fleet view): its own listener, no ingress; the NetworkPolicy admits the monitoring namespace only.
-		servers = append(servers, &http.Server{Addr: cfg.MetricsBind, Handler: webserver.MetricsRouter(fleetSvc, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+		// Prometheus metrics (fleet, workspaces, workspace pods, LLM keys): its own listener, no ingress; the NetworkPolicy admits the monitoring namespace only.
+		mo := webserver.MetricsOptions{Fleet: fleetSvc, Workspaces: wsSvc, Budgets: budgets, Log: log, DevMode: cfg.DevMode}
+		if gpuSvc != nil && wsSvc != nil {
+			mo.Pods = gpu.NewWorkspaceMetrics(gpuSvc, wsSvc.MetricsProfiles())
+		}
+		servers = append(servers, &http.Server{Addr: cfg.MetricsBind, Handler: webserver.MetricsRouter(mo), ReadHeaderTimeout: 10 * time.Second})
 	}
 
 	bookTo := projectOf(accessSvc, wsSvc, log)

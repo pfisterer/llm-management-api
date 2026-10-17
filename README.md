@@ -47,7 +47,15 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 
 ## Metrics (listener `METRICS_BIND`, default `:8092`)
 
-`GET /metrics` in the Prometheus text format, for the Prometheus agent of the AI cluster; no token, so no ingress points at it and the NetworkPolicy admits only the monitoring namespace on the port. Per approved fleet machine one series each, labelled `name`, `site` (its reported location) and `kind` (`fleet` through the tunnel, `fleet-direct` without); pending and blocked machines are only counted, so their number of series stays an admin's decision. No address, key or serial number in a label.
+`GET /metrics` in the Prometheus text format (written by hand, `internal/promtext`, no client library), for the Prometheus agent of the AI cluster; no token, so no ingress points at it and the NetworkPolicy admits only the monitoring namespace on the port.
+
+No label ever names a person: no user name, e-mail, key or key alias. Projects appear by slug only (never their name, which people choose). Cardinality stays bounded by admin decisions: fleet machines per approved machine (pending and blocked ones only counted), projects per project of the budget tree (about seven series each), profiles only from the catalogue (anything else counts as `other`), GPU classes from the GPU administration, bases from the catalogue.
+
+What the database or the cluster says is computed when scraped and cached for 30 seconds (`workspaces`: the projects and the usage rows; `workspace_pods`: one listing of the workspace pods and the builds). A part that cannot be read is left out and reported as `aiaas_metrics_part_up{part} 0`; only an unreadable fleet fails the whole scrape. Counters and the histogram live in memory: a restart sets them back to zero, which `rate()` and `increase()` treat as a counter reset.
+
+### Fleet
+
+Per approved fleet machine one series each, labelled `name`, `site` (its reported location) and `kind` (`fleet` through the tunnel, `fleet-direct` without). No address, key or serial number in a label.
 
 | Metric | Meaning |
 |---|---|
@@ -61,6 +69,43 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `aiaas_fleet_machine_ready` | expected, not busy, reported within three intervals, serves its assigned model without error |
 
 The WireGuard handshake is not known to the service; the hub's node-exporter textfile has it (`wireguard_peer_latest_handshake_seconds{kind="fleet"}`) and joins by name.
+
+### Workspaces (with the GPU part)
+
+| Metric | Meaning |
+|---|---|
+| `aiaas_workspace_starts_total{profile,result}` | counter: start decisions of the spawn check and of GPU kernels; `result` is `ok` or what refused it: `project` (none, unknown, not a member, ended, LLM only), `image_error` (environment from Git not built yet), `no_profile`, `gpu_class`, `limit` (per person), `gpu_busy` (the project's GPUs of the class in use), `material_error`, `budget`, `error` (the check failed), `other`; `profile` is a catalogue profile, `gpu-kernel` or `other` |
+| `aiaas_workspace_start_duration_seconds{profile}` | histogram: workspace pod created → Ready (Kueue wait, image pull, init containers); observed when a listing first sees the pod ready, so pods that come and go between two scrapes are missed and pods ready before a restart are not counted |
+| `aiaas_workspace_servers{profile,gpu_class,state}` | workspace pods (servers and GPU kernels) `running`, `starting` (on a node, not running yet) or `queued` (gated by Kueue or on no node) |
+| `aiaas_workspace_gpus{gpu_class,state}` | GPUs of those pods by state |
+| `aiaas_workspace_projects{state}` | projects `active`, `llm_only` (active, LLM tokens only) or `ended` (not yet deleted by the tree) |
+| `aiaas_workspace_project_environments{kind}` | active projects by environment: `base`, `git` (built from Git) or `image` (finished image) |
+| `aiaas_workspace_project_images_unreachable` | active projects whose finished image did not answer at the last check |
+| `aiaas_workspace_project_image_updates_offered` | active projects with a moved image tag not taken yet |
+| `aiaas_workspace_project_end_timestamp_seconds{project}` | end of the last day of an active project with an end ("ending soon" = minus `time()`) |
+| `aiaas_workspace_project_budget_limit{project,unit,window,gpu_class,source}` | project-wide budgets of active projects (per-person budgets are left out); `source` `tree` or `project` |
+| `aiaas_workspace_project_budget_used{…}` | what the project used of it in its current window (UTC calendar days) |
+| `aiaas_workspace_project_storage_limit_bytes{project}` | size of the project's volume `ws-<slug>` |
+| `aiaas_workspace_project_storage_used_bytes{project}` | used space at the last hourly report |
+| `aiaas_workspace_storage_report_timestamp_seconds{report}` | last report of the hourly storage job, `dirs` or `valkey` |
+| `aiaas_workspace_metadata_memory_bytes{kind}` | Valkey of the JuiceFS metadata: `used`, `peak`, `rss`, `max`, `system` |
+| `aiaas_base_projects{base,family,status}` | active projects per version of a base; `status` `default`, `current` or `deprecated` |
+| `aiaas_base_end_of_life_timestamp_seconds{base}` | end of life of a deprecated version |
+| `aiaas_env_builds{status}` | project images from Git by `building`, `ready`, `failed` (followed every five minutes) |
+| `aiaas_prepull_images{arch}` | images the prepull DaemonSet of an architecture holds; its readiness per node comes from kube-state-metrics (DaemonSet `kernel-image-prepull[-arm64]`) |
+
+Not here: the JuiceFS metadata dump's age (the JuiceFS clients write it to the bucket; the service never sees it), the GPU utilisation (DCGM exporter) and Kueue's queues (Kueue's own metrics).
+
+### LLM
+
+| Metric | Meaning |
+|---|---|
+| `aiaas_llm_projects{state}` | active projects `with_tokens` (a LiteLLM team of their own) or `without_tokens` |
+| `aiaas_llm_keys{kind,state}` | keys of people at the last budget sync: `kind` `own`, `chat` or `workspace`, `state` `pool` (in a project pool) or `none` (outside every pool, cannot spend) |
+| `aiaas_llm_people{access}` | people known to LiteLLM, `with_access` or `without_access` |
+| `aiaas_llm_budget_sync_timestamp_seconds` | when the last complete budget sync finished |
+
+Budget, spend and remaining budget per project are LiteLLM's own (`litellm_team_max_budget_metric`, `litellm_remaining_team_budget_metric`, `litellm_spend_metric_total`), not repeated here.
 
 ## Configuration
 
@@ -89,7 +134,7 @@ The WireGuard handshake is not known to the service; the hub's node-exporter tex
 | `ADMIN_UI_URL` | LiteLLM admin UI autologin link, returned by `/v1/me` to admins only |
 | `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
 | `MAX_KEYS_PER_USER` | own keys per person, default 5 |
-| `METRICS_BIND` | Prometheus metrics of the fleet (`/metrics`), default `:8092`, empty = off; NetworkPolicy: monitoring namespace only |
+| `METRICS_BIND` | Prometheus metrics (`/metrics`: fleet, workspaces, LLM keys), default `:8092`, empty = off; NetworkPolicy: monitoring namespace only |
 | `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the aiaas-deployment inventory as JSON |
 | `FLEET_SCRIPTS_DIR`, `FLEET_PROFILE_TEMPLATE`, `FLEET_README`, `FLEET_PACKAGE_DIR` | fleet scripts, JAMF profile template, guide, uploaded package |
 

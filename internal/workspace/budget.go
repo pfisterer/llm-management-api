@@ -67,7 +67,7 @@ func (s *Service) SetUsage(u UsageReader) {
 		}
 		for _, b := range st {
 			if b.Exhausted {
-				return refuse("Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s.", p.Name, describe(b.Budget), num(b.Used))
+				return refuseStart("budget", "Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s.", p.Name, describe(b.Budget), num(b.Used))
 			}
 		}
 		return nil

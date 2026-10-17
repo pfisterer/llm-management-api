@@ -598,8 +598,8 @@ func workspaceOf(k litellm.Key) (string, bool) {
 	return ws, ok && ws != ""
 }
 
-// SyncKeys keeps the keys of a LiteLLM user in their pools (a workspace key only in its own project's, see workspaceOf): a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the short-term budget of its pool — of the pool it is in or is moved to; a key left outside every pool gets 0 — and clears rate limits and models of the key's own (from before, or set in LiteLLM's UI), so only the team's apply. Returns how many writes it made (a move and its budget count as one each).
-func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) (int, error) {
+// SyncKeys keeps the keys of a LiteLLM user in their pools (a workspace key only in its own project's, see workspaceOf): a key outside the person's pools (in a project they lost, or in none) moves to their default project. Without any pool, keys are taken out of their team instead (team_id null): they are then personal keys, and the user's budget of 0 stops them; when the person gets a project again, the next pass moves them in. It also gives every key the short-term budget of its pool — of the pool it is in or is moved to; a key left outside every pool gets 0 — and clears rate limits and models of the key's own (from before, or set in LiteLLM's UI), so only the team's apply. Returns how many writes it made (a move and its budget count as one each). Every key it keeps is counted in tally (nil = not counted), as it is after the pass.
+func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant, tally *KeyTally) (int, error) {
 	_, keys, found, err := s.lite.GetUser(ctx, info.UserID)
 	if err != nil || !found {
 		return 0, err
@@ -642,6 +642,7 @@ func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) 
 		if !inPool {
 			pool = Pool{}
 		}
+		tally.add(k, inPool)
 		// Every key carries its pool's short-term budget, also one made before or one LiteLLM made on its own (without it its short-term budget had no cap).
 		wrote, err := s.applyKeyBudget(ctx, k, pool)
 		if err != nil {
@@ -652,6 +653,43 @@ func (s *Service) SyncKeys(ctx context.Context, info litellm.UserInfo, g Grant) 
 		}
 	}
 	return writes, nil
+}
+
+// KeyTally counts keys by kind (own: made by the person; chat: the chat's; workspace: a project's workspace key) and state (pool: in a pool the person may draw from; none: outside every pool, cannot spend), for the metrics. No key, alias or person is kept, only the counts.
+type KeyTally struct{ counts map[[2]string]int }
+
+// KeyKinds and KeyStates are the label values of KeyTally.
+var (
+	KeyKinds  = []string{"chat", "own", "workspace"}
+	KeyStates = []string{"none", "pool"}
+)
+
+func (t *KeyTally) add(k litellm.Key, inPool bool) {
+	if t == nil {
+		return
+	}
+	if t.counts == nil {
+		t.counts = map[[2]string]int{}
+	}
+	kind := "own"
+	if _, ok := workspaceOf(k); ok {
+		kind = "workspace"
+	} else if k.Alias != nil && isChatAlias(*k.Alias) {
+		kind = "chat"
+	}
+	state := "none"
+	if inPool {
+		state = "pool"
+	}
+	t.counts[[2]string{kind, state}]++
+}
+
+// Count is the number of keys of a kind in a state.
+func (t *KeyTally) Count(kind, state string) int {
+	if t == nil {
+		return 0
+	}
+	return t.counts[[2]string{kind, state}]
 }
 
 // Delete removes one of the person's keys; another person's id is "not found".

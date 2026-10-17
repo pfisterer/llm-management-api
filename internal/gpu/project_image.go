@@ -373,13 +373,16 @@ func (s *Service) EnsurePrepull(ctx context.Context, images []workspace.ArchImag
 			}
 		}
 		if hold == "" {
+			s.prepulled.Store(arch, 0)
 			continue
 		}
 		slices.Sort(list)
 		slices.Sort(secrets)
 		if err := s.putPrepull(ctx, ds, ns, prepullName(arch), prepullDaemonSet(ns, prepullName(arch), arch, hold, list, secrets)); err != nil {
 			errs = append(errs, err)
+			continue
 		}
+		s.prepulled.Store(arch, 1+len(list))
 	}
 	return errors.Join(errs...)
 }

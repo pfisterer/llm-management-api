@@ -500,9 +500,14 @@ func TestSyncKeys(t *testing.T) {
 	info, _, _, _ := svc.lite.GetUser(ctx, "kc-abc")
 
 	// Only B is left: A's key and the old one move to B and get B's key budget; the old one loses its limits and models.
-	n, err := svc.SyncKeys(ctx, info, grant(poolB))
+	var tally KeyTally
+	n, err := svc.SyncKeys(ctx, info, grant(poolB), &tally)
 	if err != nil || n != 4 {
 		t.Fatalf("move: %d %v %v", n, err, f.writes)
+	}
+	// Counted as they are after the pass: all three in a pool.
+	if tally.Count("own", "pool") != 3 || tally.Count("own", "none") != 0 {
+		t.Fatalf("tally: %+v", tally)
 	}
 	for tok, k := range f.keys {
 		if mb, _ := k["max_budget"].(float64); k["team_id"] != "t-b" || math.Abs(mb-0.1) > 1e-9 {
@@ -512,23 +517,27 @@ func TestSyncKeys(t *testing.T) {
 	if old := f.keys["old"]; old["rpm_limit"] != nil || old["tpm_limit"] != nil || fmt.Sprint(old["models"]) != "[]" || old["budget_duration"] != "4h" {
 		t.Fatalf("old key not cleared: %v", old)
 	}
-	if n, _ := svc.SyncKeys(ctx, info, grant(poolB)); n != 0 {
+	if n, _ := svc.SyncKeys(ctx, info, grant(poolB), nil); n != 0 {
 		t.Fatalf("moved again: %d", n)
 	}
 	// No pool left: every key leaves its team, so the user's budget of 0 stops it, and its own budget becomes 0.
-	if n, err := svc.SyncKeys(ctx, info, grant()); err != nil || n != 6 {
+	tally = KeyTally{}
+	if n, err := svc.SyncKeys(ctx, info, grant(), &tally); err != nil || n != 6 {
 		t.Fatalf("detach: %d %v", n, err)
+	}
+	if tally.Count("own", "none") != 3 || tally.Count("own", "pool") != 0 {
+		t.Fatalf("tally without pool: %+v", tally)
 	}
 	for tok, k := range f.keys {
 		if k["team_id"] != nil || k["max_budget"] != 0.0 {
 			t.Fatalf("key %s: %v", tok, k)
 		}
 	}
-	if n, _ := svc.SyncKeys(ctx, info, grant()); n != 0 {
+	if n, _ := svc.SyncKeys(ctx, info, grant(), nil); n != 0 {
 		t.Fatalf("detached again: %d", n)
 	}
 	// A project again: the keys come back into its pool, with its key budget.
-	if n, _ := svc.SyncKeys(ctx, info, grant(poolA)); n != 6 || f.team("old") != "t-a" || f.keys["old"]["max_budget"] != 0.5 {
+	if n, _ := svc.SyncKeys(ctx, info, grant(poolA), nil); n != 6 || f.team("old") != "t-a" || f.keys["old"]["max_budget"] != 0.5 {
 		t.Fatalf("back: %d %v", n, f.keys["old"])
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
+	"github.com/pfisterer/llm-management-api/internal/promtext"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
@@ -67,6 +69,15 @@ func TestBudgetSyncPass(t *testing.T) {
 	}
 	if f.users["service"]["max_budget"] != 5.0 || f.keys["svc"]["team_id"] != nil {
 		t.Fatalf("service user touched: %v %v", f.users["service"], f.keys["svc"])
+	}
+	// The pass counted the people's keys as they are now (the service user's not), and the people by access.
+	var w promtext.Writer
+	b.WriteMetrics(&w)
+	for _, want := range []string{`aiaas_llm_keys{kind="own",state="pool"} 1` + "\n", `aiaas_llm_keys{kind="own",state="none"} 1` + "\n", `aiaas_llm_keys{kind="chat",state="pool"} 0` + "\n",
+		`aiaas_llm_people{access="with_access"} 1` + "\n", `aiaas_llm_people{access="without_access"} 1` + "\n", "aiaas_llm_budget_sync_timestamp_seconds "} {
+		if !strings.Contains(string(w.Bytes()), want) {
+			t.Errorf("missing %q in\n%s", want, w.Bytes())
+		}
 	}
 	// Nothing changed: the next pass writes nothing.
 	if n, err := b.Pass(ctx); err != nil || n != 0 {

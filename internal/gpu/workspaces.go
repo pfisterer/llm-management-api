@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // WorkspacePod is one running workspace pod (Jupyter server or GPU kernel) with what it reserves and, when metrics-server answers, what it uses.
@@ -23,6 +24,9 @@ type WorkspacePod struct {
 	GPUs       float64
 	CPUUsed    float64
 	RAMUsedGB  float64
+	// Created is when the pod was made (the hub's start, or the kernel's); ReadyAt when it became ready, nil while it is not: the time a start took (metrics.go).
+	Created time.Time
+	ReadyAt *time.Time
 }
 
 // podLister and metrics are the parts of the Kubernetes client the workspace listing needs.
@@ -79,7 +83,13 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 			continue
 		}
 		w := WorkspacePod{Pod: p.Metadata.Name, Running: p.Status.Phase == "Running", Queued: len(p.Spec.SchedulingGates) > 0 || p.Spec.NodeName == "", Server: p.Metadata.Labels["hub.jupyter.org/servername"], Person: personOf[p.Metadata.Name],
-			Project: p.Metadata.Labels["dhbw.cloud/project"], Profile: p.Metadata.Labels["dhbw.cloud/profile"]}
+			Project: p.Metadata.Labels["dhbw.cloud/project"], Profile: p.Metadata.Labels["dhbw.cloud/profile"], Created: p.Metadata.CreationTimestamp}
+		for _, c := range p.Status.Conditions {
+			if c.Type == "Ready" && c.Status == "True" && !c.LastTransitionTime.IsZero() {
+				at := c.LastTransitionTime
+				w.ReadyAt = &at
+			}
+		}
 		if p.Metadata.Labels["component"] == "kernel" {
 			w.Profile = "gpu-kernel"
 			for _, o := range p.Metadata.OwnerReferences {
