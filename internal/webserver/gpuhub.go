@@ -225,7 +225,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		})
 	}
 	if o.Keys != nil {
-		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws only from the project's own LLM tokens and only for its members. A person who is no member gets 403; a project without LLM tokens (or a person the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without.
+		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws only from the project's own LLM tokens and only for its members. A person who is no member gets 403; a project without LLM tokens (or a person the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without, and the hub removes a provider "DHBW" left in VS Code's settings. Only that answer means "definitely no key": anything that could not be found out (LiteLLM, projects not readable) is an error status, on which the hub keeps the settings as they are.
 		r.POST("/gpu/hub/workspace-key", func(c *gin.Context) {
 			if !hubToken(c, o.Token) {
 				return
@@ -267,6 +267,11 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				sub = found
 			}
 			g, status, msg := o.Quota.GrantFor(ctx, tokens)
+			if status >= 500 {
+				// Projects not readable: an error, not an answer. The hub keeps VS Code's settings as they are (only a 200 with a reason removes the provider "DHBW").
+				abort(c, http.StatusServiceUnavailable, "upstream", msg)
+				return
+			}
 			if status != 0 {
 				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: msg})
 				return

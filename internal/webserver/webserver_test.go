@@ -448,4 +448,11 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 	if k := f.keyBy(keys.WorkspaceKey("master", "kc-sub-m", "t-ws")); k != nil {
 		t.Errorf("key drawn from another pool: %v", k)
 	}
+	// Projects not readable is an error, not "no key": the hub removes the VS Code provider only on a 200 with a reason.
+	broken := quota
+	broken.Projects = nil
+	r = GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", Keys: testKeys(srv.URL), Quota: broken, MasterKey: "master", Log: zap.NewNop().Sugar()}, true)
+	if code, out := post("t-1"); code != http.StatusServiceUnavailable || out.Key != "" || out.Reason != "" {
+		t.Errorf("projects not readable: %d %+v, want 503 without a reason", code, out)
+	}
 }

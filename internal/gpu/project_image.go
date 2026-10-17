@@ -16,10 +16,25 @@ import (
 
 // Project images from Git (docs/bauplan.md 10.12): the environment of a project's servers in every profile. Built from a Git repository the way Binder reads it — apt.txt, environment.yml, requirements.txt, postBuild, in binder/ or .binder/ if there is one — on the base the project chose (dhbw-workspace-images: Python, PyTorch, TensorFlow), so the result has everything the profiles need and the label cloud.dhbw.base. A repository with a Dockerfile is refused: such an image is built by its owners and entered in the project as a finished image.
 
-// projectImageScript is the build job's script: it writes the Dockerfile from the repository's files and builds it with BuildKit.
-const projectImageScript = `set -euo pipefail
-git clone --quiet --no-checkout "$GIT_URL" /tmp/repo
-git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
+// projectImageClone clones the repository, up to three times with a pause in between: the job has backoffLimit 0, and a single "Connection reset by peer" from the Git host would otherwise fail the whole build (like the material's checkout in the hub). Only the last failure writes a "dhbw: " line, the message the service shows (the first such line in the log wins).
+const projectImageClone = `export GIT_TERMINAL_PROMPT=0
+for i in 1 2 3; do
+  rm -rf /tmp/repo
+  if git clone --quiet --no-checkout "$GIT_URL" /tmp/repo 2>/tmp/clone.err; then break; fi
+  cat /tmp/clone.err >&2
+  if [ "$i" -eq 3 ]; then
+    r=$(grep -iE 'fatal|error' /tmp/clone.err | tail -1 | sed 's/^fatal: //' | cut -c1-200 || true)
+    case "$r" in *"could not read Username"*|*"not found"*) r="Repository nicht gefunden oder nicht öffentlich";; "") r="keine Antwort";; esac
+    echo "dhbw: Das Repository $GIT_URL konnte nach 3 Versuchen nicht geklont werden: $r"
+    exit 1
+  fi
+  echo "git clone fehlgeschlagen (Versuch $i von 3), neuer Versuch in ${CLONE_RETRY_PAUSE:-5} s"
+  sleep "${CLONE_RETRY_PAUSE:-5}"
+done
+`
+
+// projectImageScript is the build job's script: it clones the repository, writes the Dockerfile from the repository's files and builds it with BuildKit.
+const projectImageScript = "set -euo pipefail\n" + projectImageClone + `git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
 dir=/tmp/repo
 for d in binder .binder; do if [ -d "/tmp/repo/$d" ]; then dir="/tmp/repo/$d"; break; fi; done
 if [ -f "$dir/Dockerfile" ]; then

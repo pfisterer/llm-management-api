@@ -96,6 +96,18 @@ func TestStartKernel(t *testing.T) {
 			t.Errorf("kernel pod has %s", unwanted)
 		}
 	}
+	// The environment is the launcher's parameters and the project's LLM key, nothing else of the server (todo kernel_rest): checked by name, so a new variable has to be added here on purpose.
+	launcher := map[string]bool{"RESPONSE_ADDRESS": true, "PUBLIC_KEY": true, "PORT_RANGE": true, "TRANSPORT_ENCRYPTION": true}
+	c := k.created[0]["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+	if _, ok := c["envFrom"]; ok {
+		t.Errorf("kernel container has envFrom: %v", c["envFrom"])
+	}
+	for _, e := range c["env"].([]any) {
+		name := e.(map[string]any)["name"].(string)
+		if !launcher[name] && !strings.HasPrefix(name, "KERNEL_") && !strings.HasPrefix(name, "OPENAI_") {
+			t.Errorf("kernel pod has the variable %s", name)
+		}
+	}
 
 	for name, bad := range map[string]KernelRequest{
 		"response elsewhere": {KernelID: testKernelID, ResponseAddress: "10.42.9.9:8877"},
