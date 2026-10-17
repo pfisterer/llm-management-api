@@ -45,6 +45,23 @@ For the machines, the WireGuard hub and the discovery job; reachable through the
 
 The registry lives in Postgres (`fleet_peers`). One-off import of the Node broker's file: `llm-management-api import-peers /path/to/peers.json` (same environment as the service).
 
+## Metrics (listener `METRICS_BIND`, default `:8092`)
+
+`GET /metrics` in the Prometheus text format, for the Prometheus agent of the AI cluster; no token, so no ingress points at it and the NetworkPolicy admits only the monitoring namespace on the port. Per approved fleet machine one series each, labelled `name`, `site` (its reported location) and `kind` (`fleet` through the tunnel, `fleet-direct` without); pending and blocked machines are only counted, so their number of series stays an admin's decision. No address, key or serial number in a label.
+
+| Metric | Meaning |
+|---|---|
+| `aiaas_fleet_enabled` | 1 when the fleet accepts enrolments |
+| `aiaas_fleet_reenroll_interval_seconds` | enrolment interval; a machine is "ohne Rückmeldung" after three |
+| `aiaas_fleet_machines{state}` | number of machines, `approved`, `pending` or `blocked` |
+| `aiaas_fleet_machine_last_seen_timestamp_seconds` | Unix time of the last enrolment (0 = none since the approval) |
+| `aiaas_fleet_machine_expected` | 1 when its assignment is switched on (it is meant to serve) |
+| `aiaas_fleet_machine_busy` | 1 while its gate stopped inference because someone works at it |
+| `aiaas_fleet_machine_model_error` | 1 when it reported that it could not pull or load its model |
+| `aiaas_fleet_machine_ready` | expected, not busy, reported within three intervals, serves its assigned model without error |
+
+The WireGuard handshake is not known to the service; the hub's node-exporter textfile has it (`wireguard_peer_latest_handshake_seconds{kind="fleet"}`) and joins by name.
+
 ## Configuration
 
 | Variable | Meaning |
@@ -72,6 +89,7 @@ The registry lives in Postgres (`fleet_peers`). One-off import of the Node broke
 | `ADMIN_UI_URL` | LiteLLM admin UI autologin link, returned by `/v1/me` to admins only |
 | `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
 | `MAX_KEYS_PER_USER` | own keys per person, default 5 |
+| `METRICS_BIND` | Prometheus metrics of the fleet (`/metrics`), default `:8092`, empty = off; NetworkPolicy: monitoring namespace only |
 | `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the aiaas-deployment inventory as JSON |
 | `FLEET_SCRIPTS_DIR`, `FLEET_PROFILE_TEMPLATE`, `FLEET_README`, `FLEET_PACKAGE_DIR` | fleet scripts, JAMF profile template, guide, uploaded package |
 

@@ -14,3 +14,5 @@ spec:
     # one source the NetworkPolicy admits — see the README.
     - {name: chat, port: 8089, targetPort: chat}
     - {name: adminlogin, port: 8090, targetPort: adminlogin}
+    # Prometheus metrics of the fleet, for the agent in the monitoring namespace (no ingress, no token).
+    - {name: metrics, port: 8092, targetPort: metrics}

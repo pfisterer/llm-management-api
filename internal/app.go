@@ -395,6 +395,11 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			LiteLLMURL: cfg.LiteLLMURL, Username: cfg.LiteLLMUIUsername, Password: cfg.LiteLLMUIPassword, Log: log}), ReadHeaderTimeout: 10 * time.Second},
 	}
 
+	if cfg.MetricsBind != "" {
+		// Prometheus metrics (fleet view): its own listener, no ingress; the NetworkPolicy admits the monitoring namespace only.
+		servers = append(servers, &http.Server{Addr: cfg.MetricsBind, Handler: webserver.MetricsRouter(fleetSvc, log, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+	}
+
 	bookTo := projectOf(accessSvc, wsSvc, log)
 	if gpuSvc != nil && cfg.GPUHubToken != "" {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).

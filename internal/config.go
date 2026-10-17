@@ -58,6 +58,8 @@ type Config struct {
 	ScriptsDir, ProfileTemplate, PackageDir, Readme string
 	LiteLLMMasterKey                                string
 	MaxKeysPerUser                                  int
+	// MetricsBind is the listener of GET /metrics (fleet view for the in-cluster Prometheus agent); empty = off.
+	MetricsBind string
 
 	// GPU part (environments from Git, JupyterHub servers in the GPU cluster).
 	GPU gpu.Config
@@ -131,6 +133,7 @@ func LoadConfig() (Config, error) {
 		FleetJSON:           envconf.String("FLEET", ""),
 		WireGuardJSON:       envconf.String("WIREGUARD", ""),
 		MachineBind:         envconf.String("MACHINE_BIND", ":8087"),
+		MetricsBind:         envconf.String("METRICS_BIND", ":8092"),
 		ScriptsDir:          envconf.String("FLEET_SCRIPTS_DIR", ""),
 		ProfileTemplate:     envconf.String("FLEET_PROFILE_TEMPLATE", ""),
 		PackageDir:          envconf.String("FLEET_PACKAGE_DIR", ""),
