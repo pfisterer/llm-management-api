@@ -313,6 +313,10 @@ func (s *Service) validate(p *Project) error {
 			return refuse("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", c)
 		}
 	}
+	// A person cannot hold more GPUs than the project has: without a GPU class that is none, so a limit set before the classes went (or by hand) would only mislead.
+	if c := ProjectGPUCap(*p); c >= 0 && p.Limits.GPUsPerPerson > c {
+		p.Limits.GPUsPerPerson = c
+	}
 	for _, b := range p.Budgets {
 		if !slices.Contains([]string{"server_hours", "vcpu_hours", "ram_gb_hours", "gpu_hours"}, b.Unit) ||
 			!slices.Contains([]string{"24h", "7d", "30d", "total"}, b.Window) || b.Amount < 0 {
@@ -320,6 +324,19 @@ func (s *Service) validate(p *Project) error {
 		}
 	}
 	return nil
+}
+
+// ProjectGPUCap is how many GPUs the project can have at the same time: the sum over its GPU classes, 0 without a class, -1 when a class has no cap of its own (gpus_by_class without an entry).
+func ProjectGPUCap(p Project) int {
+	total := 0
+	for _, c := range p.GPUClasses {
+		n, ok := p.GPUsByClass[c]
+		if !ok || n == 0 {
+			return -1
+		}
+		total += n
+	}
+	return total
 }
 
 func (s *Service) Get(ctx context.Context, slug string) (Project, error) {

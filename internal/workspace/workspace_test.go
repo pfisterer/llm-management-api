@@ -597,3 +597,29 @@ func TestStartChecksMaterial(t *testing.T) {
 		t.Fatalf("kernel refused for material: %v", err)
 	}
 }
+
+func TestGPUsPerPersonCappedByProject(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	cases := []struct {
+		name    string
+		classes []string
+		counts  map[string]int
+		set     int
+		want    int
+	}{
+		{"no class, no GPU", nil, nil, 2, 0},
+		{"two GPUs of one class", []string{"l4-3q"}, map[string]int{"l4-3q": 2}, 5, 2},
+		{"within the cap", []string{"l4-3q"}, map[string]int{"l4-3q": 2}, 1, 1},
+		{"class without a cap", []string{"l4-3q"}, nil, 5, 5},
+	}
+	for i, c := range cases {
+		p, err := s.create(ctx, Project{Slug: "cap" + string(rune('a'+i)), Profiles: []string{"cpu", "gpu"}, GPUClasses: c.classes, GPUsByClass: c.counts, Limits: Limits{GPUsPerPerson: c.set}}, "admin")
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if p.Limits.GPUsPerPerson != c.want {
+			t.Errorf("%s: gpus per person %d, want %d", c.name, p.Limits.GPUsPerPerson, c.want)
+		}
+	}
+}
