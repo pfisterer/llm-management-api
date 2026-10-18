@@ -155,7 +155,7 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 	}
 }
 
-var unitNames = map[string]string{"server_hours": "Server-Stunden", "vcpu_hours": "vCPU-Stunden", "ram_gb_hours": "RAM-GB-Stunden", "gpu_hours": "GPU-Stunden"}
+var unitNames = map[string]string{"server_hours": "Workspace-Stunden", "vcpu_hours": "vCPU-Stunden", "ram_gb_hours": "RAM-GB-Stunden", "gpu_hours": "GPU-Stunden"}
 var windowNames = map[string]string{"24h": "heute", "7d": "in 7 Tagen", "30d": "in 30 Tagen", "total": "insgesamt"}
 
 func describe(b Budget) string {

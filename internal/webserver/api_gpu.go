@@ -103,7 +103,7 @@ var serverNameRE = regexp.MustCompile(`^(-|[A-Za-z0-9][A-Za-z0-9._-]{0,254})$`)
 func (s *Server) getServerProgress(c *gin.Context) {
 	name := strings.TrimSpace(c.Param("name"))
 	if !serverNameRE.MatchString(name) {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültiger Servername.")
+		abort(c, http.StatusBadRequest, "invalid", "Ungültiger Workspace-Name.")
 		return
 	}
 	if name == "-" {

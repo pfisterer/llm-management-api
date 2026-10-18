@@ -124,7 +124,7 @@ func TestCheckStart(t *testing.T) {
 	s2 := service(Running{Server: "s1", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"}, Running{Server: "s2", Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"},
 		Running{Server: "k1", Person: "a@dhbw.de", Project: "kurs", Profile: "gpu-kernel"})
 	_, _ = s2.create(ctx, Project{Slug: "kurs", Members: []Member{{Token: "user:a@dhbw.de"}}, Profiles: []string{"cpu"}, Limits: Limits{ServersPerPerson: 2}}, "admin")
-	if got := reason(s2.CheckStart(ctx, []string{"user:a@dhbw.de"}, StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"})); !strings.Contains(got, "2 Server") {
+	if got := reason(s2.CheckStart(ctx, []string{"user:a@dhbw.de"}, StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"})); !strings.Contains(got, "2 Workspaces") {
 		t.Fatalf("server limit: %q", got)
 	}
 	// Budget hook.
@@ -433,7 +433,7 @@ func TestCheckKernelStart(t *testing.T) {
 	if got := reason(s.CheckStart(ctx, me, kernel)); got != "" {
 		t.Errorf("kernel next to its server refused: %s", got)
 	}
-	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, Server: "jupyter-a-2", CPU: 0.5, RAMGB: 2})); !strings.Contains(got, "Server") {
+	if got := reason(s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, Server: "jupyter-a-2", CPU: 0.5, RAMGB: 2})); !strings.Contains(got, "1 Workspace") {
 		t.Errorf("second server allowed: %q", got)
 	}
 	busy := service(Running{Person: "a@dhbw.de", Project: "split", Profile: SplitProfile, CPU: 0.5, RAMGB: 2},

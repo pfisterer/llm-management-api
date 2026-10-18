@@ -439,7 +439,7 @@ func (s *Service) checkStart(ctx context.Context, tokens []string, r StartReques
 		return refuseStart("image_error", "Die Umgebung von Projekt „%s“ ist noch nicht gebaut. Der Bau und sein Protokoll stehen in den Projekteinstellungen (Workspaces); gestartet werden kann, sobald er fertig ist.", p.Name)
 	}
 	if !p.Allows(r.Profile) {
-		return refuseStart("no_profile", "Profil %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
+		return refuseStart("no_profile", "Workspace-Art %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
 	}
 	if r.Profile == SplitProfile && !p.Derived() {
 		return refuseStart("no_profile", "„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", p.Name)
@@ -486,11 +486,11 @@ func (s *Service) checkStart(ctx context.Context, tokens []string, r StartReques
 	l := p.Limits
 	switch {
 	case !r.Kernel && l.ServersPerPerson > 0 && servers >= l.ServersPerPerson:
-		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Server zuerst beenden.", p.Name, plural(l.ServersPerPerson, "ist 1 Server", "sind %d Server"), servers)
+		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Workspace zuerst beenden.", p.Name, plural(l.ServersPerPerson, "ist 1 Workspace", "sind %d Workspaces"), servers)
 	case l.CPUPerPerson > 0 && cpu+r.CPU > l.CPUPerPerson+1e-9:
-		return refuseStart("limit", "Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Server bräuchte %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)
+		return refuseStart("limit", "Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Workspace bräuchte %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)
 	case l.RAMGBPerPerson > 0 && ram+r.RAMGB > l.RAMGBPerPerson+1e-9:
-		return refuseStart("limit", "Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Server bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
+		return refuseStart("limit", "Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Workspace bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
 	case r.GPUs > 0 && gpus+r.GPUs > float64(l.GPUsPerPerson):
 		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", p.Name, plural(l.GPUsPerPerson, "ist 1 GPU", "sind %d GPUs"), gpus)
 	case r.GPUs > 0 && p.GPUsByClass[class] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[class]):
@@ -526,7 +526,7 @@ func (s *Service) checkMaterial(ctx context.Context, p Project) error {
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL))); err != nil {
-		return refuseStart("material_error", "Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Server nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
+		return refuseStart("material_error", "Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Workspace nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
 	}
 	s.materialOK.Store(key, s.now())
 	return nil

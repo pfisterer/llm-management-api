@@ -79,15 +79,15 @@ func imageWarnings(img RegistryImage, maxBytes, hintBytes int64) []string {
 	}
 	switch home := img.EnvValue("HOME"); {
 	case home == "":
-		out = append(out, fmt.Sprintf("HOME ist im Image nicht gesetzt; erhalten bleibt beim Beenden des Servers nur, was unter %s liegt.", NotebookHome))
+		out = append(out, fmt.Sprintf("HOME ist im Image nicht gesetzt; erhalten bleibt beim Beenden des Workspaces nur, was unter %s liegt.", NotebookHome))
 	case strings.TrimSuffix(home, "/") != NotebookHome:
-		out = append(out, fmt.Sprintf("HOME zeigt im Image auf %s statt auf %s; Dateien außerhalb von %s gehen beim Beenden des Servers verloren.", home, NotebookHome, NotebookHome))
+		out = append(out, fmt.Sprintf("HOME zeigt im Image auf %s statt auf %s; Dateien außerhalb von %s gehen beim Beenden des Workspaces verloren.", home, NotebookHome, NotebookHome))
 	}
 	if len(img.Entrypoint) > 0 && !initEntrypoint(img.Entrypoint) {
-		out = append(out, fmt.Sprintf("Das Image hat einen eigenen Start-Befehl (ENTRYPOINT %s); der Start-Befehl des Servers wird ihm nur als Argument übergeben.", strings.Join(img.Entrypoint, " ")))
+		out = append(out, fmt.Sprintf("Das Image hat einen eigenen Start-Befehl (ENTRYPOINT %s); der Start-Befehl des Workspaces wird ihm nur als Argument übergeben.", strings.Join(img.Entrypoint, " ")))
 	}
 	if !hasSingleuser(img) {
-		out = append(out, "Ob das Image jupyterhub-singleuser enthält, ist nicht feststellbar (kein Image der Docker-Stacks und keine Basis von hier); ohne es startet der Server nicht.")
+		out = append(out, "Ob das Image jupyterhub-singleuser enthält, ist nicht feststellbar (kein Image der Docker-Stacks und keine Basis von hier); ohne es startet der Workspace nicht.")
 	}
 	switch {
 	case img.Size > maxBytes:

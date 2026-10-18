@@ -16,17 +16,17 @@ func kernelRoutes(r *gin.Engine, o GPUHubOptions) {
 		ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
 		token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "token ")
 		if err != nil || !ok {
-			abort(c, http.StatusUnauthorized, "unauthorized", "Nur für Workspace-Server.")
+			abort(c, http.StatusUnauthorized, "unauthorized", "Nur für Workspaces.")
 			return nil
 		}
 		owner, err := o.Kernels.KernelCaller(c.Request.Context(), ip, strings.TrimSpace(token))
 		switch {
 		case errors.Is(err, gpu.ErrNoKernelOwner):
-			abort(c, http.StatusForbidden, "forbidden", "GPU-Kernel gibt es nur in Servern der Art „CPU + GPU-Kernel“.")
+			abort(c, http.StatusForbidden, "forbidden", "GPU-Kernel gibt es nur in Workspaces der Art „CPU + GPU-Kernel“.")
 			return nil
 		case err != nil:
 			o.Log.Errorw("gpu kernel caller", "ip", ip, "error", err)
-			abort(c, http.StatusBadGateway, "unavailable", "Der Server konnte nicht geprüft werden.")
+			abort(c, http.StatusBadGateway, "unavailable", "Der Workspace konnte nicht geprüft werden.")
 			return nil
 		}
 		return owner

@@ -201,7 +201,7 @@ func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelReque
 	}
 	if o.GPUClass == "" && !s.cfg.Kernels.NoGPU {
 		// A server started before GPU classes, or without one chosen.
-		return "", &KernelRefused{"Für diesen Server ist keine GPU-Klasse gewählt. Bitte den Server neu starten."}
+		return "", &KernelRefused{"Für diesen Workspace ist keine GPU-Klasse gewählt. Bitte den Workspace neu starten."}
 	}
 	if s.kernelCheck != nil {
 		if err := s.kernelCheck(ctx, o); err != nil {
