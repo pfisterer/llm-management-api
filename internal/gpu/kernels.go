@@ -62,6 +62,8 @@ type KernelState struct {
 	Created  time.Time `json:"created"`
 	Admitted bool      `json:"admitted"`           // Kueue gave it a GPU
 	Position int       `json:"position,omitempty"` // place in the queue while waiting, 1 = next
+	// EndsAt is when the running kernel pod ends at the latest (its start plus activeDeadlineSeconds, the project's upper bound); nil while it waits or without an upper bound.
+	EndsAt *time.Time `json:"ends_at,omitempty"`
 }
 
 // KernelOverview is the person's GPU kernels for the status bar in JupyterLab, with the times running GPU pods end at the latest (what a waiting kernel can expect).
@@ -102,6 +104,14 @@ var (
 // SetKernelCheck sets what decides whether a person may start one more GPU kernel now (the project's limits and budgets); a *KernelRefused tells why not.
 func (s *Service) SetKernelCheck(f func(ctx context.Context, o *KernelOwner) error) {
 	s.kernelCheck = f
+}
+
+// DefaultKernelMax is how long a GPU kernel runs at the latest without SetKernelMax: 4 hours, as before release times per project.
+const DefaultKernelMax = 4 * time.Hour
+
+// SetKernelMax sets how long a GPU kernel of the owner's project may run at the latest (its release times, docs/todo.md idle_release); 0 = no upper bound (the project's own GPUs). The kernel pod's activeDeadlineSeconds.
+func (s *Service) SetKernelMax(f func(ctx context.Context, o *KernelOwner) time.Duration) {
+	s.kernelMax = f
 }
 
 func (s *Service) kernelNamespace() string {
@@ -208,7 +218,11 @@ func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelReque
 			return "", err
 		}
 	}
-	pod := s.kernelPod(o, r)
+	deadline := DefaultKernelMax
+	if s.kernelMax != nil {
+		deadline = s.kernelMax(ctx, o)
+	}
+	pod := s.kernelPod(o, r, deadline)
 	name := pod["metadata"].(map[string]any)["name"].(string)
 	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods", pod, nil); err != nil {
 		return "", err
@@ -244,8 +258,8 @@ func validKernelRequest(o *KernelOwner, r *KernelRequest) error {
 	return nil
 }
 
-// kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, and the launcher's parameters as environment. Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
-func (s *Service) kernelPod(o *KernelOwner, r KernelRequest) map[string]any {
+// kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, the launcher's parameters as environment, and deadline as its upper bound (0 = none). Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
+func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Duration) map[string]any {
 	queue := s.kernelQueue(o)
 	suffix := make([]byte, 3)
 	_, _ = rand.Read(suffix)
@@ -299,9 +313,11 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest) map[string]any {
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
 		"enableServiceLinks":           false,
-		"activeDeadlineSeconds":        14400,
 		"securityContext":              map[string]any{"runAsUser": 1000, "runAsGroup": 100, "fsGroup": 100},
 		"volumes":                      []any{volume},
+	}
+	if deadline > 0 {
+		spec["activeDeadlineSeconds"] = int64(deadline / time.Second)
 	}
 	if !s.cfg.Kernels.NoGPU {
 		requests["nvidia.com/gpu"], limits["nvidia.com/gpu"] = "1", "1"
@@ -476,7 +492,15 @@ func (s *Service) kernelPods(ctx context.Context, selector string) ([]map[string
 func kernelState(p map[string]any) KernelState {
 	meta, status := obj(p, "metadata"), obj(p, "status")
 	created, _ := time.Parse(time.RFC3339, str(meta, "creationTimestamp"))
-	return KernelState{Name: str(meta, "name"), Phase: strings.ToLower(str(status, "phase")), PodIP: str(status, "podIP"), HostIP: str(status, "hostIP"), Created: created}
+	st := KernelState{Name: str(meta, "name"), Phase: strings.ToLower(str(status, "phase")), PodIP: str(status, "podIP"), HostIP: str(status, "hostIP"), Created: created}
+	// The deadline counts from the pod's start on its node (startTime), not from its creation: the wait in the queue is not part of it.
+	if started, err := time.Parse(time.RFC3339, str(status, "startTime")); err == nil {
+		if d, ok := obj(p, "spec")["activeDeadlineSeconds"].(float64); ok && d > 0 {
+			end := started.Add(time.Duration(d) * time.Second)
+			st.EndsAt = &end
+		}
+	}
+	return st
 }
 
 func envVar(name, value string) map[string]any { return map[string]any{"name": name, "value": value} }

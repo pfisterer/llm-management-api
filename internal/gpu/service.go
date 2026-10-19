@@ -57,6 +57,8 @@ type Service struct {
 	log     *zap.SugaredLogger
 	// kernelCheck decides whether a person may start one more GPU kernel (SetKernelCheck).
 	kernelCheck func(ctx context.Context, o *KernelOwner) error
+	// kernelMax is how long a GPU kernel of the owner's project may run at the latest (SetKernelMax).
+	kernelMax func(ctx context.Context, o *KernelOwner) time.Duration
 	// whoami is the hub user of a token (kernels.go: the server's own token); cached in tokens.
 	whoami func(ctx context.Context, token string) (string, error)
 	tokens tokenCache

@@ -71,6 +71,8 @@ type HubProject struct {
 	// PullSecret and GitSecret are the project's secrets for private images and repositories (credentials); empty = none.
 	PullSecret string `json:"pull_secret,omitempty"`
 	GitSecret  string `json:"git_secret,omitempty"`
+	// Release is what the project's servers (per profile) and GPU kernels enforce, in seconds (docs/todo.md idle_release): the hub sets the servers' idle times and upper bound, the bases' extension dhbw_gpu culls by them.
+	Release workspace.EffectiveRelease `json:"release"`
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -117,7 +119,7 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 		if ws.HasCredentials(ctx, m.Slug) {
 			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
 		}
-		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs})
+		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective})
 	}
 	return out
 }

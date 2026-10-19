@@ -50,3 +50,39 @@ func TestMigrateMaterial(t *testing.T) {
 		t.Fatalf("migrated again: %+v", p)
 	}
 }
+
+// The release times are new columns: rows from before (NULL there) read as nothing set, and set times come back as stored, an explicit 0 (no upper bound) included. Needs a Postgres (TEST_POSTGRES_DSN), skipped without one.
+func TestReleaseColumns(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Exec("DROP TABLE IF EXISTS workspace_projects")
+	s, err := NewGormStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Exec("ALTER TABLE workspace_projects DROP COLUMN release_times, DROP COLUMN release_max, DROP COLUMN tree_release")
+	db.Exec("INSERT INTO workspace_projects (slug, name) VALUES ('alt', 'alt')")
+	if s, err = NewGormStore(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	p, err := s.Get(ctx, "alt")
+	if err != nil || p.Release.GPU.MaxHours != nil || p.ReleaseMax.CPU.IdleOpenMinutes != nil || p.TreeRelease {
+		t.Fatalf("row from before: %+v %v", p, err)
+	}
+	zero, ten := 0, 10
+	p.Release.GPU = ReleaseTimes{MaxHours: &zero, IdleClosedMinutes: &ten}
+	p.ReleaseMax.GPU.MaxHours = &zero
+	if err := s.Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ = s.Get(ctx, "alt"); p.Release.GPU.MaxHours == nil || *p.Release.GPU.MaxHours != 0 || *p.Release.GPU.IdleClosedMinutes != 10 || p.Release.GPU.IdleOpenMinutes != nil || *p.ReleaseMax.GPU.MaxHours != 0 {
+		t.Fatalf("round trip: %+v", p.Release)
+	}
+}

@@ -44,7 +44,7 @@ func (s *Server) listTreeProjects(c *gin.Context) {
 //
 //	@ID				putTreeProject
 //	@Summary		Create or update a project of the budget tree
-//	@Description	Sets what the tree owns of the node's project — name, members, end, the project's budgets per window, GPUs per class, LLM tokens, rate limits and models — and creates the project when there is none. What its managers set (shares per person, shorter windows, profiles, images) stays.
+//	@Description	Sets what the tree owns of the node's project — name, members, end, the project's budgets per window, GPUs per class, LLM tokens, rate limits and models, and the budget's release times when sent (release) — and creates the project when there is none. What its managers set (shares per person, shorter windows, profiles, images) stays.
 //	@Tags			tree
 //	@Accept			json
 //	@Produce		json

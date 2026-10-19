@@ -19,7 +19,7 @@ type Profile struct {
 	Slug string `json:"slug" example:"gpu"`
 	Name string `json:"name" example:"GPU"`
 	GPU  bool   `json:"gpu,omitempty"`
-	// Runtime limits JupyterHub enforces (same inventory values): the server ends after IdleMinutes without activity, after MaxHours at the latest; 0 when not configured.
+	// Runtime limits JupyterHub enforces (same inventory values): the server ends after IdleMinutes without activity, after MaxHours at the latest; 0 when not configured. Since the release times (release.go) they are the defaults where neither budget nor project sets one.
 	IdleMinutes int `json:"idle_minutes,omitempty" example:"30"`
 	MaxHours    int `json:"max_hours,omitempty" example:"4"`
 }
@@ -233,6 +233,9 @@ type Mine struct {
 	BudgetStatus []BudgetStatus `json:"budget_status"`
 	// ImageBuild is the state of the project image's build from Git (ImageGitURL); nil = none.
 	ImageBuild *ImageBuild `json:"image_build,omitempty"`
+	// ReleaseCeiling is the most the project may choose as release times, per kind (every time set; max_hours 0 = no upper bound allowed); ReleaseEffective what its servers and GPU kernels enforce now (seconds).
+	ReleaseCeiling   Release          `json:"release_ceiling"`
+	ReleaseEffective EffectiveRelease `json:"release_effective"`
 }
 
 // ForPerson lists the active projects the person belongs to; admins (all=true) get every project, with role "admin" where they are no member.
@@ -250,7 +253,7 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if role == "" || (!all && !p.Active(s.now())) || p.NoWorkspaces {
 			continue
 		}
-		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}}
+		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p)}
 		if p.ImageGitURL != "" && s.builds != nil {
 			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
 				m.ImageBuild = b
@@ -343,16 +346,16 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates) and the material, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates), the material and the project's release times (within the budget's), in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
 	if !asAdmin {
-		desc, members, base, image, gitURL, gitRef, auto, material, materialRef := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef
+		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release
 		p = cur
-		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef = desc, members, base, image, gitURL, gitRef, auto, material, materialRef
+		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)
@@ -370,6 +373,9 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		return Project{}, err
 	}
 	if err := withinTree(p); err != nil {
+		return Project{}, err
+	}
+	if err := s.applyRelease(&p, cur); err != nil {
 		return Project{}, err
 	}
 	p.UpdatedBy = by

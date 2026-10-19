@@ -309,6 +309,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 			return err
 		})
+		// A GPU kernel's upper bound is its project's (release times, docs/todo.md idle_release); its idle time is enforced by the notebook server (dhbw_gpu in the bases), which the hub tells.
+		gpuSvc.SetKernelMax(func(ctx context.Context, o *gpu.KernelOwner) time.Duration {
+			p, err := wsSvc.Get(ctx, o.Project)
+			if err != nil {
+				return gpu.DefaultKernelMax
+			}
+			return time.Duration(wsSvc.EffectiveRelease(p).Kernel.Max) * time.Second
+		})
 		gpuSvc.SetBuildReady(func(ctx context.Context, e gpu.Environment) error {
 			slug, ok := gpu.ProjectOf(e)
 			if !ok {

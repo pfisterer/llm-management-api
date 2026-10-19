@@ -287,6 +287,10 @@ func TestGPUHubAccess(t *testing.T) {
 		if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.body) {
 			t.Errorf("%s/%s: %d %s", tc.token, tc.user, w.Code, w.Body.String())
 		}
+		// The hub sets the servers' release times from the project (docs/todo.md idle_release): per profile and for GPU kernels, in seconds.
+		if tc.user == "member@dhbw.de" && tc.status == 200 && (!strings.Contains(w.Body.String(), `"release":{"servers":{`) || !strings.Contains(w.Body.String(), `"kernel":{"idle_open":300,"idle_closed":300,"max":14400}`)) {
+			t.Errorf("release in the access answer: %s", w.Body.String())
+		}
 	}
 }
 

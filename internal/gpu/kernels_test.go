@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeKernelKube answers the pod listing with a fixed server pod and records what is created and deleted.
@@ -86,7 +87,7 @@ func TestStartKernel(t *testing.T) {
 	}
 	b, _ := json.Marshal(k.created[0])
 	pod := string(b)
-	for _, want := range []string{`"image":"reg/envs/ml:1"`, `"claimName":"ws-ml"`, `"subPath":"homes/a"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"OPENAI_API_KEY"`, `"workingDir":"/home/jovyan/kurs"`, `"kueue.x-k8s.io/queue-name":"gpu-general-small"`, `"nvidia.com/gpu":"1"`, `"dhbw.cloud/kernel-owner":"jupyter-a-40dhbw-2ede"`, `"uid":"u1"`, `"automountServiceAccountToken":false`} {
+	for _, want := range []string{`"image":"reg/envs/ml:1"`, `"claimName":"ws-ml"`, `"subPath":"homes/a"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"OPENAI_API_KEY"`, `"workingDir":"/home/jovyan/kurs"`, `"kueue.x-k8s.io/queue-name":"gpu-general-small"`, `"nvidia.com/gpu":"1"`, `"dhbw.cloud/kernel-owner":"jupyter-a-40dhbw-2ede"`, `"uid":"u1"`, `"automountServiceAccountToken":false`, `"activeDeadlineSeconds":14400`} {
 		if !strings.Contains(pod, want) {
 			t.Errorf("kernel pod lacks %s: %s", want, pod)
 		}
@@ -128,6 +129,32 @@ func TestStartKernel(t *testing.T) {
 
 	if err := s.StopKernel(ctx, o, testKernelID); err != nil || len(k.deleted) != 1 || !strings.Contains(k.deleted[0], "dhbw.cloud%2Fkernel-owner%3Djupyter-a-40dhbw-2ede") {
 		t.Errorf("stop deletes only this server's kernel: %v %v", err, k.deleted)
+	}
+}
+
+func TestKernelMax(t *testing.T) {
+	s, k := kernelTestService(testServerPod)
+	o, _ := s.KernelOwnerAt(context.Background(), "10.42.1.5")
+	req := KernelRequest{KernelID: testKernelID, ResponseAddress: "10.42.1.5:8877"}
+	for _, c := range []struct {
+		max  time.Duration
+		want string
+	}{{8 * time.Hour, `"activeDeadlineSeconds":28800`}, {0, ""}} {
+		s.SetKernelMax(func(context.Context, *KernelOwner) time.Duration { return c.max })
+		k.created = nil
+		if _, err := s.StartKernel(context.Background(), o, req); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(k.created[0])
+		if has := strings.Contains(string(b), "activeDeadlineSeconds"); has != (c.want != "") || !strings.Contains(string(b), c.want) {
+			t.Errorf("max %v: %s", c.max, b)
+		}
+	}
+	// The overview's end counts from the pod's start.
+	var p map[string]any
+	_ = json.Unmarshal([]byte(`{"metadata":{"name":"kernel-1","creationTimestamp":"2026-10-18T08:00:00Z"},"spec":{"activeDeadlineSeconds":3600},"status":{"phase":"Running","startTime":"2026-10-18T08:10:00Z"}}`), &p)
+	if st := kernelState(p); st.EndsAt == nil || st.EndsAt.Format(time.RFC3339) != "2026-10-18T09:10:00Z" {
+		t.Errorf("ends at: %v", st.EndsAt)
 	}
 }
 
