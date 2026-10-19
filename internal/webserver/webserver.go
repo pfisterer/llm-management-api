@@ -47,6 +47,8 @@ type Options struct {
 	Fleet        *fleet.Service
 	Health       fleet.HealthSource
 	Material     fleet.Material
+	// Aliases shows the models behind the aliases (/v1/models/aliases); nil = no such route.
+	Aliases *ModelAliases
 	// GPU part; nil when disabled (no /v1/gpu routes).
 	GPU *gpu.Service
 	// Workspace usage (docs/bauplan.md, Stufe 4); nil without the GPU part.
@@ -73,6 +75,7 @@ type Server struct {
 	fleet    *fleet.Service
 	health   fleet.HealthSource
 	material fleet.Material
+	aliases  *ModelAliases
 	gpu      *gpu.Service
 	usage    usage.Store
 	ws       *workspace.Service
@@ -82,7 +85,7 @@ type Server struct {
 func New(o Options) *Server {
 	return &Server{devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
-		fleet: o.Fleet, health: o.Health, material: o.Material, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
+		fleet: o.Fleet, health: o.Health, material: o.Material, aliases: o.Aliases, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }
 
 // Router builds the gin engine with all routes.
@@ -107,6 +110,9 @@ func (s *Server) Router() *gin.Engine {
 	v1.POST("/keys", s.createKey)
 	v1.PUT("/keys/default-project", s.setDefaultProject)
 	v1.DELETE("/keys/:id", s.deleteKey)
+	if s.aliases != nil {
+		v1.GET("/models/aliases", s.getModelAliases)
+	}
 
 	if s.fleet != nil {
 		fa := v1.Group("/fleet", require(access.RoleFleetAdmin))

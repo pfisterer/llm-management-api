@@ -375,6 +375,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		OnTreeChange: onTree,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
+		Aliases:      webserver.NewModelAliases(lite, cfg.LLMBaseModels, log),
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
 		GPU:          gpuSvc,
 		Usage:        st.usage,

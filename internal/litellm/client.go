@@ -389,6 +389,8 @@ func mergeBudget(body map[string]any, b Budget) {
 type HealthEndpoint struct {
 	APIBase string `json:"api_base"`
 	Model   string `json:"model"`
+	// ModelID is the deployment the result belongs to (model_info.id); LiteLLM sends it with every endpoint, empty on older versions.
+	ModelID string `json:"model_id"`
 	Error   string `json:"error"`
 }
 
@@ -404,4 +406,27 @@ func (c *Client) Health(ctx context.Context) (healthy, unhealthy []HealthEndpoin
 		return nil, nil, err
 	}
 	return r.Healthy, r.Unhealthy, nil
+}
+
+// Deployment is the part of a /model/info entry this service reads: the public name (an alias or the model's own name), the model behind it and where it runs.
+type Deployment struct {
+	ModelName string `json:"model_name"`
+	Params    struct {
+		Model   string `json:"model"`
+		APIBase string `json:"api_base"`
+	} `json:"litellm_params"`
+	Info struct {
+		ID string `json:"id"`
+	} `json:"model_info"`
+}
+
+// ModelInfo returns every deployment of the model list (with the master key: all of them, not only those of a key).
+func (c *Client) ModelInfo(ctx context.Context) ([]Deployment, error) {
+	var r struct {
+		Data []Deployment `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/model/info", nil, &r); err != nil {
+		return nil, err
+	}
+	return r.Data, nil
 }

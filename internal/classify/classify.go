@@ -10,7 +10,9 @@
 //
 // Two levels, in this order:
 //  1. `members` in the inventory (modelAliases) — fixed, never overruled.
-//  2. The measurements.
+//  2. The measurements, but only for the aliases the inventory lets them hand out (aliasProbes.autoAliases; unset = all).
+//
+// The measurements say whether a model works and how fast it is, not how good it is: a 4B model passes the three code tasks as well as a 35B one, and being slow is no sign of quality. So an alias that promises quality comparable to its members can be limited to `members` with autoAliases; the measurement is still made and shown in the portal.
 //
 // A failed measurement is NOT stored: a cold model or a busy machine is tried
 // again by the next discovery run instead of staying unassignable.
@@ -42,6 +44,13 @@ type Thresholds struct {
 	FastTokensPerSecond float64 `json:"fastTokensPerSecond"`
 	CodeTasksRequired   int     `json:"codeTasksRequired"`
 	RequireToolsForChat *bool   `json:"requireToolsForChat"`
+	// AutoAliases are the aliases a measurement may hand out; nil = every alias, empty = none (only `members`). Applied when a result is read, so changing it needs no new measurement.
+	AutoAliases *[]string `json:"autoAliases"`
+}
+
+// admits reports whether a measurement may hand out the alias.
+func (t Thresholds) admits(alias string) bool {
+	return t.AutoAliases == nil || slices.Contains(*t.AutoAliases, alias)
 }
 
 func (t Thresholds) fast() float64 {
@@ -140,7 +149,28 @@ func (s *Service) Known(ctx context.Context, model string) (Result, bool) {
 	if err != nil || !ok || cached.Stamp != s.thresholds.Stamp() {
 		return Result{}, false
 	}
-	return cached, true
+	return s.admit(cached), true
+}
+
+// admit drops from a measured result the aliases a measurement may not hand out (Thresholds.AutoAliases) and says so in the reason. The stored result keeps them, so a later change of the setting needs no new measurement.
+func (s *Service) admit(r Result) Result {
+	if s.thresholds.AutoAliases == nil {
+		return r
+	}
+	kept := []string{}
+	var dropped []string
+	for _, a := range r.Aliases {
+		if s.thresholds.admits(a) {
+			kept = append(kept, a)
+		} else {
+			dropped = append(dropped, a)
+		}
+	}
+	if len(dropped) > 0 {
+		r.Reason += "; nicht automatisch vergeben: " + strings.Join(dropped, ", ") + " (dort gelten nur feste Eintraege)"
+	}
+	r.Aliases = kept
+	return r
 }
 
 // One returns the assignment of one model, measuring it if necessary.
@@ -159,7 +189,7 @@ func (s *Service) One(ctx context.Context, model string) (Result, error) {
 	if cached, ok, err := s.store.Get(ctx, model); err != nil {
 		return Result{}, err
 	} else if ok && cached.Stamp == stamp {
-		return cached, nil
+		return s.admit(cached), nil
 	}
 
 	probe := s.probe(ctx, model)
@@ -174,10 +204,10 @@ func (s *Service) One(ctx context.Context, model string) (Result, error) {
 	s.log.Infow("classified", "model", model, "aliases", r.Aliases, "reason", r.Reason)
 	if probe.ok {
 		if err := s.store.Put(ctx, model, r); err != nil {
-			return r, err
+			return s.admit(r), err
 		}
 	}
-	return r, nil
+	return s.admit(r), nil
 }
 
 // aliasesFrom turns measurements into aliases — a table, not a second model.

@@ -74,3 +74,31 @@ func TestClassify(t *testing.T) {
 		t.Errorf("strict prose: %v", got["prose"])
 	}
 }
+
+// autoAliases limits what a measurement hands out; members still count, the stored result keeps everything, and the reason says what was held back.
+func TestAutoAliases(t *testing.T) {
+	var calls atomic.Int32
+	store := NewMemoryStore()
+	no := false
+	fastOnly := []string{"chat-fast"}
+	svc := NewService(aliases, Thresholds{FastTokensPerSecond: 60, RequireToolsForChat: &no, AutoAliases: &fastOnly}, store, fakeGateway(t, &calls), "k", zap.NewNop().Sugar())
+	got := svc.Many(t.Context(), []string{"good", "pinned"})
+	if strings.Join(got["good"], ",") != "chat-fast" || strings.Join(got["pinned"], ",") != "code" {
+		t.Fatalf("fast only: %v", got)
+	}
+	if r, ok, _ := store.Get(t.Context(), "good"); !ok || strings.Join(r.Aliases, ",") != "chat-fast,code" {
+		t.Fatalf("stored result must keep the measured aliases: %+v", r)
+	}
+	if r, ok := svc.Known(t.Context(), "good"); !ok || strings.Join(r.Aliases, ",") != "chat-fast" || !strings.Contains(r.Reason, "nicht automatisch vergeben: code") {
+		t.Fatalf("known: %+v %v", r, ok)
+	}
+
+	// None: only members, and no new measurement for the changed setting.
+	none := []string{}
+	before := calls.Load()
+	membersOnly := NewService(aliases, Thresholds{FastTokensPerSecond: 60, RequireToolsForChat: &no, AutoAliases: &none}, store, svc.gateway, "k", zap.NewNop().Sugar())
+	got = membersOnly.Many(t.Context(), []string{"good", "pinned"})
+	if len(got["good"]) != 0 || strings.Join(got["pinned"], ",") != "code" || calls.Load() != before {
+		t.Fatalf("members only: %v, calls %d -> %d", got, before, calls.Load())
+	}
+}
