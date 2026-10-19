@@ -98,6 +98,10 @@ spec:
             - name: LITELLM_MASTER_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: litellm-master-key}}
             - {name: MAX_KEYS_PER_USER, value: {{ .Values.config.maxKeysPerUser | quote }}}
+            - {name: API_TOKEN_TTL_HOURS, value: {{ .Values.config.apiTokenTtlHours | default 24 | int64 | quote }}}
+            - {name: API_TOKEN_MAX_TTL_HOURS, value: {{ .Values.config.apiTokenMaxTtlHours | default 8760 | int64 | quote }}}
+            - {name: API_TOKEN_ALLOW_NEVER_EXPIRES, value: {{ .Values.config.apiTokenAllowNeverExpires | default false | quote }}}
+            - {name: MAX_API_TOKENS_PER_USER, value: {{ .Values.config.maxApiTokensPerUser | default 10 | int64 | quote }}}
             - {name: LLM_DEFAULT_RPM, value: {{ .Values.config.llmDefaultRpm | int64 | quote }}}
             - {name: LLM_DEFAULT_TPM, value: {{ .Values.config.llmDefaultTpm | int64 | quote }}}
             - {name: LLM_BASE_MODELS, value: {{ join "," .Values.config.llmBaseModels | quote }}}

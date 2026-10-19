@@ -61,6 +61,11 @@ config:
   aliases: {}
   aliasProbes: {}
   maxKeysPerUser: 5
+  # Personal API tokens (aiaas_…) for the management API (scripts, CI, notebooks), not the LLM keys above: lifetime when a request names none, the longest one may ask for (hours), whether a token without expiry may be issued, and how many valid tokens a person may hold.
+  apiTokenTtlHours: 24
+  apiTokenMaxTtlHours: 8760
+  apiTokenAllowNeverExpires: false
+  maxApiTokensPerUser: 10
   # Budget tree (docs/bauplan.md, Stufe 8): the LLM tokens of a project are a pool its members share (no project with tokens, no LLM), a LiteLLM team that also carries the project's requests and tokens per minute and models, all from the tree. llmDefaultRpm/llmDefaultTpm apply to a project for which the tree sets none (0 = no limit); llmBaseModels are the model groups every project may use (the tree adds more per project); every key gets llmKeyBudgetShare of its project's budget per llmKeyBudgetWindow as a short-term safety budget, and no limits of its own. selfServiceUrl is where people without a project get one.
   llmDefaultRpm: 60
   llmDefaultTpm: 200000

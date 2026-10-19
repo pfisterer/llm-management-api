@@ -7,7 +7,7 @@ import (
 
 // validKeyConfig is the smallest configuration validate accepts (development mode, no role provider over HTTP, no GPU).
 func validKeyConfig() Config {
-	return Config{DevMode: true, LiteLLMURL: "http://litellm-backend:4001", LiteLLMMasterKey: "m", MaxKeysPerUser: 5, LLMKeyBudgetShare: 0.05, LLMKeyBudgetWindow: "4h"}
+	return Config{DevMode: true, LiteLLMURL: "http://litellm-backend:4001", LiteLLMMasterKey: "m", MaxKeysPerUser: 5, LLMKeyBudgetShare: 0.05, LLMKeyBudgetWindow: "4h", APITokenTTLHours: 24, APITokenMaxTTLHours: 8760, MaxAPITokensPerUser: 10}
 }
 
 func TestValidateKeyLimits(t *testing.T) {
@@ -36,6 +36,12 @@ func TestValidateKeyLimits(t *testing.T) {
 		{"window with spaces", func(c *Config) { c.LLMKeyBudgetWindow = " 4h" }, "LLM_KEY_BUDGET_WINDOW"},
 		{"share zero", func(c *Config) { c.LLMKeyBudgetShare = 0 }, "LLM_KEY_BUDGET_SHARE"},
 		{"share above one", func(c *Config) { c.LLMKeyBudgetShare = 1.5 }, "LLM_KEY_BUDGET_SHARE"},
+		{"one api token", func(c *Config) { c.MaxAPITokensPerUser = 1 }, ""},
+		{"no api tokens", func(c *Config) { c.MaxAPITokensPerUser = 0 }, "MAX_API_TOKENS_PER_USER"},
+		{"too many api tokens", func(c *Config) { c.MaxAPITokensPerUser = maxAPITokensPerUserLimit + 1 }, "MAX_API_TOKENS_PER_USER"},
+		{"unbounded token lifetime", func(c *Config) { c.APITokenMaxTTLHours = 0 }, "API_TOKEN_MAX_TTL_HOURS"},
+		{"default lifetime above the maximum", func(c *Config) { c.APITokenTTLHours = 9000 }, "API_TOKEN_TTL_HOURS"},
+		{"no default lifetime", func(c *Config) { c.APITokenTTLHours = 0 }, "API_TOKEN_TTL_HOURS"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

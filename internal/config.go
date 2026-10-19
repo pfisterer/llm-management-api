@@ -91,6 +91,12 @@ type Config struct {
 	LLMKeyBudgetWindow string
 	// How often LiteLLM's teams (one per project), quotas and keys are brought in step with the tree (besides right after each change from the tree).
 	BudgetSyncInterval time.Duration
+
+	// Personal API tokens (aiaas_…) for the management API, as in dynamic-zones and openstack-management-api: the lifetime when a request names none (API_TOKEN_TTL_HOURS), the longest one may ask for (API_TOKEN_MAX_TTL_HOURS), whether tokens without expiry may be issued at all (API_TOKEN_ALLOW_NEVER_EXPIRES, off) and how many valid tokens a person may hold (MAX_API_TOKENS_PER_USER).
+	APITokenTTLHours          int
+	APITokenMaxTTLHours       int
+	APITokenAllowNeverExpires bool
+	MaxAPITokensPerUser       int
 }
 
 // GPUFleetConfig is GPU_FLEET.
@@ -199,6 +205,10 @@ func LoadConfig() (Config, error) {
 	cfg.LLMKeyBudgetShare = share
 	cfg.SelfServiceURL = envconf.String("SELF_SERVICE_URL", "")
 	cfg.BudgetSyncInterval = time.Duration(envconf.Int("BUDGET_SYNC_SECONDS", 600)) * time.Second
+	cfg.APITokenTTLHours = envconf.Int("API_TOKEN_TTL_HOURS", 24)
+	cfg.APITokenMaxTTLHours = envconf.Int("API_TOKEN_MAX_TTL_HOURS", 365*24)
+	cfg.APITokenAllowNeverExpires = envconf.Bool("API_TOKEN_ALLOW_NEVER_EXPIRES", false)
+	cfg.MaxAPITokensPerUser = envconf.Int("MAX_API_TOKENS_PER_USER", 10)
 	return cfg, cfg.validate()
 }
 
@@ -242,6 +252,15 @@ func (c Config) validate() error {
 	if c.MaxKeysPerUser < 1 || c.MaxKeysPerUser > maxKeysPerUserLimit {
 		return fmt.Errorf("MAX_KEYS_PER_USER must be between 1 and %d (got %d)", maxKeysPerUserLimit, c.MaxKeysPerUser)
 	}
+	if c.APITokenMaxTTLHours < 1 {
+		return fmt.Errorf("API_TOKEN_MAX_TTL_HOURS must be at least 1 (got %d): an API token's lifetime is always bounded, a token without expiry is API_TOKEN_ALLOW_NEVER_EXPIRES' decision", c.APITokenMaxTTLHours)
+	}
+	if c.APITokenTTLHours < 1 || c.APITokenTTLHours > c.APITokenMaxTTLHours {
+		return fmt.Errorf("API_TOKEN_TTL_HOURS must be between 1 and API_TOKEN_MAX_TTL_HOURS (%d) (got %d)", c.APITokenMaxTTLHours, c.APITokenTTLHours)
+	}
+	if c.MaxAPITokensPerUser < 1 || c.MaxAPITokensPerUser > maxAPITokensPerUserLimit {
+		return fmt.Errorf("MAX_API_TOKENS_PER_USER must be between 1 and %d (got %d)", maxAPITokensPerUserLimit, c.MaxAPITokensPerUser)
+	}
 	if s, ok := windowSeconds(c.LLMKeyBudgetWindow); !ok || s > 30*24*3600 {
 		return fmt.Errorf("LLM_KEY_BUDGET_WINDOW must be a duration like 4h or 1d of at most 30d, the pool's window (got %q)", c.LLMKeyBudgetWindow)
 	}
@@ -250,6 +269,9 @@ func (c Config) validate() error {
 
 // maxKeysPerUserLimit bounds MAX_KEYS_PER_USER: every key of a person is one more secret that can leak and one more short-term budget on the same pool, and the key list is reconciled with LiteLLM on every request.
 const maxKeysPerUserLimit = 20
+
+// maxAPITokensPerUserLimit bounds MAX_API_TOKENS_PER_USER: every token is one more credential that can leak, and the list is read on every token creation.
+const maxAPITokensPerUserLimit = 50
 
 // keyWindowRE is a LiteLLM budget duration in seconds, minutes, hours or days, as LiteLLM's duration_in_seconds reads it.
 var keyWindowRE = regexp.MustCompile(`^([1-9][0-9]{0,5})([smhd])$`)

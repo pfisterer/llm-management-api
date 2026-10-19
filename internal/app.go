@@ -17,6 +17,8 @@ import (
 
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
+	"github.com/pfisterer/cloud-self-service-golib/token"
+	"github.com/pfisterer/cloud-self-service-golib/tokengorm"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/classify"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
@@ -76,12 +78,13 @@ type allStores struct {
 	creds    workspace.CredentialStore
 	gpuFleet gpu.FleetStore
 	models   gpu.ModelStore
+	tokens   *token.Service
 }
 
 // stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore())}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -132,7 +135,12 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, wc, gf, gm}, nil
+	// The API tokens' table ("tokens"), migrated by the shared library as in dynamic-zones and openstack-management-api.
+	ts, err := tokengorm.NewService(webserver.APITokenPrefix, db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -388,7 +396,12 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		GPU:          gpuSvc,
 		Usage:        st.usage,
 		Workspaces:   wsSvc,
-		Log:          log,
+		Tokens: webserver.TokenOptions{
+			Service:    st.tokens,
+			TTL:        token.TTLPolicy{Default: time.Duration(cfg.APITokenTTLHours) * time.Hour, Max: time.Duration(cfg.APITokenMaxTTLHours) * time.Hour, AllowNever: cfg.APITokenAllowNeverExpires},
+			MaxPerUser: cfg.MaxAPITokensPerUser,
+		},
+		Log: log,
 	})
 	var aliases map[string]classify.AliasDef
 	var thresholds classify.Thresholds

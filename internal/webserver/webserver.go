@@ -55,7 +55,9 @@ type Options struct {
 	Usage usage.Store
 	// Workspace projects; nil without the GPU part.
 	Workspaces *workspace.Service
-	Log        *zap.SugaredLogger
+	// Tokens are the personal API tokens (aiaas_…) for scripts, CI and notebooks; a nil Service = none.
+	Tokens TokenOptions
+	Log    *zap.SugaredLogger
 }
 
 type Server struct {
@@ -79,11 +81,17 @@ type Server struct {
 	gpu      *gpu.Service
 	usage    usage.Store
 	ws       *workspace.Service
-	log      *zap.SugaredLogger
+	// tokens is nil without an API token service.
+	tokens *apiTokens
+	log    *zap.SugaredLogger
 }
 
 func New(o Options) *Server {
-	return &Server{devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
+	var tokens *apiTokens
+	if o.Tokens.Service != nil {
+		tokens = &apiTokens{TokenOptions: o.Tokens}
+	}
+	return &Server{tokens: tokens, devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
 		fleet: o.Fleet, health: o.Health, material: o.Material, aliases: o.Aliases, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }
@@ -101,8 +109,16 @@ func (s *Server) Router() *gin.Engine {
 	r.GET("/config.json", s.getConfig)
 	r.GET("/swagger.json", func(c *gin.Context) { c.Data(http.StatusOK, "application/json", []byte(s.swagger)) })
 
-	v1 := r.Group("/v1", ginweb.DisableCaching(), s.withCaller)
+	// A read-only API token may only read: every write under /v1 is refused for it, whatever the route (the credential kind is recorded by authenticate).
+	v1 := r.Group("/v1", ginweb.DisableCaching(), s.withCaller, ginweb.RejectWritesForReadOnlyTokens(s.log))
 	v1.GET("/me", s.getMe)
+
+	// Personal API tokens for this management API — not the LLM keys below, which are for the OpenAI-compatible API.
+	if s.tokens != nil {
+		v1.GET("/tokens", s.listAPITokens)
+		v1.POST("/tokens", s.createAPIToken)
+		v1.DELETE("/tokens/:id", s.deleteAPIToken)
+	}
 
 	// No role needed: the caller's projects with LLM tokens decide (personAndGrant).
 	v1.GET("/usage", s.getUsage)
@@ -192,8 +208,12 @@ func (s *Server) requestLog() gin.HandlerFunc {
 		if c.Request.URL.Path == "/health" {
 			return
 		}
-		s.log.Infow("request", "method", c.Request.Method, "path", c.FullPath(),
-			"status", c.Writer.Status(), "ms", time.Since(start).Milliseconds())
+		fields := []any{"method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "ms", time.Since(start).Milliseconds()}
+		// Which API token made the request, so a misbehaving script can be traced to its token (and revoked) — the id, never the secret.
+		if cl := caller(c); cl.ViaAPIToken {
+			fields = append(fields, "api_token", cl.TokenID, "user", cl.Email)
+		}
+		s.log.Infow("request", fields...)
 	}
 }
 
