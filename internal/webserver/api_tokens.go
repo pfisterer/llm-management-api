@@ -48,6 +48,8 @@ type APIToken struct {
 	Description string `json:"description" example:"nightly GPU report"`
 	// LastUsedAt is when the token last authenticated a request, to the nearest minute, or null if it never has — which is what makes revoking a forgotten token safe.
 	LastUsedAt *time.Time `json:"last_used_at" example:"2026-10-20T08:30:00Z"`
+	// CreatedBy is the admin who created this token on the owner's behalf (X-Act-As), by e-mail address; empty when the owner created it. The token acts as its owner either way.
+	CreatedBy string `json:"created_by" example:"admin@dhbw.de"`
 }
 
 // APITokensResponse is the list returned by GET /v1/tokens.
@@ -61,7 +63,7 @@ type CreateAPITokenRequest struct {
 	ReadOnly bool `json:"read_only" example:"false"`
 	// Description is the owner's note about the token, at most 100 characters.
 	Description string `json:"description" example:"nightly GPU report"`
-	// TTLHours is how long the token should live. Omitted or 0 means the configured default; -1 means it never expires: allowed for read-only tokens and for admins, or for everyone where the deployment allows it.
+	// TTLHours is how long the token should live. Omitted or 0 means the configured default; -1 means it never expires: allowed for read-only tokens and for admins creating their own, or for everyone where the deployment allows it.
 	TTLHours int `json:"ttl_hours" example:"720"`
 }
 
@@ -83,10 +85,11 @@ func toAPIToken(rec token.Record) APIToken {
 		CreatedAt:   rec.CreatedAt,
 		Description: rec.Description,
 		LastUsedAt:  nilIfZero(rec.LastUsedAt),
+		CreatedBy:   rec.CreatedBy,
 	}
 }
 
-// tokenSubject is the identity a token belongs to: the person the request acts as, the e-mail address everything else here is keyed on (the same string as authn.Claims.Identity()). An admin acting on somebody's behalf (X-Act-As) lists and revokes THAT person's tokens — cleaning them up for a ticket is one of the reasons to act on someone's behalf. Issuing one is not: see createAPIToken.
+// tokenSubject is the identity a token belongs to: the person the request acts as, the e-mail address everything else here is keyed on (the same string as authn.Claims.Identity()). An admin acting on somebody's behalf (X-Act-As) lists, revokes and creates THAT person's tokens — cleaning them up or setting one up for a ticket is one of the reasons to act on someone's behalf; see createAPIToken for what applies to creating one.
 func tokenSubject(c *gin.Context) string { return caller(c).Email }
 
 // listAPITokens godoc
@@ -118,7 +121,7 @@ func (s *Server) listAPITokens(c *gin.Context) {
 //
 //	@ID			createApiToken
 //	@Summary		Create an API token
-//	@Description	Issues an API token for the signed-in caller, sent as "Authorization: Bearer aiaas_…". It acts as its owner with the owner's rights at the time of each request (an admin's token acts as admin), a read-only token only for GET. The secret is returned exactly once; only its hash is stored. Not possible with another API token or while acting on behalf of someone else. The lifetime comes from ttl_hours, or the configured default when it is omitted; -1 asks for a token that never expires: allowed for read-only tokens and for admins (or for everyone where the deployment allows it).
+//	@Description	Issues an API token for the signed-in caller, sent as "Authorization: Bearer aiaas_…". It acts as its owner with the owner's rights at the time of each request (an admin's token acts as admin), a read-only token only for GET. The secret is returned exactly once; only its hash is stored. Not possible with another API token. A signed-in admin acting on behalf of a person (X-Act-As) creates the token FOR that person: it belongs to them, acts with their rights, counts toward their cap and records the admin in created_by; the admin receives the secret once to hand it over. The lifetime comes from ttl_hours, or the configured default when it is omitted; -1 asks for a token that never expires: allowed for read-only tokens and for admins creating their own (or for everyone where the deployment allows it) — never for a writable token created on someone's behalf.
 //	@Tags			tokens
 //	@Accept			json
 //	@Produce		json
@@ -126,19 +129,20 @@ func (s *Server) listAPITokens(c *gin.Context) {
 //	@Param			token	body		CreateAPITokenRequest	false	"Token options"
 //	@Success		201		{object}	APIToken
 //	@Failure		400		{object}	ErrorResponse
-//	@Failure		403		{object}	ErrorResponse	"Acting on behalf of someone else, or authenticated with an API token."
+//	@Failure		403		{object}	ErrorResponse	"Authenticated with an API token."
 //	@Failure		409		{object}	ErrorResponse	"The caller already holds the maximum number of tokens."
 //	@Router			/v1/tokens [post]
 func (s *Server) createAPIToken(c *gin.Context) {
 	cl := caller(c)
-	// A token issued while acting on behalf would hand the admin a credential that IS the person, outliving the session and the act-as rule that allowed it; and the person would find a token they never made.
-	if cl.Actor != "" {
-		abort(c, http.StatusForbidden, "token_on_behalf", "API-Tokens lassen sich nicht im Auftrag anderer Personen erstellen; die Person muss ihr Token selbst erstellen.")
-		return
-	}
-	// A token that mints tokens would let a leaked one renew itself forever, past every expiry.
+	// A token that mints tokens would let a leaked one renew itself forever, past every expiry. This holds for acting on behalf as well: withCaller already refuses X-Act-As with an API token, and the identity acted for carries the flag of the credential that signed in.
 	if cl.ViaAPIToken {
 		abort(c, http.StatusForbidden, "token_via_token", "API-Tokens lassen sich nur nach einer Anmeldung erstellen, nicht mit einem anderen API-Token.")
+		return
+	}
+	// On behalf of a person only for a signed-in admin. withCaller lets nobody else act on behalf; checked again here because what is issued is a credential that IS the person and outlives the session.
+	onBehalf := cl.Actor != ""
+	if onBehalf && !cl.MayActAs {
+		abort(c, http.StatusForbidden, "token_on_behalf", "API-Tokens im Auftrag anderer Personen können nur Administratoren erstellen.")
 		return
 	}
 	var req CreateAPITokenRequest
@@ -149,12 +153,12 @@ func (s *Server) createAPIToken(c *gin.Context) {
 			return
 		}
 	}
-	// No expiry for a read-only token (it can change nothing) and for an admin's (for long-running admin automation), besides where the deployment allows it for everyone (API_TOKEN_ALLOW_NEVER_EXPIRES). Everyone else's tokens always expire: a token in a public repository must not grant access for good.
+	// No expiry for a read-only token (it can change nothing) and for an admin's own (for long-running admin automation), besides where the deployment allows it for everyone (API_TOKEN_ALLOW_NEVER_EXPIRES). Everyone else's tokens always expire: a token in a public repository must not grant access for good. A token created on someone's behalf is no admin's own, whoever the person is: a permanent writable credential is not something an admin decides for another person, so there only read-only or the deployment's switch lift the expiry.
 	policy := s.tokens.TTL
-	policy.AllowNever = policy.AllowNever || req.ReadOnly || cl.Role.AtLeast(access.RoleAdmin)
+	policy.AllowNever = policy.AllowNever || req.ReadOnly || (!onBehalf && cl.Role.AtLeast(access.RoleAdmin))
 	ttl, err := policy.Resolve(req.TTLHours)
 	if err != nil {
-		abort(c, http.StatusBadRequest, "invalid_ttl", ttlMessage(err, policy))
+		abort(c, http.StatusBadRequest, "invalid_ttl", ttlMessage(err, policy, onBehalf))
 		return
 	}
 
@@ -170,7 +174,8 @@ func (s *Server) createAPIToken(c *gin.Context) {
 		abort(c, http.StatusConflict, "token_limit", fmt.Sprintf("Höchstens %d API-Tokens pro Person; zuerst ein altes löschen.", s.tokens.MaxPerUser))
 		return
 	}
-	issued, err := s.tokens.Service.Issue(c.Request.Context(), subject, token.IssueOptions{TTL: ttl, ReadOnly: req.ReadOnly, Description: req.Description})
+	// CreatedBy is the admin acting on behalf, empty for one's own token: the person sees in their list who created it, and the record outlives the request log.
+	issued, err := s.tokens.Service.Issue(c.Request.Context(), subject, token.IssueOptions{TTL: ttl, ReadOnly: req.ReadOnly, Description: req.Description, CreatedBy: cl.Actor})
 	// The description is the caller's text: too long is a 400, and it is never echoed into the log.
 	if errors.Is(err, token.ErrDescriptionTooLong) {
 		abort(c, http.StatusBadRequest, "invalid_description", fmt.Sprintf("Die Beschreibung darf höchstens %d Zeichen lang sein.", token.MaxDescriptionLen))
@@ -180,15 +185,17 @@ func (s *Server) createAPIToken(c *gin.Context) {
 		s.internalError(c, "issue api token", err)
 		return
 	}
-	s.log.Infow("api token created", "subject", subject, "id", issued.ID, "read_only", issued.ReadOnly, "expires_at", issued.ExpiresAt)
+	s.log.Infow("api token created", "subject", subject, "id", issued.ID, "read_only", issued.ReadOnly, "expires_at", issued.ExpiresAt, "actor", cl.Actor)
 	out := toAPIToken(issued.Record)
 	out.TokenString = issued.Secret
 	c.JSON(http.StatusCreated, out)
 }
 
 // ttlMessage says which lifetime limit a request broke, in the language of the other error texts.
-func ttlMessage(err error, p token.TTLPolicy) string {
+func ttlMessage(err error, p token.TTLPolicy, onBehalf bool) string {
 	switch {
+	case errors.Is(err, token.ErrNeverExpiresNotAllowed) && onBehalf:
+		return "Im Auftrag erstellte API-Tokens ohne Ablaufdatum gibt es nur lesend."
 	case errors.Is(err, token.ErrNeverExpiresNotAllowed):
 		return "API-Tokens ohne Ablaufdatum gibt es nur lesend oder für Admins."
 	case errors.Is(err, token.ErrTTLTooLong):

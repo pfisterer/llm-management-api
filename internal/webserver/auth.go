@@ -124,7 +124,8 @@ func (s *Server) withCaller(c *gin.Context) {
 	if authn.IsWrite(c.Request.Method) {
 		s.log.Infow("acting on behalf", "actor", id.Email, "as", target, "method", c.Request.Method, "path", c.Request.URL.Path)
 	}
-	c.Set(callerKey, Caller{Identity: Identity{Email: target}, Person: s.access.Who(c.Request.Context(), target), Actor: id.Email, MayActAs: may})
+	// ViaAPIToken carries over (it is false here, withCaller refuses X-Act-As with a token above): what a request may do depends on how the person at the keyboard signed in, not only on whom they act for.
+	c.Set(callerKey, Caller{Identity: Identity{Email: target, ViaAPIToken: id.ViaAPIToken}, Person: s.access.Who(c.Request.Context(), target), Actor: id.Email, MayActAs: may})
 	c.Next()
 }
 

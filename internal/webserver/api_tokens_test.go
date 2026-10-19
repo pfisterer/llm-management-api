@@ -177,7 +177,7 @@ func TestAPITokenRightsAtRequestTime(t *testing.T) {
 	}
 }
 
-// Acting on behalf and issuing tokens are for people signed in; an admin acting for somebody can see and revoke their tokens but not issue one.
+// Acting on behalf and issuing tokens are for people signed in; an admin acting for somebody can see and revoke their tokens (creating one: TestAPITokenOnBehalf).
 func TestAPITokenActAs(t *testing.T) {
 	h, _, _ := tokenServer(t, 10)
 	chef := issue(t, h, "chef@dhbw.de", CreateAPITokenRequest{})
@@ -189,8 +189,8 @@ func TestAPITokenActAs(t *testing.T) {
 	if code, _ := call(t, h, "POST", "/v1/tokens", chef.TokenString, "", CreateAPITokenRequest{}); code != http.StatusForbidden {
 		t.Fatalf("a token issuing a token: want 403, got %d", code)
 	}
-	if code, _ := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", CreateAPITokenRequest{}); code != http.StatusForbidden {
-		t.Fatalf("issuing on behalf: want 403, got %d", code)
+	if code, _ := call(t, h, "POST", "/v1/tokens", chef.TokenString, "student@dhbw.de", CreateAPITokenRequest{}); code != http.StatusForbidden {
+		t.Fatalf("issuing on behalf with an admin's token: want 403, got %d", code)
 	}
 	code, body := call(t, h, "GET", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", nil)
 	var list APITokensResponse
@@ -321,5 +321,93 @@ func TestAPITokenNeverExpires(t *testing.T) {
 	}
 	if code, body := call(t, h, "POST", "/v1/tokens", "oidc:it@dhbw.de", "", CreateAPITokenRequest{TTLHours: never}); code != http.StatusBadRequest {
 		t.Errorf("a fleet-admin's writable token without expiry: want 400, got %d %s", code, body)
+	}
+}
+
+// A signed-in admin acting on behalf creates a token FOR the person: theirs, with their rights, recorded as created by the admin, and counted toward their cap.
+func TestAPITokenOnBehalf(t *testing.T) {
+	h, _, _ := tokenServer(t, 2)
+	code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", CreateAPITokenRequest{Description: "für das Praktikum"})
+	var tok APIToken
+	if _ = json.Unmarshal(body, &tok); code != http.StatusCreated || tok.TokenString == "" || tok.User != "student@dhbw.de" || tok.CreatedBy != "chef@dhbw.de" || tok.ExpiresAt == nil {
+		t.Fatalf("creating on behalf: %d %s", code, body)
+	}
+
+	// The person's rights, not the admin's.
+	if code, m := me(t, h, tok.TokenString); code != http.StatusOK || m.Email != "student@dhbw.de" || m.Role != access.RoleUser || m.MayActAs {
+		t.Fatalf("/me with the token created on behalf: %d %+v", code, m)
+	}
+	if code, _ := call(t, h, "GET", "/v1/fleet", tok.TokenString, "", nil); code != http.StatusForbidden {
+		t.Fatalf("admin route with the person's token: want 403, got %d", code)
+	}
+
+	// The person sees it in their own list, with who created it; their own token has no created_by.
+	own := issue(t, h, "student@dhbw.de", CreateAPITokenRequest{})
+	if own.CreatedBy != "" {
+		t.Fatalf("own token has created_by %q", own.CreatedBy)
+	}
+	code, body = call(t, h, "GET", "/v1/tokens", "oidc:student@dhbw.de", "", nil)
+	var list APITokensResponse
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 2 || list.Tokens[0].CreatedBy != "chef@dhbw.de" || list.Tokens[1].CreatedBy != "" {
+		t.Fatalf("the person's list: %d %s", code, body)
+	}
+	// None of it is the admin's.
+	code, body = call(t, h, "GET", "/v1/tokens", "oidc:chef@dhbw.de", "", nil)
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 0 {
+		t.Fatalf("the admin's own list: %d %s", code, body)
+	}
+
+	// The cap is the person's: two tokens, so a third on their behalf is refused, while the admin's own still works.
+	if code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", CreateAPITokenRequest{}); code != http.StatusConflict {
+		t.Fatalf("on behalf beyond the person's cap: want 409, got %d %s", code, body)
+	}
+	issue(t, h, "chef@dhbw.de", CreateAPITokenRequest{})
+}
+
+// On behalf, the lifetime follows the person's rules with no admin exception: never-expiring only read-only.
+func TestAPITokenOnBehalfNeverExpires(t *testing.T) {
+	h, _, _ := tokenServer(t, 10)
+	never := token.RequestedNever
+	if code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", CreateAPITokenRequest{TTLHours: never}); code != http.StatusBadRequest {
+		t.Errorf("writable never-expiring token on behalf: want 400, got %d %s", code, body)
+	}
+	code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", CreateAPITokenRequest{TTLHours: never, ReadOnly: true})
+	var tok APIToken
+	if _ = json.Unmarshal(body, &tok); code != http.StatusCreated || tok.ExpiresAt != nil || !tok.ReadOnly || tok.CreatedBy != "chef@dhbw.de" {
+		t.Errorf("read-only never-expiring token on behalf: %d %s", code, body)
+	}
+	// Default and maximum as usual.
+	if code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", CreateAPITokenRequest{TTLHours: 365*24 + 1}); code != http.StatusBadRequest {
+		t.Errorf("beyond the maximum on behalf: want 400, got %d %s", code, body)
+	}
+}
+
+// A writable never-expiring token on behalf of a person who is an admin themself is refused too: the exception is for an admin's OWN token.
+func TestAPITokenOnBehalfOfAnAdmin(t *testing.T) {
+	h, _, roles := tokenServer(t, 10)
+	roles.Memberships["chef2@dhbw.de"] = []string{"group:it-leitung"}
+	if code, m := me(t, h, "oidc:chef2@dhbw.de"); code != http.StatusOK || m.Role != access.RoleAdmin {
+		t.Fatalf("second admin: %d %+v", code, m)
+	}
+	if code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef@dhbw.de", "chef2@dhbw.de", CreateAPITokenRequest{TTLHours: token.RequestedNever}); code != http.StatusBadRequest {
+		t.Fatalf("writable never-expiring token on behalf of an admin: want 400, got %d %s", code, body)
+	}
+	if code, body := call(t, h, "POST", "/v1/tokens", "oidc:chef2@dhbw.de", "", CreateAPITokenRequest{TTLHours: token.RequestedNever}); code != http.StatusCreated {
+		t.Fatalf("the same admin's own never-expiring token: want 201, got %d %s", code, body)
+	}
+}
+
+// Nobody but an admin acts on behalf, so nobody else creates a token for another person.
+func TestAPITokenOnBehalfOnlyAdmins(t *testing.T) {
+	h, _, _ := tokenServer(t, 10)
+	for _, actor := range []string{"student@dhbw.de", "it@dhbw.de"} {
+		if code, body := call(t, h, "POST", "/v1/tokens", "oidc:"+actor, "chef@dhbw.de", CreateAPITokenRequest{}); code != http.StatusForbidden {
+			t.Errorf("%s creating a token on behalf: want 403, got %d %s", actor, code, body)
+		}
+	}
+	code, body := call(t, h, "GET", "/v1/tokens", "oidc:chef@dhbw.de", "", nil)
+	var list APITokensResponse
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 0 {
+		t.Fatalf("the admin's list after the attempts: %d %s", code, body)
 	}
 }
