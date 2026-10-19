@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gapTestService() (*Service, *fakeFleetKube) {
@@ -108,4 +109,36 @@ func keys(m map[string]map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestGapHeldBack(t *testing.T) {
+	s := &Service{}
+	r := gapReplica{name: "gap-gpu-1", node: "gpu-1"}
+	busy := map[string]time.Time{"gpu-1": time.Now().Add(-2 * time.Minute)}
+	if !s.gapHeldBack(r, busy, nil) {
+		t.Errorf("GPU in use 2 min ago (default delay 5 min): the gap filler waits")
+	}
+	if s.gapHeldBack(r, map[string]time.Time{"gpu-1": time.Now().Add(-6 * time.Minute)}, nil) {
+		t.Errorf("GPU free for 6 min: the gap filler comes back")
+	}
+	if s.gapHeldBack(r, map[string]time.Time{}, nil) {
+		t.Errorf("node never busy: the gap filler runs")
+	}
+	admitted := podInfo{}
+	admitted.Metadata.Labels = map[string]string{"replica": "gap-gpu-1"}
+	if s.gapHeldBack(r, busy, []podInfo{admitted}) {
+		t.Errorf("a gap filler pod that Kueue admitted is not taken down")
+	}
+	gated := admitted
+	gated.Spec.SchedulingGates = []struct {
+		Name string `json:"name"`
+	}{{Name: "kueue.x-k8s.io/admission"}}
+	if !s.gapHeldBack(r, busy, []podInfo{gated}) {
+		t.Errorf("a gap filler pod still waiting for admission is held back")
+	}
+	zero := 0
+	s.fleetCfg.Inference.GapDelayMinutes = &zero
+	if s.gapHeldBack(r, busy, nil) {
+		t.Errorf("delay 0: never held back")
+	}
 }

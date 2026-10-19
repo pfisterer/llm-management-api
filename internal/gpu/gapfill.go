@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Inference gap fillers (docs/bauplan.md 10.13, phase B): every assigned GPU node runs a vLLM replica with the lowest priority, which gives its GPU back to any workspace or job (Kueue preempts it) and comes back when the GPU is free. The model is the tier's (InferenceConfig.TierModels) unless the node's assignment names another or "-" for none. The service keeps per replica a Deployment, a Service and an Ingress path <host>/gap-<node>; LiteLLM learns about the replicas through the fleet sites as before. The base load (priority base-load) stays with Ansible.
@@ -26,6 +28,16 @@ type InferenceConfig struct {
 	Hostname   string                    `json:"hostname"`
 	Models     map[string]InferenceModel `json:"models"`
 	TierModels map[string]string         `json:"tierModels"`
+	// GapDelayMinutes: an evicted gap filler comes back only after its node's GPU was free this long (default 5, 0 = at once). Bridges a restarted server, a new kernel after the idle cull and students starting one after another, without vLLM starting and being evicted again in between.
+	GapDelayMinutes *int `json:"gapDelayMinutes,omitempty"`
+}
+
+// gapDelay is GapDelayMinutes with its default.
+func (c InferenceConfig) gapDelay() time.Duration {
+	if c.GapDelayMinutes == nil {
+		return 5 * time.Minute
+	}
+	return time.Duration(max(*c.GapDelayMinutes, 0)) * time.Minute
 }
 
 const (
@@ -125,6 +137,17 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 			}
 		}
 	}
+	busy, err := s.gapBusyNodes(ctx, k)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	var gapPods []podInfo
+	if busy != nil {
+		if gapPods, err = s.pods.listPods(ctx, ns, "app=vllm"); err != nil {
+			errs = append(errs, err)
+			busy = nil
+		}
+	}
 	names := make([]string, 0, len(want))
 	for n := range want {
 		names = append(names, n)
@@ -133,7 +156,11 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 	for _, name := range names {
 		r := want[name]
 		m := models[r.model]
-		for _, o := range []map[string]any{s.gapDeployment(ns, r, m), gapService(ns, r), s.gapIngress(ns, r)} {
+		dep := s.gapDeployment(ns, r, m)
+		if busy != nil && s.gapHeldBack(r, busy, gapPods) {
+			obj(dep, "spec")["replicas"] = 0
+		}
+		for _, o := range []map[string]any{dep, gapService(ns, r), s.gapIngress(ns, r)} {
 			if err := ensureObject(ctx, k, o); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", name, err))
 			}
@@ -240,4 +267,44 @@ func (s *Service) gapIngress(ns string, r gapReplica) map[string]any {
 			"tls": []any{map[string]any{"hosts": []any{host}}},
 		},
 	}
+}
+
+// gapBusyNodes notes, per node, when a GPU pod of people (workspace, kernel, job; not the inference pool's vLLM replicas) last ran there, and returns these times; nil when the delay is off.
+func (s *Service) gapBusyNodes(ctx context.Context, k kubeDoer) (map[string]time.Time, error) {
+	if s.fleetCfg.Inference.gapDelay() == 0 {
+		return nil, nil
+	}
+	var running struct {
+		Items []podInfo `json:"items"`
+	}
+	if err := k.do(ctx, http.MethodGet, "/api/v1/pods?fieldSelector="+url.QueryEscape("status.phase=Running"), nil, &running); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	s.gapMu.Lock()
+	defer s.gapMu.Unlock()
+	if s.gapBusy == nil {
+		s.gapBusy = map[string]time.Time{}
+	}
+	for _, p := range running.Items {
+		if p.Spec.NodeName == "" || p.Metadata.Labels["app"] == "vllm" || !holdsGPU(p) {
+			continue
+		}
+		s.gapBusy[p.Spec.NodeName] = now
+	}
+	return maps.Clone(s.gapBusy), nil
+}
+
+// gapHeldBack: the replica stays at zero while its node's GPU was in use within the delay, unless its pod already holds the GPU (Kueue admitted it; it gives the GPU back when needed anyway).
+func (s *Service) gapHeldBack(r gapReplica, busy map[string]time.Time, pods []podInfo) bool {
+	last, ok := busy[r.node]
+	if !ok || time.Since(last) >= s.fleetCfg.Inference.gapDelay() {
+		return false
+	}
+	for _, p := range pods {
+		if p.Metadata.Labels["replica"] == r.name && p.Metadata.DeletionTimestamp == nil && len(p.Spec.SchedulingGates) == 0 {
+			return false
+		}
+	}
+	return true
 }

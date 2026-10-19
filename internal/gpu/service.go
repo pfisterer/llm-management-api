@@ -73,6 +73,9 @@ type Service struct {
 	bases []string
 	// prepulled is how many images the prepull DaemonSet of an architecture holds since its last update (EnsurePrepull), for the metrics.
 	prepulled sync.Map
+	// gapBusy is when each node last ran a GPU pod other than a gap filler (gapfill.go: the delay before a gap filler comes back).
+	gapBusy map[string]time.Time
+	gapMu   sync.Mutex
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
 	OnClassRenamed func(ctx context.Context, old, new string) error
 }
