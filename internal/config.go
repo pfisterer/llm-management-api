@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -238,5 +239,27 @@ func (c Config) validate() error {
 	if c.LLMDefaultRPM < 0 || c.LLMDefaultTPM < 0 {
 		return fmt.Errorf("LLM_DEFAULT_RPM and LLM_DEFAULT_TPM must not be negative")
 	}
+	if c.MaxKeysPerUser < 1 || c.MaxKeysPerUser > maxKeysPerUserLimit {
+		return fmt.Errorf("MAX_KEYS_PER_USER must be between 1 and %d (got %d)", maxKeysPerUserLimit, c.MaxKeysPerUser)
+	}
+	if s, ok := windowSeconds(c.LLMKeyBudgetWindow); !ok || s > 30*24*3600 {
+		return fmt.Errorf("LLM_KEY_BUDGET_WINDOW must be a duration like 4h or 1d of at most 30d, the pool's window (got %q)", c.LLMKeyBudgetWindow)
+	}
 	return c.GPU.Validate()
+}
+
+// maxKeysPerUserLimit bounds MAX_KEYS_PER_USER: every key of a person is one more secret that can leak and one more short-term budget on the same pool, and the key list is reconciled with LiteLLM on every request.
+const maxKeysPerUserLimit = 20
+
+// keyWindowRE is a LiteLLM budget duration in seconds, minutes, hours or days, as LiteLLM's duration_in_seconds reads it.
+var keyWindowRE = regexp.MustCompile(`^([1-9][0-9]{0,5})([smhd])$`)
+
+// windowSeconds is the length of a LiteLLM budget duration; ok is false for anything LiteLLM would not read as one. A window LiteLLM rejects would make every key creation and every key sync fail, a window longer than the pool's would not bound a key at all.
+func windowSeconds(w string) (int, bool) {
+	m := keyWindowRE.FindStringSubmatch(w)
+	if m == nil {
+		return 0, false
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n * map[string]int{"s": 1, "m": 60, "h": 3600, "d": 86400}[m[2]], true
 }
