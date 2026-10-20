@@ -79,6 +79,10 @@ type Config struct {
 	// HarborScanUser and HarborScanToken read Harbor's vulnerability scans of project images (a robot account that may read artifacts and scans); empty = anonymously, which suffices for the public projects.
 	HarborScanUser  string
 	HarborScanToken string
+	// ImageCleanup deletes the images of environments that are gone from the Harbor project envs (docs/todo.md image_cleanup): IMAGE_CLEANUP_ENABLED, IMAGE_CLEANUP_DRY_RUN (only log what would go), IMAGE_CLEANUP_MIN_AGE_DAYS (an artifact pushed or pulled more recently stays), IMAGE_CLEANUP_INTERVAL_MINUTES. Deleting needs the robot account HarborCleanupUser/HarborCleanupToken (list and delete on repositories and artifacts in envs); without it the cleanup stays a dry run.
+	ImageCleanup       gpu.ImageCleanupConfig
+	HarborCleanupUser  string
+	HarborCleanupToken string
 	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off) and where people get a project. The LLM tokens, rate limits and extra models come from the tree's projects, one pool (a LiteLLM team) per project.
 	TreeToken      string
 	SelfServiceURL string
@@ -183,6 +187,14 @@ func LoadConfig() (Config, error) {
 	cfg.WorkspaceCredentialsKey = envconf.String("WORKSPACE_CREDENTIALS_KEY", "")
 	cfg.HarborScanUser = envconf.String("HARBOR_SCAN_USER", "")
 	cfg.HarborScanToken = envconf.String("HARBOR_SCAN_TOKEN", "")
+	cfg.ImageCleanup = gpu.ImageCleanupConfig{
+		Enabled:  envconf.Bool("IMAGE_CLEANUP_ENABLED", true),
+		DryRun:   envconf.Bool("IMAGE_CLEANUP_DRY_RUN", true),
+		MinAge:   time.Duration(envconf.Int("IMAGE_CLEANUP_MIN_AGE_DAYS", 7)) * 24 * time.Hour,
+		Interval: time.Duration(envconf.Int("IMAGE_CLEANUP_INTERVAL_MINUTES", 60)) * time.Minute,
+	}
+	cfg.HarborCleanupUser = envconf.String("HARBOR_CLEANUP_USER", "")
+	cfg.HarborCleanupToken = envconf.String("HARBOR_CLEANUP_TOKEN", "")
 	for name, dst := range map[string]*float64{"WORKSPACE_IMAGE_MAX_GB": &cfg.WorkspaceImageMaxGB, "WORKSPACE_IMAGE_HINT_GB": &cfg.WorkspaceImageHintGB} {
 		if raw := envconf.String(name, ""); raw != "" {
 			v, err := strconv.ParseFloat(raw, 64)

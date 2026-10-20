@@ -527,6 +527,18 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 			}
 		}()
+		// Images of environments that are gone, deleted from Harbor's project envs (docs/todo.md image_cleanup): one sweep against the environments and projects, which covers every way an environment goes; a failed delete is tried again at the next pass.
+		if cfg.ImageCleanup.Enabled && cfg.GPU.Registry != "" {
+			ic := cfg.ImageCleanup
+			harbor := &oci.Harbor{Client: &oci.Client{HTTP: gpu.RetryingClient(60 * time.Second)}, Host: cfg.GPU.Registry}
+			if cfg.HarborCleanupUser != "" {
+				harbor.Auth = &oci.Auth{Username: cfg.HarborCleanupUser, Password: cfg.HarborCleanupToken}
+			} else if !ic.DryRun {
+				log.Warnw("image cleanup: no Harbor robot account (HARBOR_CLEANUP_USER), staying a dry run")
+				ic.DryRun = true
+			}
+			go gpuSvc.NewImageCleanup(harbor, ic, wsSvc.ReferencedImages).Run(ctx, 5*time.Minute)
+		}
 	}
 	errCh := make(chan error, len(servers))
 	for _, hs := range servers {

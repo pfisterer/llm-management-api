@@ -172,6 +172,17 @@ spec:
             - name: HARBOR_SCAN_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: harbor-scan-token, optional: true}}
             {{- end }}
+            {{- with .Values.gpu.imageCleanup }}
+            - {name: IMAGE_CLEANUP_ENABLED, value: {{ .enabled | quote }}}
+            - {name: IMAGE_CLEANUP_DRY_RUN, value: {{ .dryRun | quote }}}
+            - {name: IMAGE_CLEANUP_MIN_AGE_DAYS, value: {{ .minAgeDays | default 7 | int64 | quote }}}
+            - {name: IMAGE_CLEANUP_INTERVAL_MINUTES, value: {{ .intervalMinutes | default 60 | int64 | quote }}}
+            {{- with .user }}
+            - {name: HARBOR_CLEANUP_USER, value: {{ . | quote }}}
+            - name: HARBOR_CLEANUP_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: harbor-cleanup-token, optional: true}}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.fleet.filesConfigMap }}
             - {name: FLEET_SCRIPTS_DIR, value: /etc/llm-mgmt/fleet}

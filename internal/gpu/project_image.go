@@ -134,7 +134,7 @@ func buildOf(e Environment) workspace.ImageBuild {
 	return workspace.ImageBuild{Status: string(e.Status), Image: e.Image, Commit: e.Commit, Branch: e.Branch, Message: e.Message, UpdatedAt: e.UpdatedAt}
 }
 
-// BuildProjectImage builds the project's image from a repository on base: an unchanged base, repository and ref keep the current build unless rebuild is set, which resolves the ref again (a branch's newest commit) and builds a failed image anew. Older builds of the project are forgotten; their images stay in Harbor until its retention removes them.
+// BuildProjectImage builds the project's image from a repository on base: an unchanged base, repository and ref keep the current build unless rebuild is set, which resolves the ref again (a branch's newest commit) and builds a failed image anew. Older builds of the project are forgotten; their images stay in Harbor until the image cleanup (image_cleanup.go) finds nobody names them any more.
 func (s *Service) BuildProjectImage(ctx context.Context, slug, base, gitURL, ref string, rebuild bool) (workspace.ImageBuild, error) {
 	cur, err := s.latest(ctx, slug)
 	if err != nil {

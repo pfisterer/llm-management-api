@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/workspace"
@@ -78,6 +79,8 @@ type Service struct {
 	// gapBusy is when each node last ran a GPU pod other than a gap filler (gapfill.go: the delay before a gap filler comes back).
 	gapBusy map[string]time.Time
 	gapMu   sync.Mutex
+	// cleanupLast is the last pass of the image cleanup in Harbor (image_cleanup.go), for the metrics; nil = none yet.
+	cleanupLast atomic.Pointer[CleanupResult]
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
 	OnClassRenamed func(ctx context.Context, old, new string) error
 }

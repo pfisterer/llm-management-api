@@ -108,6 +108,7 @@ func (m *WorkspaceMetrics) Render(ctx context.Context) ([]byte, error) {
 			w.Sample("aiaas_prepull_images", float64(n.(int)), "arch", arch)
 		}
 	}
+	m.svc.writeCleanupMetrics(&w)
 	return w.Bytes(), nil
 }
 

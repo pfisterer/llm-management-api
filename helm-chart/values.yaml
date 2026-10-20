@@ -29,6 +29,8 @@ secrets:
   workspaceCredentialsKey: ""
   # Token of the robot account gpu.harborScanUser (reads Harbor's vulnerability scans); empty = anonymously.
   harborScanToken: ""
+  # Token of the robot account gpu.imageCleanup.user (deletes images of environments that are gone from Harbor's project envs).
+  harborCleanupToken: ""
   # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
   treeApiToken: ""
   # Token LibreChat sends to the chat exchange (:8089) as its API key; empty = the exchange refuses every request.
@@ -104,6 +106,13 @@ gpu:
   imageMaxGB: ""
   imageHintGB: ""
   harborScanUser: ""
+  # Image cleanup (docs/todo.md image_cleanup): a sweep every intervalMinutes deletes from Harbor's project envs the artifacts no environment and no project names any more, once they were neither pushed nor pulled for minAgeDays; dryRun only logs what would go (metrics aiaas_image_cleanup_*). Deleting needs user and secrets.harborCleanupToken: a robot account with list and delete on repositories and artifacts in envs (robot$envs+cleanup); without it the cleanup stays a dry run. Never touches other projects (platform).
+  imageCleanup:
+    enabled: true
+    dryRun: true
+    minAgeDays: 7
+    intervalMinutes: 60
+    user: ""
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:
     externalIPs: []

@@ -501,3 +501,27 @@ func (s *Service) ImageLabel(p Project) string {
 	}
 	return b.Name
 }
+
+// ReferencedImages are all images a project refers to, whatever its state (also ended projects not deleted yet): its project image by tag, at its digest and at an offered newer digest, and the bases of the catalogue. The image cleanup in Harbor keeps whatever is named here.
+func (s *Service) ReferencedImages(ctx context.Context) ([]string, error) {
+	list, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, b := range s.cfg.Bases {
+		out = append(out, b.Image)
+	}
+	for _, p := range list {
+		if p.ProjectImage == "" {
+			continue
+		}
+		out = append(out, p.ProjectImage)
+		for _, d := range []string{p.ImageDigest, p.ImageUpdate} {
+			if d != "" {
+				out = append(out, pinned(p.ProjectImage, d))
+			}
+		}
+	}
+	return out, nil
+}
