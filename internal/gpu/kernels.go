@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -64,6 +65,9 @@ type KernelState struct {
 	Position int       `json:"position,omitempty"` // place in the queue while waiting, 1 = next
 	// EndsAt is when the running kernel pod ends at the latest (its start plus activeDeadlineSeconds, the project's upper bound); nil while it waits or without an upper bound.
 	EndsAt *time.Time `json:"ends_at,omitempty"`
+	// Reason and Message are why a pod that ended ended, as Kubernetes says (status.reason, status.message), e.g. "Evicted" with "Pod ephemeral local storage usage exceeds the total limit of containers 1Gi." when the kernel wrote more than its local storage outside the home; empty otherwise.
+	Reason  string `json:"reason,omitempty" example:"Evicted"`
+	Message string `json:"message,omitempty"`
 }
 
 // KernelOverview is the person's GPU kernels for the status bar in JupyterLab, with the times running GPU pods end at the latest (what a waiting kernel can expect).
@@ -112,6 +116,26 @@ const DefaultKernelMax = 4 * time.Hour
 // SetKernelMax sets how long a GPU kernel of the owner's project may run at the latest (its release times, docs/todo.md idle_release); 0 = no upper bound (the project's own GPUs). The kernel pod's activeDeadlineSeconds.
 func (s *Service) SetKernelMax(f func(ctx context.Context, o *KernelOwner) time.Duration) {
 	s.kernelMax = f
+}
+
+// DefaultKernelScratchGB is the local storage of a GPU kernel without SetKernelScratch: 1 GB, the default of the workspaces. KernelScratchRequestGB is what it requests at most, like a server (workspace.ScratchRequestGB).
+const (
+	DefaultKernelScratchGB = 1
+	KernelScratchRequestGB = 1
+)
+
+// SetKernelScratch sets how much local storage (GB, ephemeral storage: the container's writable layer, /tmp, its logs; not the home) a GPU kernel of the owner's project may write, the same as its servers (workspace.ScratchGB). The kernel pod's ephemeral-storage limit; above it the kubelet evicts the pod.
+func (s *Service) SetKernelScratch(f func(ctx context.Context, o *KernelOwner) int) {
+	s.kernelScratch = f
+}
+
+// kernelScratchResources is the kernel container's ephemeral storage: the limit in GiB, the request KernelScratchRequestGB or the limit if smaller; nothing for gb <= 0.
+func kernelScratchResources(gb int, requests, limits map[string]any) {
+	if gb <= 0 {
+		return
+	}
+	limits["ephemeral-storage"] = fmt.Sprintf("%dGi", gb)
+	requests["ephemeral-storage"] = fmt.Sprintf("%dGi", min(gb, KernelScratchRequestGB))
 }
 
 func (s *Service) kernelNamespace() string {
@@ -222,7 +246,11 @@ func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelReque
 	if s.kernelMax != nil {
 		deadline = s.kernelMax(ctx, o)
 	}
-	pod := s.kernelPod(o, r, deadline)
+	scratch := DefaultKernelScratchGB
+	if s.kernelScratch != nil {
+		scratch = s.kernelScratch(ctx, o)
+	}
+	pod := s.kernelPod(o, r, deadline, scratch)
 	name := pod["metadata"].(map[string]any)["name"].(string)
 	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods", pod, nil); err != nil {
 		return "", err
@@ -258,8 +286,8 @@ func validKernelRequest(o *KernelOwner, r *KernelRequest) error {
 	return nil
 }
 
-// kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, the launcher's parameters as environment, and deadline as its upper bound (0 = none). Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
-func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Duration) map[string]any {
+// kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, the launcher's parameters as environment, deadline as its upper bound (0 = none) and scratchGB as its local storage outside the home (ephemeral-storage limit). Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
+func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Duration, scratchGB int) map[string]any {
 	queue := s.kernelQueue(o)
 	suffix := make([]byte, 3)
 	_, _ = rand.Read(suffix)
@@ -309,6 +337,7 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 
 	requests := map[string]any{"cpu": "1", "memory": "2G"}
 	limits := map[string]any{"cpu": "3", "memory": "5G"}
+	kernelScratchResources(scratchGB, requests, limits)
 	spec := map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
@@ -492,7 +521,7 @@ func (s *Service) kernelPods(ctx context.Context, selector string) ([]map[string
 func kernelState(p map[string]any) KernelState {
 	meta, status := obj(p, "metadata"), obj(p, "status")
 	created, _ := time.Parse(time.RFC3339, str(meta, "creationTimestamp"))
-	st := KernelState{Name: str(meta, "name"), Phase: strings.ToLower(str(status, "phase")), PodIP: str(status, "podIP"), HostIP: str(status, "hostIP"), Created: created}
+	st := KernelState{Name: str(meta, "name"), Phase: strings.ToLower(str(status, "phase")), PodIP: str(status, "podIP"), HostIP: str(status, "hostIP"), Created: created, Reason: str(status, "reason"), Message: str(status, "message")}
 	// The deadline counts from the pod's start on its node (startTime), not from its creation: the wait in the queue is not part of it.
 	if started, err := time.Parse(time.RFC3339, str(status, "startTime")); err == nil {
 		if d, ok := obj(p, "spec")["activeDeadlineSeconds"].(float64); ok && d > 0 {

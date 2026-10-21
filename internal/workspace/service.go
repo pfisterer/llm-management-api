@@ -29,6 +29,9 @@ type Config struct {
 	Profiles   []Profile  `json:"profiles"`
 	GPUClasses []GPUClass `json:"gpuClasses"`
 	Bases      []Base     `json:"bases"`
+	// ScratchDefaultGB is the local storage (GB, ephemeral storage outside the home) of a workspace or GPU kernel whose budget sets none; ScratchMaxGB the most any project gets (scratch.go). 0 = 1 and 200.
+	ScratchDefaultGB int `json:"scratchDefaultGB"`
+	ScratchMaxGB     int `json:"scratchMaxGB"`
 }
 
 // GPUClass is a combination of pool and tier of the GPU administration (docs/bauplan.md 10.13): what the tree grants (ws-gpus-<id>, ws-gpu-hours-<id>) and what a start chooses.
@@ -236,6 +239,8 @@ type Mine struct {
 	// ReleaseCeiling is the most the project may choose as release times, per kind (every time set; max_hours 0 = no upper bound allowed); ReleaseEffective what its servers and GPU kernels enforce now (seconds).
 	ReleaseCeiling   Release          `json:"release_ceiling"`
 	ReleaseEffective EffectiveRelease `json:"release_effective"`
+	// ScratchEffectiveGB is the local storage in GB its servers and GPU kernels get (the budget's or the default; scratch.go).
+	ScratchEffectiveGB int `json:"scratch_effective_gb" example:"1"`
 }
 
 // ForPerson lists the active projects the person belongs to; admins (all=true) get every project, with role "admin" where they are no member.
@@ -253,7 +258,7 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if role == "" || (!all && !p.Active(s.now())) || p.NoWorkspaces {
 			continue
 		}
-		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p)}
+		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p), ScratchEffectiveGB: s.ScratchGB(p)}
 		if p.ImageGitURL != "" && s.builds != nil {
 			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
 				m.ImageBuild = b
@@ -377,6 +382,12 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	}
 	if err := s.applyRelease(&p, cur); err != nil {
 		return Project{}, err
+	}
+	// Like the release times, only a changed value is checked: a project above a lowered upper bound stays editable (ScratchGB caps it where it is used).
+	if p.ScratchGB != cur.ScratchGB {
+		if err := s.checkScratch(p); err != nil {
+			return Project{}, err
+		}
 	}
 	p.UpdatedBy = by
 	return p, s.store.Update(ctx, &p)

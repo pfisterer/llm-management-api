@@ -291,6 +291,10 @@ func TestGPUHubAccess(t *testing.T) {
 		if tc.user == "member@dhbw.de" && tc.status == 200 && (!strings.Contains(w.Body.String(), `"release":{"servers":{`) || !strings.Contains(w.Body.String(), `"kernel":{"idle_open":300,"idle_closed":300,"max":14400}`)) {
 			t.Errorf("release in the access answer: %s", w.Body.String())
 		}
+		// And the local storage outside the home, the default without a budget's value (1 GB).
+		if tc.user == "member@dhbw.de" && tc.status == 200 && !strings.Contains(w.Body.String(), `"scratch_gb":1`) {
+			t.Errorf("scratch_gb in the access answer: %s", w.Body.String())
+		}
 	}
 }
 

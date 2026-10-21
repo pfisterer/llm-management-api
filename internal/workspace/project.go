@@ -80,6 +80,8 @@ type Project struct {
 	Release     Release `json:"release" gorm:"column:release_times;serializer:json"`
 	ReleaseMax  Release `json:"release_max" gorm:"column:release_max;serializer:json"`
 	TreeRelease bool    `json:"tree_release,omitempty" gorm:"column:tree_release"`
+	// ScratchGB is the most local storage (GB) its servers and GPU kernels may write outside the home (scratch.go): from the budget tree, which then owns it; for a project without the tree its admins set it. 0 = the configured default.
+	ScratchGB int `json:"scratch_gb" gorm:"column:scratch_gb" example:"5"`
 	// GPUsByClass is how many GPUs of a class the whole project may use at the same time; a class without an entry has no such limit.
 	GPUsByClass map[string]int `json:"gpus_by_class" gorm:"column:gpus_by_class;serializer:json"`
 	// LLMMTokens is the project's LLM tokens per 30 days in millions, from the budget tree: one pool (a LiteLLM team) that all members draw from together, not an amount per member.

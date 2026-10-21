@@ -170,3 +170,46 @@ func TestKernelWithoutGPU(t *testing.T) {
 		t.Errorf("staging kernel: %s", b)
 	}
 }
+
+// A GPU kernel gets its project's local storage as ephemeral-storage limit, with a request of at most 1 GiB; without SetKernelScratch the default of 1 GB.
+func TestKernelScratch(t *testing.T) {
+	s, k := kernelTestService(testServerPod)
+	o, _ := s.KernelOwnerAt(context.Background(), "10.42.1.5")
+	req := KernelRequest{KernelID: testKernelID, ResponseAddress: "10.42.1.5:8877"}
+	for _, c := range []struct {
+		set            func(context.Context, *KernelOwner) int
+		limit, request string
+	}{
+		{nil, "1Gi", "1Gi"},
+		{func(context.Context, *KernelOwner) int { return 8 }, "8Gi", "1Gi"},
+	} {
+		if c.set != nil {
+			s.SetKernelScratch(c.set)
+		}
+		k.created = nil
+		if _, err := s.StartKernel(context.Background(), o, req); err != nil {
+			t.Fatal(err)
+		}
+		res := k.created[0]["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)
+		if l := res["limits"].(map[string]any)["ephemeral-storage"]; l != c.limit {
+			t.Errorf("limit = %v, want %s", l, c.limit)
+		}
+		if r := res["requests"].(map[string]any)["ephemeral-storage"]; r != c.request {
+			t.Errorf("request = %v, want %s", r, c.request)
+		}
+	}
+	// An evicted kernel tells why.
+	var p map[string]any
+	_ = json.Unmarshal([]byte(`{"metadata":{"name":"kernel-1"},"status":{"phase":"Failed","reason":"Evicted","message":"Pod ephemeral local storage usage exceeds the total limit of containers 1Gi."}}`), &p)
+	if st := kernelState(p); st.Phase != "failed" || st.Reason != "Evicted" || !strings.Contains(st.Message, "ephemeral local storage") {
+		t.Errorf("evicted: %+v", st)
+	}
+}
+
+// The environment builds keep their own 40 GiB: the workspaces' limit is not theirs.
+func TestBuildJobKeepsItsEphemeralStorage(t *testing.T) {
+	b, _ := json.Marshal(buildJob(Config{}, "b", "builder", Environment{}, "ml", "amd64", "reg/envs/ml:1", "", false))
+	if !strings.Contains(string(b), `"ephemeral-storage":"40Gi"`) {
+		t.Errorf("build job: %s", b)
+	}
+}

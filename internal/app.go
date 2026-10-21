@@ -321,6 +321,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 			return time.Duration(wsSvc.EffectiveRelease(p).Kernel.Max) * time.Second
 		})
+		// A GPU kernel gets the local storage of its project's servers (workspace.ScratchGB); a project not found gets the default.
+		gpuSvc.SetKernelScratch(func(ctx context.Context, o *gpu.KernelOwner) int {
+			p, err := wsSvc.Get(ctx, o.Project)
+			if err != nil {
+				return wsSvc.ScratchGB(workspace.Project{})
+			}
+			return wsSvc.ScratchGB(p)
+		})
 		gpuSvc.SetBuildReady(func(ctx context.Context, e gpu.Environment) error {
 			slug, ok := gpu.ProjectOf(e)
 			if !ok {

@@ -40,6 +40,8 @@ type TreeProject struct {
 	Profiles *[]string `json:"profiles,omitempty" example:"cpu,cpu-gpukernel"`
 	// Release are the release times of the budget the project draws from: the most the project may choose (release.go). Nil = a tree from before: admins set them here.
 	Release *Release `json:"release,omitempty"`
+	// WorkspaceScratchGB is the local storage (GB) the project's servers and GPU kernels may write outside the home: the smallest value of the budgets above it; 0 = none set, the default applies (scratch.go). The tree owns it.
+	WorkspaceScratchGB int `json:"workspace_scratch_gb" example:"5"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -149,6 +151,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	}
 	p.LLMRPM, p.LLMTPM, p.LLMModels = tp.LLMRPM, tp.LLMTPM, cleanModels(tp.LLMModels)
 	p.StorageGB = max(tp.StorageGB, 0)
+	p.ScratchGB = s.scratchFromTree(tp.WorkspaceScratchGB)
 	p.DeleteAt = tp.DeleteAt
 	p.NoWorkspaces = !tp.Workspaces
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
@@ -266,12 +269,12 @@ func cleanModels(in []string) []string {
 	return slices.Compact(out)
 }
 
-// keepTreeFields puts back everything UpsertFromTree sets on every call into a project a person changed, whoever it is: members, end and deletion day, whether it has workspaces at all, the tree's budgets, GPU classes and GPUs per class, the LLM tokens, rate limits and models, the storage, name and the node, and the budget's release times once the tree sends them. Limits per person and profiles the tree only presets; they are the admins' (Update keeps them from managers).
+// keepTreeFields puts back everything UpsertFromTree sets on every call into a project a person changed, whoever it is: members, end and deletion day, whether it has workspaces at all, the tree's budgets, GPU classes and GPUs per class, the LLM tokens, rate limits and models, the storage and the local storage per workspace, name and the node, and the budget's release times once the tree sends them. Limits per person and profiles the tree only presets; they are the admins' (Update keeps them from managers).
 func keepTreeFields(p *Project, cur Project) {
 	p.TreeNode, p.Name, p.Members, p.EndsAt = cur.TreeNode, cur.Name, cur.Members, cur.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = cur.GPUClasses, cur.GPUsByClass, cur.LLMMTokens
 	p.LLMRPM, p.LLMTPM, p.LLMModels = cur.LLMRPM, cur.LLMTPM, cur.LLMModels
-	p.StorageGB = cur.StorageGB
+	p.StorageGB, p.ScratchGB = cur.StorageGB, cur.ScratchGB
 	p.DeleteAt = cur.DeleteAt
 	p.NoWorkspaces = cur.NoWorkspaces
 	if cur.TreeProfiles {

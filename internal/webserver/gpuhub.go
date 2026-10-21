@@ -73,6 +73,8 @@ type HubProject struct {
 	GitSecret  string `json:"git_secret,omitempty"`
 	// Release is what the project's servers (per profile) and GPU kernels enforce, in seconds (docs/todo.md idle_release): the hub sets the servers' idle times and upper bound, the bases' extension dhbw_gpu culls by them.
 	Release workspace.EffectiveRelease `json:"release"`
+	// ScratchGB is the local storage in GB the project's servers and GPU kernels may write outside the home (workspace.ScratchGB: the budget's or the default): the hub sets it as the notebook container's ephemeral-storage limit, the start page shows it.
+	ScratchGB int `json:"scratch_gb" example:"1"`
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -119,7 +121,7 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 		if ws.HasCredentials(ctx, m.Slug) {
 			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
 		}
-		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective})
+		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
 	}
 	return out
 }
