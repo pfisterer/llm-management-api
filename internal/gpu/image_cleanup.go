@@ -1,8 +1,10 @@
 package gpu
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,7 +14,7 @@ import (
 
 // Image cleanup in Harbor (docs/todo.md image_cleanup): one periodic sweep compares the artifacts in the Harbor project of the environments (envs) with the images still referred to, and deletes the rest. It covers every way an environment goes (a project deleted by an admin or by the budget tree after its grace days, a rebuild that forgets the older build, a crash between both) and old leftovers, so no deletion path has to call Harbor itself, and a failed delete is simply tried again at the next pass.
 //
-// Kept is every artifact one of whose tags, or whose digest, an environment record (all projects, any status) or a project (its image by tag, digest, offered update) names: images are shared between projects with the same repository and commit, so an image goes only once nobody names it. The build cache envs/buildcache:<repository> stays while any image of that repository is kept. Only the envs project is ever touched; the platform images and the bases are in platform. An artifact pushed or pulled within MinAge stays as well (a build that is just being saved, something unknown still using it), and the references are read again right before deleting, so an environment created during the pass keeps its image.
+// Kept is every artifact one of whose tags, or whose digest, an environment record (all projects, any status) or a project (its image by tag, digest, offered update) names: images are shared between projects with the same repository and commit, so an image goes only once nobody names it. The build cache envs/buildcache:<repository>-course (<repository>-<arch>-course for an architecture other than amd64) stays while any image of that repository is kept. An image built for several architectures (multi_arch.go) is an index under its tag whose variants were pushed without a tag: Harbor lists only the index and deletes the variants with it. A variant that has a tag anyway (<tag>-<arch>, as the platform images have them) is listed on its own: it stays with its index or with the image its tag names, and goes after the index (Harbor refuses it before). An index stays when something names one of its variants by digest. Only the envs project is ever touched; the platform images and the bases are in platform. An artifact pushed or pulled within MinAge stays as well (a build that is just being saved, something unknown still using it), and the references are read again right before deleting, so an environment created during the pass keeps its image.
 
 // HarborRepos is what the cleanup needs of Harbor (oci.Harbor).
 type HarborRepos interface {
@@ -79,7 +81,7 @@ func (r references) repo(name string) bool { return len(r.tags[name]) > 0 || len
 func (r references) keeps(repo string, a oci.HarborArtifact) bool {
 	if repo == buildCacheRepo {
 		for _, t := range a.Tags {
-			if r.repo(t) {
+			if r.keepsCache(t) {
 				return true
 			}
 		}
@@ -88,12 +90,56 @@ func (r references) keeps(repo string, a oci.HarborArtifact) bool {
 	if r.digests[repo][a.Digest] {
 		return true
 	}
+	// An index stays when one of its variants is named by digest: deleting it would take the variant with it.
+	for _, child := range a.References {
+		if r.digests[repo][child] {
+			return true
+		}
+	}
 	for _, t := range a.Tags {
 		if r.tags[repo][t] {
 			return true
 		}
+		// <tag>-<arch>: a tagged variant of an image for several architectures stays with the image it belongs to.
+		for _, suf := range archSuffixes {
+			if base, ok := strings.CutSuffix(t, suf); ok && r.tags[repo][base] {
+				return true
+			}
+		}
 	}
 	return false
+}
+
+// keepsCache tells whether a tag of the build cache belongs to a repository something names: the build jobs tag it <slug>-course, and <slug>-<arch>-course for any architecture but amd64.
+func (r references) keepsCache(tag string) bool {
+	t := strings.TrimSuffix(tag, "-course")
+	if r.repo(t) || r.repo(tag) {
+		return true
+	}
+	for _, suf := range archSuffixes {
+		if base, ok := strings.CutSuffix(t, suf); ok && r.repo(base) {
+			return true
+		}
+	}
+	return false
+}
+
+// keptIn are the digests of a repository's artifacts that stay because something names them (keeps), with the variants of every such index: those go only with their index.
+func (r references) keptIn(repo string, arts []oci.HarborArtifact) map[string]bool {
+	kept := map[string]bool{}
+	for _, a := range arts {
+		if r.keeps(repo, a) {
+			kept[a.Digest] = true
+		}
+	}
+	for _, a := range arts {
+		if kept[a.Digest] {
+			for _, child := range a.References {
+				kept[child] = true
+			}
+		}
+	}
+	return kept
 }
 
 // readReferences reads every environment record and the projects' images. The registry host is not compared (an image named through another name of the same Harbor still counts): only the project and repository matter, which keeps more rather than less.
@@ -150,10 +196,11 @@ func (c *ImageCleanup) readReferences(ctx context.Context) (references, error) {
 	return r, nil
 }
 
-// orphan is a repository's artifacts to delete; whole = all of them, so the repository goes.
+// orphan is a repository's artifacts to delete; whole = all of them, so the repository goes. all are the repository's artifacts as listed, to tell the variants of an index that is named again before deleting.
 type orphan struct {
 	repo      string
 	artifacts []oci.HarborArtifact
+	all       []oci.HarborArtifact
 	whole     bool
 	empty     bool // no artifacts at all (a leftover repository)
 }
@@ -195,12 +242,27 @@ func (c *ImageCleanup) Sweep(ctx context.Context) CleanupResult {
 			continue
 		}
 		res.Artifacts += len(arts)
-		o := orphan{repo: r.Name}
+		o := orphan{repo: r.Name, all: arts}
+		kept := refs.keptIn(r.Name, arts)
+		// Young: pushed or pulled within MinAge, and the variants of a young index.
+		young := map[string]bool{}
+		for _, a := range arts {
+			if !kept[a.Digest] && (a.PushTime.After(cutoff) || a.PullTime.After(cutoff)) {
+				young[a.Digest] = true
+			}
+		}
+		for _, a := range arts {
+			if young[a.Digest] {
+				for _, child := range a.References {
+					young[child] = !kept[child]
+				}
+			}
+		}
 		for _, a := range arts {
 			switch {
-			case refs.keeps(r.Name, a):
+			case kept[a.Digest]:
 				res.Referenced++
-			case a.PushTime.After(cutoff) || a.PullTime.After(cutoff):
+			case young[a.Digest]:
 				res.Young++
 			default:
 				o.artifacts = append(o.artifacts, a)
@@ -243,9 +305,10 @@ func (c *ImageCleanup) Sweep(ctx context.Context) CleanupResult {
 func (c *ImageCleanup) delete(ctx context.Context, refs references, o orphan, res *CleanupResult) {
 	log := c.svc.log
 	name := c.project + "/" + o.repo
+	kept := refs.keptIn(o.repo, o.all)
 	var keep []oci.HarborArtifact
 	for _, a := range o.artifacts {
-		if refs.keeps(o.repo, a) {
+		if kept[a.Digest] {
 			keep = append(keep, a)
 		}
 	}
@@ -266,8 +329,12 @@ func (c *ImageCleanup) delete(ctx context.Context, refs references, o orphan, re
 		log.Infow("image cleanup: repository deleted", "repository", name, "artifacts", len(o.artifacts), "tags", tagsOf(o.artifacts))
 		return
 	}
+	// An index before its variants: Harbor refuses to delete a variant while an index refers to it, takes the untagged ones with the index and leaves the tagged ones (<tag>-<arch>), which can go right after.
+	slices.SortStableFunc(o.artifacts, func(a, b oci.HarborArtifact) int {
+		return cmp.Compare(len(b.References), len(a.References))
+	})
 	for _, a := range o.artifacts {
-		if refs.keeps(o.repo, a) {
+		if kept[a.Digest] {
 			continue
 		}
 		if c.cfg.DryRun {

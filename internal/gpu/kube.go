@@ -81,10 +81,11 @@ var errAlreadyExists = errors.New("already exists")
 
 // jobStatus is the part of a Job's status the service reads.
 type jobStatus struct {
-	Active     int `json:"active"`
-	Succeeded  int `json:"succeeded"`
-	Failed     int `json:"failed"`
-	Conditions []struct {
+	Active         int        `json:"active"`
+	Succeeded      int        `json:"succeeded"`
+	Failed         int        `json:"failed"`
+	CompletionTime *time.Time `json:"completionTime"`
+	Conditions     []struct {
 		Type    string `json:"type"`
 		Status  string `json:"status"`
 		Reason  string `json:"reason"`

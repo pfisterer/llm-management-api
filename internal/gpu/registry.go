@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,14 +52,14 @@ func (r *registry) exists(ctx context.Context, project, repo, tag string) (bool,
 	}
 }
 
-// newestTag returns the most recently pushed tag of project/repo (cached for a few minutes).
+// newestBuilder returns the builder at the most recently pushed tag of platform/repo2docker-buildkit (cached for a few minutes). A builder for several architectures (images.yaml platforms) has its variants as <tag>-<arch> beside the index <tag>: those are skipped, so every build job gets the index and its node pulls its own variant.
 func (r *registry) newestBuilder(ctx context.Context) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.builder != "" && time.Since(r.builderTime) < 5*time.Minute {
 		return r.builder, nil
 	}
-	u := fmt.Sprintf("https://%s/api/v2.0/projects/platform/repositories/repo2docker-buildkit/artifacts?page_size=1&sort=-push_time", r.host)
+	u := fmt.Sprintf("https://%s/api/v2.0/projects/platform/repositories/repo2docker-buildkit/artifacts?page_size=20&sort=-push_time&with_tag=true", r.host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", err
@@ -76,10 +77,31 @@ func (r *registry) newestBuilder(ctx context.Context) (string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&arts); err != nil {
 		return "", fmt.Errorf("harbor: %w", err)
 	}
-	if len(arts) == 0 || len(arts[0].Tags) == 0 {
+	tag := ""
+	for _, a := range arts {
+		for _, t := range a.Tags {
+			if tag == "" && !archTagged(t.Name) {
+				tag = t.Name
+			}
+		}
+	}
+	if tag == "" {
 		return "", errors.New("harbor: no builder image platform/repo2docker-buildkit")
 	}
-	r.builder = fmt.Sprintf("%s/platform/repo2docker-buildkit:%s", r.host, arts[0].Tags[0].Name)
+	r.builder = fmt.Sprintf("%s/platform/repo2docker-buildkit:%s", r.host, tag)
 	r.builderTime = time.Now()
 	return r.builder, nil
+}
+
+// archSuffixes are the tag suffixes of the variants of an image built for several architectures (tasks/images-stage.yaml, multi_arch.go).
+var archSuffixes = []string{"-amd64", "-arm64"}
+
+// archTagged tells whether a tag is that of one architecture's variant (<tag>-<arch>).
+func archTagged(tag string) bool {
+	for _, suf := range archSuffixes {
+		if strings.HasSuffix(tag, suf) {
+			return true
+		}
+	}
+	return false
 }

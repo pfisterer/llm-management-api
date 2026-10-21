@@ -73,3 +73,48 @@ func TestProjectImageScriptStartsWithClone(t *testing.T) {
 		t.Errorf("script starts with %q", projectImageScript[:200])
 	}
 }
+
+// The whole script with a fake git and BuildKit: it builds for BUILD_ARCH, and a variant for an index (PUSH_BY_DIGEST) goes to the repository without a tag and ends with its digest.
+func TestProjectImageScriptBuild(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	digest := "sha256:" + strings.Repeat("c", 64)
+	for _, byDigest := range []bool{false, true} {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		if err := os.Mkdir(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		git := "#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\" && echo numpy > \"$5/requirements.txt\"; fi\n"
+		buildctl := "#!/bin/sh\necho \"$@\" > " + dir + "/args\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --metadata-file ]; then printf '{\"containerimage.digest\": \"" + digest + "\"}' > \"$2\"; fi; shift; done\n"
+		for name, body := range map[string]string{"git": git, "buildctl-daemonless.sh": buildctl} {
+			if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.Command(bash, "-c", strings.ReplaceAll(projectImageScript, "/tmp/", dir+"/"))
+		env := append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "GIT_URL=https://example.org/r", "GIT_COMMIT=abc", "GIT_BRANCH=main", "BASE_IMAGE=reg/platform/base-python:v1", "IMAGE=reg/envs/r", "BUILD_ARCH=arm64", "R2D_BUILDKIT_CACHE=reg/envs/buildcache:r-arm64")
+		if byDigest {
+			env = append(env, "PUSH_BY_DIGEST=1")
+		}
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("script: %v\n%s", err, out)
+		}
+		args, _ := os.ReadFile(filepath.Join(dir, "args"))
+		if !strings.Contains(string(args), "--opt platform=linux/arm64") {
+			t.Errorf("platform not passed: %s", args)
+		}
+		pushed := strings.Contains(string(args), "type=image,name=reg/envs/r,push=true,push-by-digest=true,name-canonical=true")
+		named := strings.Contains(string(out), "dhbw-digest: "+digest+"\n")
+		if pushed != byDigest || named != byDigest {
+			t.Errorf("by digest %v: args %s, output %s", byDigest, args, out)
+		}
+	}
+}

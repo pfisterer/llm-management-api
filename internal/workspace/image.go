@@ -100,7 +100,7 @@ var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:@-]+$`)
 // applyProjectImage takes the environment of an update: from Git it starts (or keeps) the build on the base, and the project keeps its current image until the build is ready; an existing image is looked up in its registry unless unchanged — it must be pullable, for amd64 or arm64 and, unless an admin saves it, within the size limit (imageRefusal), its digest is kept (ImageDigest), its label decides whether it is derived from a base, and what else its config says is kept as warnings (imageWarnings).
 func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project, asAdmin bool) error {
 	// What the checks found is the service's, never what an update sends.
-	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan = cur.ImageSize, cur.ImageUser, cur.ImageWarnings, cur.ImageScan
+	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan, p.ImageArchs = cur.ImageSize, cur.ImageUser, cur.ImageWarnings, cur.ImageScan, cur.ImageArchs
 	p.ProjectImage, p.ImageGitURL, p.ImageGitRef = strings.TrimSpace(p.ProjectImage), strings.TrimSpace(p.ImageGitURL), strings.TrimSpace(p.ImageGitRef)
 	if p.ImageGitURL != "" {
 		if s.builds == nil {
@@ -262,12 +262,12 @@ func (s *Service) checkedImage(p *Project, img RegistryImage) bool {
 	}
 }
 
-// clearImageFacts forgets what the checks found about the project's image (it runs another one now).
+// clearImageFacts forgets what the checks found about the project's image (it runs another one now), its architectures too.
 func (s *Service) clearImageFacts(p *Project) {
-	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan = 0, "", nil, nil
+	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan, p.ImageArchs = 0, "", nil, nil, nil
 }
 
-// inspectBuilt reads a finished build from Git like a saved image (size, warnings), never refusing it; it is in the public project envs. Its registry not answering leaves the facts empty for the next check to fill; it tells whether it read them.
+// inspectBuilt reads a finished build from Git like a saved image (size, warnings, and its architectures: those of its index for a build for several, docs/todo.md multi_arch), never refusing it; it is in the public project envs. Its registry not answering leaves the facts empty for the next check to fill (until then it counts as amd64); it tells whether it read them.
 func (s *Service) inspectBuilt(ctx context.Context, p *Project) bool {
 	if s.inspect == nil || p.ProjectImage == "" {
 		return false
@@ -277,6 +277,7 @@ func (s *Service) inspectBuilt(ctx context.Context, p *Project) bool {
 		return false
 	}
 	s.takeImageFacts(p, img)
+	p.ImageArchs = img.Archs
 	return true
 }
 
@@ -478,13 +479,11 @@ func (s *Service) EffectiveImage(p Project) string {
 	return b.Image
 }
 
-// EffectiveArchs are the architectures the project's environment runs on: an existing image's own, a build from Git amd64 (built on the amd64 build nodes), a base its configured ones.
+// EffectiveArchs are the architectures the project's environment runs on: an image's own as its registry has them (an existing image, or a build from Git: amd64, plus arm64 where the base has it and the builds make it), amd64 for a build from Git not read yet, a base its configured ones.
 func (s *Service) EffectiveArchs(p Project) []string {
 	switch {
-	case finishedImage(p):
+	case finishedImage(p), p.ImageGitURL != "":
 		return archsOr(p.ImageArchs)
-	case p.ImageGitURL != "":
-		return []string{"amd64"}
 	}
 	b, _ := s.base(p.ImageBase)
 	return archsOr(b.Archs)

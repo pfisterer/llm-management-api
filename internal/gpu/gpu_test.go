@@ -63,8 +63,11 @@ func TestNormaliseRepo(t *testing.T) {
 
 type fakeBuilds struct {
 	created []string
+	jobs    map[string]map[string]any
+	deleted []string
 	status  map[string]jobStatus
 	log     string
+	logs    map[string]string // per job, before log
 }
 
 func (f *fakeBuilds) createJob(_ context.Context, _ string, job map[string]any) error {
@@ -75,20 +78,35 @@ func (f *fakeBuilds) createJob(_ context.Context, _ string, job map[string]any) 
 		}
 	}
 	f.created = append(f.created, name)
+	if f.jobs == nil {
+		f.jobs = map[string]map[string]any{}
+	}
+	f.jobs[name] = job
 	return nil
 }
+
+// jobStatus: a job not created is not found, one created runs until the test sets its status.
 func (f *fakeBuilds) jobStatus(_ context.Context, _, name string) (jobStatus, error) {
 	if st, ok := f.status[name]; ok {
 		return st, nil
 	}
+	if !slices.Contains(f.created, name) {
+		return jobStatus{}, ErrNotFound
+	}
 	return jobStatus{Active: 1}, nil
 }
-func (f *fakeBuilds) deleteJob(context.Context, string, string) error { return nil }
+func (f *fakeBuilds) deleteJob(_ context.Context, _, name string) error {
+	f.deleted = append(f.deleted, name)
+	return nil
+}
 func (f *fakeBuilds) jobState(context.Context, string, string) (string, *time.Time, error) {
 	return "Läuft.", nil, nil
 }
 
-func (f *fakeBuilds) jobLog(context.Context, string, string, int) (string, error) {
+func (f *fakeBuilds) jobLog(_ context.Context, _, name string, _ int) (string, error) {
+	if l, ok := f.logs[name]; ok {
+		return l, nil
+	}
 	if f.log != "" {
 		return f.log, nil
 	}
@@ -127,7 +145,7 @@ func testService() (*Service, *fakeBuilds, *fakeImages, *fakeHub) {
 		return gitRefs{Refs: map[string]string{"refs/heads/main": "0123456789abcdef0123456789abcdef01234567"}, DefaultBranch: "main"}, nil
 	}
 	s := newService(Config{Registry: "reg", JupyterURL: "https://hub"}, NewMemoryStore(), b, i, h, refs, zap.NewNop().Sugar())
-	s.SetBases([]string{"reg/platform/base-python:v2.0.0", testBase})
+	s.SetBases([]workspace.Base{{Image: "reg/platform/base-python:v2.0.0"}, {Image: testBase}})
 	return s, b, i, h
 }
 
@@ -224,7 +242,7 @@ func TestProjectImagesRebuiltOnNewBase(t *testing.T) {
 	if err := s.RebaseProjectImages(ctx); err != nil || len(b.created) != 1 || len(ready) != 1 {
 		t.Fatalf("same base: %v, jobs %v, ready %v", err, b.created, ready)
 	}
-	s.SetBases([]string{"reg/platform/base-pytorch:v2.1.0"})
+	s.SetBases([]workspace.Base{{Image: "reg/platform/base-pytorch:v2.1.0"}})
 	if err := s.RebaseProjectImages(ctx); err != nil || len(b.created) != 2 {
 		t.Fatalf("new base: %v, jobs %v", err, b.created)
 	}

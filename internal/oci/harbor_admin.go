@@ -26,12 +26,13 @@ type HarborRepository struct {
 	UpdateTime    time.Time
 }
 
-// HarborArtifact is an artifact (an image or an index) in a repository: its digest, its tags, and when it was last pushed and pulled (zero = never pulled).
+// HarborArtifact is an artifact (an image or an index) in a repository: its digest, its tags, when it was last pushed and pulled (zero = never pulled), and for an index the digests of its variants (References). Harbor lists a variant on its own only when it has a tag (e.g. <tag>-arm64 of a build for several architectures); deleting the index deletes its untagged variants with it and leaves the tagged ones, which can be deleted once the index is gone.
 type HarborArtifact struct {
-	Digest   string
-	Tags     []string
-	PushTime time.Time
-	PullTime time.Time
+	Digest     string
+	Tags       []string
+	PushTime   time.Time
+	PullTime   time.Time
+	References []string
 }
 
 // harborPageSize is the most Harbor returns per page.
@@ -127,6 +128,9 @@ func (h *Harbor) Artifacts(ctx context.Context, project, repo string) ([]HarborA
 		Tags     []struct {
 			Name string `json:"name"`
 		} `json:"tags"`
+		References []struct {
+			ChildDigest string `json:"child_digest"`
+		} `json:"references"`
 	}](ctx, h, h.repoPath(project, repo)+"/artifacts?with_tag=true&with_scan_overview=false&with_label=false")
 	if err != nil {
 		return nil, err
@@ -136,6 +140,11 @@ func (h *Harbor) Artifacts(ctx context.Context, project, repo string) ([]HarborA
 		art := HarborArtifact{Digest: a.Digest, PushTime: a.PushTime, PullTime: a.PullTime}
 		for _, t := range a.Tags {
 			art.Tags = append(art.Tags, t.Name)
+		}
+		for _, r := range a.References {
+			if r.ChildDigest != "" {
+				art.References = append(art.References, r.ChildDigest)
+			}
 		}
 		out = append(out, art)
 	}

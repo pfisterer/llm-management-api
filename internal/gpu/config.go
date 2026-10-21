@@ -23,7 +23,10 @@ type Config struct {
 	EnvsProject   string // envs
 	BuilderImage  string // optional; default: newest tag of platform/repo2docker-buildkit
 	BuilderSecret string // pull/push secret in BuildNamespace (harbor-envs-builder)
-	GitHosts      []string
+	// BuildPlatforms are the architectures project images from Git are built for, where their base has them (docs/todo.md multi_arch): amd64 on the build nodes, every other one in its own job on a node of that architecture, then an index joins them (IndexImage, crane). Empty or only amd64 = one amd64 build as before.
+	BuildPlatforms []string
+	IndexImage     string // image with crane that writes the index; default DefaultIndexImage
+	GitHosts       []string
 
 	JupyterURL      string // https://jupyter.gpu.services.dhbw.cloud
 	JupyterAPIToken string // token of the hub service gpu-management-api

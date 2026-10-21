@@ -33,7 +33,7 @@ for i in 1 2 3; do
 done
 `
 
-// projectImageScript is the build job's script: it clones the repository, writes the Dockerfile from the repository's files and builds it with BuildKit.
+// projectImageScript is the build job's script: it clones the repository, writes the Dockerfile from the repository's files and builds it with BuildKit for BUILD_ARCH. With PUSH_BY_DIGEST=1 (one architecture of a build for several, multi_arch.go) it pushes the image to the repository IMAGE without a tag and ends with the line "dhbw-digest: sha256:…", which the index job is given.
 const projectImageScript = "set -euo pipefail\n" + projectImageClone + `git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
 dir=/tmp/repo
 for d in binder .binder; do if [ -d "/tmp/repo/$d" ]; then dir="/tmp/repo/$d"; break; fi; done
@@ -74,9 +74,14 @@ mkdir -p /tmp/dockerfile
   echo "LABEL org.dhbw.git.url=\"$GIT_URL\" org.dhbw.git.branch=\"$GIT_BRANCH\""
 } > /tmp/dockerfile/Dockerfile
 cat /tmp/dockerfile/Dockerfile
+out="type=image,name=$IMAGE,push=true"
+if [ "${PUSH_BY_DIGEST:-}" = 1 ]; then out="$out,push-by-digest=true,name-canonical=true"; fi
 buildctl-daemonless.sh build --progress=plain --frontend dockerfile.v0 --local context="$dir" --local dockerfile=/tmp/dockerfile \
-  --output "type=image,name=$IMAGE,push=true" \
-  --export-cache "type=registry,ref=$R2D_BUILDKIT_CACHE-course,mode=max" --import-cache "type=registry,ref=$R2D_BUILDKIT_CACHE-course"`
+  --opt "platform=linux/${BUILD_ARCH:-amd64}" --output "$out" --metadata-file /tmp/build-metadata.json \
+  --export-cache "type=registry,ref=$R2D_BUILDKIT_CACHE-course,mode=max" --import-cache "type=registry,ref=$R2D_BUILDKIT_CACHE-course"
+if [ "${PUSH_BY_DIGEST:-}" = 1 ]; then
+  echo "dhbw-digest: $(python3 -c 'import json; print(json.load(open("/tmp/build-metadata.json"))["containerimage.digest"])')"
+fi`
 
 var tagUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
@@ -98,15 +103,30 @@ func splitImage(image string) (string, string) {
 	return image, "latest"
 }
 
-// SetBases sets the current bases of the projects' environments at their release: what a newer release of a base rebuilds to (RebaseProjectImages), and what is pulled onto the nodes (EnsurePrepull).
-func (s *Service) SetBases(images []string) { s.bases = slices.Clone(images) }
+// baseImage is a base at its release with the architectures it is built for.
+type baseImage struct {
+	image string
+	archs []string
+}
+
+// SetBases sets the current bases of the projects' environments at their release: what a newer release of a base rebuilds to (RebaseProjectImages), and for which architectures a project image on it is built (buildPlatforms; empty archs = amd64).
+func (s *Service) SetBases(bases []workspace.Base) {
+	s.bases = nil
+	for _, b := range bases {
+		archs := slices.Clone(b.Archs)
+		if len(archs) == 0 {
+			archs = []string{"amd64"}
+		}
+		s.bases = append(s.bases, baseImage{image: b.Image, archs: archs})
+	}
+}
 
 // currentBase is the current release of the base an image was built on; false when that base is no longer offered.
 func (s *Service) currentBase(base string) (string, bool) {
 	repo, _ := splitImage(base)
 	for _, b := range s.bases {
-		if r, _ := splitImage(b); r == repo {
-			return b, true
+		if r, _ := splitImage(b.image); r == repo {
+			return b.image, true
 		}
 	}
 	return "", false
@@ -231,6 +251,14 @@ func (s *Service) ProjectImageLog(ctx context.Context, slug string) (workspace.B
 	log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, cur.JobName, 400)
 	if err != nil {
 		log = ""
+	}
+	// A build for several architectures: the end of each other architecture's log after the amd64 one.
+	if platforms := platformsOf(*cur); len(platforms) > 1 {
+		for _, arch := range platforms[1:] {
+			if l, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, archJobName(slugOf(cur.Image), tagOf(cur.Image), arch), 100); err == nil {
+				log += "\n\n----- " + arch + " -----\n" + l
+			}
+		}
 	}
 	return workspace.BuildLog{Log: log, State: state, Since: since}, nil
 }

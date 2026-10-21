@@ -72,8 +72,10 @@ type Service struct {
 	category ModelCategory
 	// ready is told when a project image build is ready, so the project uses it.
 	ready func(ctx context.Context, e Environment) error
-	// bases are the current bases of the projects' environments at their release (SetBases).
-	bases []string
+	// bases are the current bases of the projects' environments at their release, with their architectures (SetBases).
+	bases []baseImage
+	// clock is the time for the builds of several architectures (multi_arch.go); nil = time.Now.
+	clock func() time.Time
 	// prepulled is how many images the prepull DaemonSet of an architecture holds since its last update (EnsurePrepull), for the metrics.
 	prepulled sync.Map
 	// gapBusy is when each node last ran a GPU pod other than a gap filler (gapfill.go: the delay before a gap filler comes back).
@@ -203,9 +205,13 @@ func jobName(slug, tag string) string {
 	return "env-" + s + "-" + tag
 }
 
-// startBuildIfMissing sets e.Status: ready if the image exists, else creates
-// (or joins) the build job. force rebuilds even an existing image.
+// startBuildIfMissing sets e.Status: ready if the image exists, else creates (or joins) the build jobs: one for an amd64 build, one per architecture and later the index for a build for several (buildPlatforms). force rebuilds even an existing image.
 func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug, tag string, force bool) error {
+	platforms := s.buildPlatforms(e.Base)
+	e.Platforms = ""
+	if len(platforms) > 1 {
+		e.Platforms = strings.Join(platforms, ",")
+	}
 	if !force {
 		ok, err := s.images.exists(ctx, s.cfg.EnvsProject, slug, tag)
 		if err != nil {
@@ -216,12 +222,6 @@ func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug,
 			return nil
 		}
 	}
-	e.JobName = jobName(slug, tag)
-	if force {
-		if err := s.builds.deleteJob(ctx, s.cfg.BuildNamespace, e.JobName); err != nil {
-			return err
-		}
-	}
 	builder := s.cfg.BuilderImage
 	if builder == "" {
 		b, err := s.images.newestBuilder(ctx)
@@ -230,23 +230,50 @@ func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug,
 		}
 		builder = b
 	}
-	job := buildJob(s.cfg, e.JobName, builder, *e, slug)
-	err := s.builds.createJob(ctx, s.cfg.BuildNamespace, job)
-	if errors.Is(err, errAlreadyExists) {
-		// Someone else builds the same repository and commit: share the job.
-		err = nil
+	type build struct{ name, arch, image, cache string }
+	builds := []build{{jobName(slug, tag), "amd64", e.Image, slug}}
+	if e.Platforms != "" {
+		builds = nil
+		for _, arch := range platforms {
+			cache := slug
+			if arch != "amd64" {
+				cache = slug + "-" + arch
+			}
+			builds = append(builds, build{archJobName(slug, tag, arch), arch, repoOf(e.Image), cache})
+		}
+		if force {
+			if err := s.builds.deleteJob(ctx, s.cfg.BuildNamespace, indexJobName(slug, tag)); err != nil {
+				return err
+			}
+		}
 	}
-	if err != nil {
-		return err
+	e.JobName = builds[0].name // the amd64 build: its log is the build's log
+	for _, b := range builds {
+		if force {
+			if err := s.builds.deleteJob(ctx, s.cfg.BuildNamespace, b.name); err != nil {
+				return err
+			}
+		}
+		err := s.builds.createJob(ctx, s.cfg.BuildNamespace, buildJob(s.cfg, b.name, builder, *e, slug, b.arch, b.image, b.cache, e.Platforms != ""))
+		if errors.Is(err, errAlreadyExists) {
+			// Someone else builds the same repository and commit: share the job.
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
 	}
 	e.Status, e.Message = StatusBuilding, ""
 	return nil
 }
 
-// refresh updates a building environment from its job.
+// refresh updates a building environment from its jobs.
 func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 	if e.Status != StatusBuilding || e.JobName == "" {
 		return e
+	}
+	if e.Platforms != "" {
+		return s.refreshPlatforms(ctx, e)
 	}
 	st, err := s.builds.jobStatus(ctx, s.cfg.BuildNamespace, e.JobName)
 	switch {
@@ -269,21 +296,7 @@ func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 			}
 		}
 	case st.Failed > 0:
-		e.Status, e.Message = StatusFailed, "Build fehlgeschlagen, Details im Build-Log."
-		// A refusal of the build script itself (lines starting with "dhbw: ", e.g. a base image that is not allowed) is the better message.
-		if log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, e.JobName, 50); err == nil {
-			for _, line := range strings.Split(log, "\n") {
-				if msg, ok := strings.CutPrefix(strings.TrimSpace(line), "dhbw: "); ok {
-					e.Message = msg
-					break
-				}
-			}
-		}
-		for _, c := range st.Conditions {
-			if c.Type == "Failed" && c.Reason == "DeadlineExceeded" {
-				e.Message = "Build hat das Zeitlimit überschritten."
-			}
-		}
+		e.Status, e.Message = StatusFailed, s.failure(ctx, e.JobName, st)
 	default:
 		return e
 	}
@@ -293,6 +306,25 @@ func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 		return e
 	}
 	return saved
+}
+
+// failure is why a build job failed, for people: a refusal of the build script itself (lines starting with "dhbw: ", e.g. a repository with a Dockerfile) is the better message, the time limit is named.
+func (s *Service) failure(ctx context.Context, job string, st jobStatus) string {
+	msg := "Build fehlgeschlagen, Details im Build-Log."
+	if log, err := s.builds.jobLog(ctx, s.cfg.BuildNamespace, job, 50); err == nil {
+		for _, line := range strings.Split(log, "\n") {
+			if m, ok := strings.CutPrefix(strings.TrimSpace(line), "dhbw: "); ok {
+				msg = m
+				break
+			}
+		}
+	}
+	for _, c := range st.Conditions {
+		if c.Type == "Failed" && c.Reason == "DeadlineExceeded" {
+			msg = "Build hat das Zeitlimit überschritten."
+		}
+	}
+	return msg
 }
 
 func slugOf(image string) string {

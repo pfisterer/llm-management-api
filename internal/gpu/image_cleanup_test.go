@@ -24,6 +24,7 @@ type fakeArtifact struct {
 	tags   []string
 	push   time.Time
 	pull   time.Time
+	refs   []string // an index: the digests of its variants
 }
 
 // fakeHarbor answers Harbor's v2 API for the project envs from memory: list repositories and artifacts (paged), delete artifacts and repositories (only with the robot's basic auth). Any request outside envs fails the test.
@@ -85,17 +86,24 @@ func (f *fakeHarbor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		type tag struct {
 			Name string `json:"name"`
 		}
+		type ref struct {
+			ChildDigest string `json:"child_digest"`
+		}
 		type out struct {
-			Digest   string    `json:"digest"`
-			PushTime time.Time `json:"push_time"`
-			PullTime time.Time `json:"pull_time"`
-			Tags     []tag     `json:"tags"`
+			Digest     string    `json:"digest"`
+			PushTime   time.Time `json:"push_time"`
+			PullTime   time.Time `json:"pull_time"`
+			Tags       []tag     `json:"tags"`
+			References []ref     `json:"references,omitempty"`
 		}
 		var list []out
 		for _, a := range arts {
 			o := out{Digest: a.digest, PushTime: a.push, PullTime: a.pull}
 			for _, t := range a.tags {
 				o.Tags = append(o.Tags, tag{t})
+			}
+			for _, r := range a.refs {
+				o.References = append(o.References, ref{r})
 			}
 			list = append(list, o)
 		}
@@ -121,6 +129,11 @@ func (f *fakeHarbor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i := slices.IndexFunc(arts, func(a fakeArtifact) bool { return a.digest == digest })
 		if i < 0 {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// Like Harbor: a variant an index still refers to cannot be deleted.
+		if slices.ContainsFunc(arts, func(a fakeArtifact) bool { return slices.Contains(a.refs, digest) }) {
+			w.WriteHeader(http.StatusPreconditionFailed)
 			return
 		}
 		f.repos[repo] = slices.Delete(arts, i, i+1)
@@ -293,6 +306,50 @@ func TestImageCleanupWithoutAuth(t *testing.T) {
 	s := newService(Config{Registry: reg}, NewMemoryStore(), nil, nil, nil, nil, zap.NewNop().Sugar())
 	res := s.NewImageCleanup(harbor, ImageCleanupConfig{}, nil).Sweep(context.Background())
 	if res.OK || res.Failed != 1 || res.Deleted != 0 || len(f.repos["a"]) != 1 {
+		t.Fatalf("pass = %+v", res)
+	}
+}
+
+// Builds for several architectures (multi_arch.go): an index with its variants <tag>-<arch> (Harbor lists tagged variants on their own) stays and goes as one; a variant named by digest keeps its index; the build cache of an architecture stays with its repository.
+func TestImageCleanupMultiArch(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-30 * 24 * time.Hour)
+	f := &fakeHarbor{t: t, failDel: map[string]bool{}, updated: map[string]time.Time{}, repos: map[string][]fakeArtifact{
+		"github-com-a-multi": {
+			// Named by its tag: index and variants stay.
+			{digest: "sha256:i1", tags: []string{"c1-pytorch-1"}, refs: []string{"sha256:v1", "sha256:v2"}, push: old},
+			{digest: "sha256:v1", tags: []string{"c1-pytorch-1-amd64"}, push: old},
+			{digest: "sha256:v2", tags: []string{"c1-pytorch-1-arm64"}, push: old},
+			// Nobody names it any more: the index first, then its tagged variant (its untagged one Harbor takes with the index).
+			{digest: "sha256:v3", tags: []string{"c0-pytorch-1-amd64"}, push: old},
+			{digest: "sha256:i0", tags: []string{"c0-pytorch-1"}, refs: []string{"sha256:v3", "sha256:v4"}, push: old},
+		},
+		// A project pinned to a variant's digest: its index (and so the variant) stays.
+		"github-com-a-pinvar": {{digest: "sha256:i2", tags: []string{"t"}, refs: []string{"sha256:x1", "sha256:x2"}, push: old}},
+		"buildcache": {
+			{digest: "sha256:b1", tags: []string{"github-com-a-multi-course"}, push: old},
+			{digest: "sha256:b2", tags: []string{"github-com-a-multi-arm64-course"}, push: old},
+			{digest: "sha256:b3", tags: []string{"github-com-a-gone-arm64-course"}, push: old},
+		},
+	}}
+	srv := httptest.NewTLSServer(f)
+	defer srv.Close()
+	harbor := &oci.Harbor{Client: &oci.Client{HTTP: srv.Client()}, Host: strings.TrimPrefix(srv.URL, "https://"), Auth: &oci.Auth{Username: "robot$envs+cleanup", Password: "s3cret"}}
+	store := NewMemoryStore()
+	s := newService(Config{Registry: reg}, store, nil, nil, nil, nil, zap.NewNop().Sugar())
+	ctx := context.Background()
+	_, _ = store.Save(ctx, Environment{Owner: "project:a", Image: reg + "/envs/github-com-a-multi:c1-pytorch-1", Platforms: "amd64,arm64", Status: StatusReady})
+	refs := func(context.Context) ([]string, error) {
+		return []string{reg + "/envs/github-com-a-pinvar@sha256:x2"}, nil
+	}
+	c := s.NewImageCleanup(harbor, ImageCleanupConfig{MinAge: 7 * 24 * time.Hour}, refs)
+	c.now = func() time.Time { return now }
+	res := c.Sweep(ctx)
+	want := []string{"artifact buildcache@sha256:b3", "artifact github-com-a-multi@sha256:i0", "artifact github-com-a-multi@sha256:v3"}
+	if got := f.taken(); !slices.Equal(got, want) {
+		t.Fatalf("deleted %v, want %v", got, want)
+	}
+	if !res.OK || res.Failed != 0 || res.Referenced != 6 || res.Orphaned != 3 || res.Deleted != 3 {
 		t.Fatalf("pass = %+v", res)
 	}
 }

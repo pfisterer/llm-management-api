@@ -348,3 +348,46 @@ func TestImageFactsStored(t *testing.T) {
 		t.Fatalf("cleared: %+v", r)
 	}
 }
+
+// A build from Git runs on the architectures its index has (docs/todo.md multi_arch): amd64 until it is read, both once the registry names arm64 too, amd64 again for a build whose arm64 variant failed.
+func TestBuiltImageArchs(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	f := &fakeBuilder{builds: map[string]ImageBuild{}}
+	s.SetImageBuilder(f)
+	archs := map[string][]string{"reg/envs/kurs:c-v1": {"amd64", "arm64"}, "reg/envs/kurs:c-v2": {"amd64"}}
+	answer := false
+	s.SetImageInspector(func(_ context.Context, image string, _ *Basic) (RegistryImage, error) {
+		if !answer {
+			return RegistryImage{}, errors.New("not found")
+		}
+		return RegistryImage{Digest: "sha256:" + image[len(image)-1:], Archs: archs[image], Size: 1}, nil
+	})
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	_, _ = s.create(ctx, Project{Slug: "kurs", Profiles: []string{"cpu"}, Members: mgr}, "admin")
+	if _, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://github.com/o/kurs"}, "a@dhbw.de", false); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.ProjectImageBuilt(ctx, "kurs", "https://github.com/o/kurs", "reg/envs/kurs:c-v1")
+	if p, _ := s.Get(ctx, "kurs"); !slices.Equal(s.EffectiveArchs(p), []string{"amd64"}) {
+		t.Fatalf("not read yet: %v", s.EffectiveArchs(p))
+	}
+	answer = true
+	_ = s.CheckProjectImages(ctx)
+	p, _ := s.Get(ctx, "kurs")
+	if !slices.Equal(s.EffectiveArchs(p), []string{"amd64", "arm64"}) {
+		t.Fatalf("index with arm64: %v", s.EffectiveArchs(p))
+	}
+	imgs, _ := s.PrepullImages(ctx)
+	if i := slices.IndexFunc(imgs, func(a ArchImage) bool { return a.Image == "reg/envs/kurs:c-v1" }); i < 0 || !slices.Equal(imgs[i].Archs, []string{"amd64", "arm64"}) {
+		t.Fatalf("prepull %v", imgs)
+	}
+	// An update that keeps the repository keeps what was read.
+	if p, err := s.Update(ctx, Project{Slug: "kurs", Members: mgr, ImageGitURL: "https://github.com/o/kurs"}, "a@dhbw.de", false); err != nil || !slices.Equal(s.EffectiveArchs(p), []string{"amd64", "arm64"}) {
+		t.Fatalf("kept: %v %v", err, p.ImageArchs)
+	}
+	_ = s.ProjectImageBuilt(ctx, "kurs", "https://github.com/o/kurs", "reg/envs/kurs:c-v2")
+	if p, _ := s.Get(ctx, "kurs"); !slices.Equal(s.EffectiveArchs(p), []string{"amd64"}) {
+		t.Fatalf("arm64 variant failed: %v", s.EffectiveArchs(p))
+	}
+}

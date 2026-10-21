@@ -30,7 +30,9 @@ type Environment struct {
 	Commit string `json:"commit" gorm:"not null"`
 	Image  string `json:"image" gorm:"not null"`
 	// Base is the notebook-base release the image is built on; a newer one rebuilds it (Service.RebaseProjectImages).
-	Base      string    `json:"base,omitempty"`
+	Base string `json:"base,omitempty"`
+	// Platforms are the architectures a build for several makes (docs/todo.md multi_arch): one job per architecture pushes <image>-<arch>, then an index joins those that succeeded under the image's tag ("amd64,arm64"). Empty = one amd64 build that pushes the image itself.
+	Platforms string    `json:"platforms,omitempty"`
 	Status    Status    `json:"status" gorm:"not null"`
 	JobName   string    `json:"-"`
 	Message   string    `json:"message,omitempty"`

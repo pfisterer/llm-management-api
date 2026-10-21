@@ -166,6 +166,8 @@ func LoadConfig() (Config, error) {
 		EnvsProject:     envconf.String("GPU_ENVS_PROJECT", "envs"),
 		BuilderImage:    envconf.String("GPU_BUILDER_IMAGE", ""),
 		BuilderSecret:   envconf.String("GPU_BUILDER_SECRET", "harbor-envs-builder"),
+		BuildPlatforms:  envconf.StringSlice("GPU_BUILD_PLATFORMS", []string{"amd64"}, strings.ToLower),
+		IndexImage:      envconf.String("GPU_INDEX_IMAGE", ""),
 		GitHosts:        envconf.StringSlice("GPU_GIT_HOSTS", []string{"github.com", "gitlab.com"}, strings.ToLower),
 		JupyterURL:      strings.TrimRight(envconf.String("JUPYTERHUB_URL", ""), "/"),
 		JupyterAPIToken: envconf.String("JUPYTERHUB_API_TOKEN", ""),

@@ -88,6 +88,9 @@ gpu:
   # Empty: newest tag of <registry>/platform/repo2docker-buildkit.
   builderImage: ""
   builderSecret: harbor-envs-builder
+  # Architectures project images from Git are built for where their base has them (docs/todo.md multi_arch): each other than amd64 natively in its own job on a node of it (kubernetes.io/arch, tolerating the lab pool's taint), then an index (crane, indexImage; empty = the service's default) joins them. [amd64] = one amd64 build as before.
+  buildPlatforms: [amd64]
+  indexImage: ""
   gitHosts: [github.com, gitlab.com]
   jupyterhubUrl: ""
   # vLLM replicas of the inference pool, reported to the discovery job as sites (GET /fleet/sites). Empty url = off. The key is gpu-inference-api-key in the existing secret; the ServiceAccount behind gpu-kube-token needs get/list on pods in the namespace.

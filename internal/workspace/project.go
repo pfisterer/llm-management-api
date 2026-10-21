@@ -66,7 +66,7 @@ type Project struct {
 	ImageDigest     string `json:"image_digest,omitempty" example:"sha256:4f2a…"`
 	ImageUpdate     string `json:"image_update,omitempty" example:"sha256:9c1e…"`
 	ImageAutoUpdate bool   `json:"image_auto_update,omitempty"`
-	// ImageArchs are the architectures an existing ProjectImage has (linux: amd64, arm64), from its registry along with ImageDigest; empty = amd64.
+	// ImageArchs are the architectures the ProjectImage has (linux: amd64, arm64), from its registry: an existing image along with ImageDigest, a build from Git once it is read (inspectBuilt; for a build for several architectures those of its index); empty = amd64.
 	ImageArchs []string `json:"image_archs,omitempty" gorm:"serializer:json"`
 	// ImageSize is the project image's download (sum of its compressed layers, bytes), ImageUser the user its config names (USER), ImageWarnings what the checks at saving and at every recheck found about it (imageWarnings: runs as root or another UID, HOME elsewhere, its own entrypoint, jupyterhub-singleuser not recognisable, large); they only inform, a saved image is never refused later. Also for an image built from Git, read once its build is ready.
 	ImageSize     int64    `json:"image_size,omitempty"`

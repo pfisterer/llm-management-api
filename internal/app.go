@@ -295,11 +295,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				return fmt.Errorf("WORKSPACE_CREDENTIALS_KEY: %w", err)
 			}
 		}
-		var bases []string
-		for _, b := range wsCfg.Bases {
-			bases = append(bases, b.Image)
-		}
-		gpuSvc.SetBases(bases)
+		gpuSvc.SetBases(wsCfg.Bases)
 		// The profiles went into CPU, CPU + GPU-Kernel and GPU on 14.10.2026: stored projects follow once.
 		if err := wsSvc.MigrateProfiles(context.Background()); err != nil {
 			log.Warnw("workspace profiles not migrated", "error", err)
