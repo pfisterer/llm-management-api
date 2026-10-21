@@ -64,3 +64,43 @@ func TestModelCatalog(t *testing.T) {
 		t.Errorf("unused model not deleted: %v", err)
 	}
 }
+
+// vLLM never gets an argument that logs prompts or answers: the catalogue refuses it, and a gap filler drops it even when it got into the store another way (an old entry, the inventory seed).
+func TestNoRequestLoggingArgs(t *testing.T) {
+	for _, a := range []string{"--enable-log-requests", "--enable-log-outputs", "--enable_log_requests", "--enable-log-requests=true", "--Enable-Log-Requests", "--enable-log", "--max-model-len 4096 --enable-log-outputs"} {
+		if !requestLoggingArg(a) {
+			t.Errorf("%q not recognised as request logging", a)
+		}
+	}
+	for _, a := range []string{"--disable-log-stats", "--max-model-len", "4096", "--enable-lora", "--reasoning-parser", "--enable-prefix-caching"} {
+		if requestLoggingArg(a) {
+			t.Errorf("%q wrongly taken for request logging", a)
+		}
+	}
+
+	ctx := context.Background()
+	s, k := gapTestService()
+	s.SetModels(NewMemoryModelStore())
+	_ = s.SeedFleet(ctx)
+	_ = s.SeedModels(ctx)
+	var refused *ErrFleet
+	for _, a := range []string{"--enable-log-requests", "--enable-log-outputs", "--enable_log_requests=1"} {
+		if err := s.SaveModel(ctx, CatalogModel{Key: "medium", Model: "a/b", Args: []string{"--max-model-len", "4096", a}}); !errors.As(err, &refused) {
+			t.Errorf("SaveModel accepted %s: %v", a, err)
+		}
+	}
+
+	if err := s.models.SaveModel(ctx, CatalogModel{Key: "medium", Model: "a/b", Args: []string{"--max-model-len", "4096", "--enable-log-requests", "--enable-log-outputs"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetTierModel(ctx, "medium", "medium")
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium"})
+	_ = s.ReconcileFleet(ctx)
+	if err := s.ReconcileGapFillers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dep := dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-2"])
+	if !strings.Contains(dep, `"4096"`) || strings.Contains(dep, "enable-log") {
+		t.Errorf("gap filler args: %s", dep)
+	}
+}

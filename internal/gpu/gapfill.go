@@ -193,6 +193,10 @@ func (s *Service) gapDeployment(ns string, r gapReplica, m CatalogModel) map[str
 	podLabels := map[string]any{"app": "vllm", "replica": r.name, labelClass: r.class, "kueue.x-k8s.io/queue-name": queue, "dhbw.cloud/inference-role": gapRole, "dhbw.cloud/inference-model": r.model}
 	args := []any{"--model", m.Model, "--served-model-name", m.Model, "--port", "8000"}
 	for _, a := range m.Args {
+		// Never request logging, even from a catalogue entry written before SaveModel refused it.
+		if requestLoggingArg(a) {
+			continue
+		}
 		args = append(args, a)
 	}
 	resources := m.resources()

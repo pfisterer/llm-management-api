@@ -246,11 +246,21 @@ func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 		if a == "--model" || a == "--port" || a == "--served-model-name" || strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--port=") {
 			return &ErrFleet{"--model, --served-model-name und --port setzt der Dienst selbst."}
 		}
+		if requestLoggingArg(a) {
+			return &ErrFleet{fmt.Sprintf("%s würde Prompts oder Antworten ins Protokoll von vLLM schreiben; die Protokollierung von Anfragen bleibt aus.", a)}
+		}
 		args = append(args, a)
 	}
 	m.Args = args
 	m.UpdatedAt = time.Now()
 	return s.models.SaveModel(ctx, m)
+}
+
+var requestLoggingPattern = regexp.MustCompile(`(^|\s)--enable[-_]log`)
+
+// requestLoggingArg says whether a vLLM argument would switch on logging of prompts or answers: --enable-log-requests, --enable-log-outputs and every other --enable-log-*, also with underscores, with =value, inside an element holding several words, or abbreviated (vLLM's argparse accepts unique prefixes). Such arguments never reach vLLM: SaveModel refuses them and gapDeployment drops them, so neither the catalogue nor the inventory seed can turn request logging on (docs/architektur.md, component table, row "vLLM in inference"; Ansible checks the inventory in tasks/vllm-args-check.yaml).
+func requestLoggingArg(a string) bool {
+	return requestLoggingPattern.MatchString(strings.ToLower(a))
 }
 
 // DeleteModel removes a model nothing uses (no tier default, no node).
