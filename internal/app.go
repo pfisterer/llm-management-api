@@ -27,6 +27,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/oci"
+	"github.com/pfisterer/llm-management-api/internal/research"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/webserver"
@@ -79,12 +80,13 @@ type allStores struct {
 	gpuFleet gpu.FleetStore
 	models   gpu.ModelStore
 	tokens   *token.Service
+	research research.Store
 }
 
 // stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore())}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -140,7 +142,12 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts}, nil
+	// The research log's table (research_workloads).
+	rs, err := research.NewGormStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -465,6 +472,15 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		if gs, ok := st.usage.(usage.GPUStore); ok {
 			go usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
 		}
+		// Research log (internal/research): every minute the GPU cluster's workloads from request to end, pseudonymous; RESEARCH_RETENTION_DAYS=0 switches it off.
+		if cfg.ResearchRetentionDays > 0 {
+			rec := research.NewRecorder(st.research, gpuSvc.ResearchSnapshot, []byte(cfg.ResearchPseudonymKey), time.Duration(cfg.ResearchRetentionDays)*24*time.Hour, time.Minute, log)
+			gpuSvc.SetResearch(rec)
+			go rec.Run(ctx)
+			if cfg.ResearchPseudonymKey == "" {
+				log.Infow("research log: no RESEARCH_PSEUDONYM_KEY, the rows name no person")
+			}
+		}
 		// GPU administration: every minute the node labels and the Kueue queues of the classes follow the assignments and the nodes (a node that joins or leaves changes the quota).
 		if gpuSvc.FleetEnabled() {
 			go func() {
@@ -506,7 +522,9 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 						running = append(running, workspace.RunningServer{Running: workspace.Running{Server: p.Pod, Person: p.Person, Project: p.Project, Profile: p.Profile}, ServerName: p.Server})
 					}
 				}
-				wsSvc.Enforce(ctx, running, gpuSvc.EndServer, log)
+				wsSvc.Enforce(ctx, running, func(ctx context.Context, person, server string) error {
+					return gpuSvc.EndServer(ctx, person, server, research.EndBudget)
+				}, log)
 				purgeStorage(ctx, gpuSvc, wsSvc, pods, log)
 				// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
 				if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
@@ -653,7 +671,7 @@ func purgeStorage(ctx context.Context, gpuSvc *gpu.Service, wsSvc *workspace.Ser
 	for _, v := range orphans {
 		for _, p := range pods {
 			if p.Project == v.Project && p.Profile != "gpu-kernel" {
-				if err := gpuSvc.EndServer(ctx, p.Person, p.Server); err != nil {
+				if err := gpuSvc.EndServer(ctx, p.Person, p.Server, research.EndProjectDeleted); err != nil {
 					log.Warnw("storage: ending a server of a deleted project failed", "project", v.Project, "person", p.Person, "server", p.Server, "error", err)
 				}
 			}

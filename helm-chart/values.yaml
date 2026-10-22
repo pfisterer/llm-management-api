@@ -31,6 +31,8 @@ secrets:
   harborScanToken: ""
   # Token of the robot account gpu.imageCleanup.user (deletes images of environments that are gone from Harbor's project envs).
   harborCleanupToken: ""
+  # Key of the people's pseudonyms in the research log of the GPU cluster's workloads (table research_workloads, HMAC-SHA256, at least 16 characters); empty = the log records no person at all. A new key gives everybody new pseudonyms.
+  researchPseudonymKey: ""
   # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
   treeApiToken: ""
   # Token LibreChat sends to the chat exchange (:8089) as its API key; empty = the exchange refuses every request.
@@ -116,6 +118,8 @@ gpu:
     minAgeDays: 7
     intervalMinutes: 60
     user: ""
+  # Research log of the GPU cluster's workloads (table research_workloads: request, Kueue admission, start, end and its reason per pod; the person only as pseudonym with secrets.researchPseudonymKey): rows are kept this many days; 0 = no log. The ServiceAccount needs list on Kueue workloads and on events in the workspace and inference namespaces.
+  researchRetentionDays: 730
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.
   hubAccess:
     externalIPs: []

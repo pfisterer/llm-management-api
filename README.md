@@ -107,6 +107,14 @@ Not here: the JuiceFS metadata dump's age (the JuiceFS clients write it to the b
 
 Budget, spend and remaining budget per project are LiteLLM's own (`litellm_team_max_budget_metric`, `litellm_remaining_team_budget_metric`, `litellm_spend_metric_total`), not repeated here.
 
+## Research log (with the GPU part)
+
+For publications about the platform the service keeps one row per pod of the GPU cluster in `research_workloads` (`internal/research`): GPU kernels (`gpu-kernel`), workspace servers (`gpu-server`, `cpu-server`), vLLM replicas (`vllm`) and image builds (`build`). Sampled every minute together with the usage; the times are the cluster's own, so they are exact: `created_at` (pod created = request), `admitted_at` (Kueue reserved the quota), `scheduled_at` (bound to a node; after a preemption: when the victim had freed the GPU), `running_at` (first container started), `ready_at` (first ready; cold start of a vLLM replica), `ended_at` with `end_reason` and `end_detail` (the cluster's own reason). Only a pod that vanishes between two samples without a trace gets `end_estimated` (it ended between `last_seen_at` and `ended_at`). Also per row: GPU class, admitted Kueue flavor (another pool of the tier when borrowed), GPU type, GPUs, node, priority class and value, project slug, profile, the model of a vLLM replica, the Kueue workload UID, and for a preempted workload `preempted_by` (the preemptor's pod UID). For a waiting GPU kernel `queue_position` and `estimated_start` are what JupyterLab first showed ("Platz n, spätestens frei um …", from `GET /gpu/kernels`), at `queue_shown_at`.
+
+`end_reason`: `completed`, `failed`, `oom`, `max_runtime` (upper bound of the release times), `evicted_node`, `node_failure`, `evicted_api`, `preempted`, `deactivated`, `evicted_kueue` (Kueue, from its Workload condition or its events `Stopped`/`Preempted`); `idle_release`, `stopped_person`, `cancelled`, `launch_timeout`, `stopped_server` (a GPU kernel its notebook server ended: `DELETE /gpu/kernels/{id}?reason=idle|person|cancel|timeout`, without `reason` the cause stays open); `stopped_portal`, `budget`, `project_deleted` (servers the service ended); `server_stopped` (a kernel whose server ended), `hub_stopped` (a server pod the hub deleted), `deleted`, `gone` (nothing known, e.g. ended while the service was down).
+
+Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RESEARCH_PSEUDONYM_KEY`, none at all without a key —, pod names (a server's carries the e-mail), prompts, code, file names, addresses. Rows are kept `RESEARCH_RETENTION_DAYS` (default 730), pruned daily by creation time. Read with SQL; there is no API endpoint (it would change the OpenAPI spec and the generated client). Needs list on Kueue workloads and on events in the workspace and inference namespaces (Ansible `tasks/jupyterhub.yaml`, `tasks/inference.yaml`).
+
 ## Configuration
 
 | Variable | Meaning |
@@ -137,6 +145,8 @@ Budget, spend and remaining budget per project are LiteLLM's own (`litellm_team_
 | `METRICS_BIND` | Prometheus metrics (`/metrics`: fleet, workspaces, LLM keys), default `:8092`, empty = off; NetworkPolicy: monitoring namespace only |
 | `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the aiaas-deployment inventory as JSON |
 | `FLEET_SCRIPTS_DIR`, `FLEET_PROFILE_TEMPLATE`, `FLEET_README`, `FLEET_PACKAGE_DIR` | fleet scripts, JAMF profile template, guide, uploaded package |
+| `RESEARCH_PSEUDONYM_KEY` | key of the people's pseudonyms in the research log (HMAC-SHA256, at least 16 characters); empty = the log names no person. A new key gives everybody new pseudonyms |
+| `RESEARCH_RETENTION_DAYS` | how long the research log's rows are kept, default 730; 0 = no research log |
 
 ## Development
 

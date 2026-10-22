@@ -127,7 +127,7 @@ func TestStartKernel(t *testing.T) {
 		t.Errorf("refused by the limits: %v", err)
 	}
 
-	if err := s.StopKernel(ctx, o, testKernelID); err != nil || len(k.deleted) != 1 || !strings.Contains(k.deleted[0], "dhbw.cloud%2Fkernel-owner%3Djupyter-a-40dhbw-2ede") {
+	if err := s.StopKernel(ctx, o, testKernelID, "stopped_server"); err != nil || len(k.deleted) != 1 || !strings.Contains(k.deleted[0], "dhbw.cloud%2Fkernel-owner%3Djupyter-a-40dhbw-2ede") {
 		t.Errorf("stop deletes only this server's kernel: %v %v", err, k.deleted)
 	}
 }

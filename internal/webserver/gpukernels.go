@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/research"
 )
 
 // kernelRoutes: GPU kernel pods for the notebook servers of "CPU + GPU-Kernel" (docs/bauplan.md 6.2). The caller is the server pod at the request's source address with its own hub token (JUPYTERHUB_API_TOKEN, header "Authorization: token …"); it can start, poll and stop only its own kernels, and the pod is built from the server pod, not from the request.
@@ -89,7 +90,12 @@ func kernelRoutes(r *gin.Engine, o GPUHubOptions) {
 		if owner == nil {
 			return
 		}
-		if err := o.Kernels.StopKernel(c.Request.Context(), owner, c.Param("id")); err != nil {
+		// ?reason= says why the server ends the kernel, for the research log: idle (release times), person, cancel (while waiting), timeout (waited too long); without it the cause stays open.
+		reason := map[string]string{"idle": research.EndIdleRelease, "person": research.EndStoppedPerson, "cancel": research.EndCancelled, "timeout": research.EndLaunchTimeout}[c.Query("reason")]
+		if reason == "" {
+			reason = research.EndStoppedServer
+		}
+		if err := o.Kernels.StopKernel(c.Request.Context(), owner, c.Param("id"), reason); err != nil {
 			failed(c, owner, "stop", err)
 			return
 		}

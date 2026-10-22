@@ -403,12 +403,20 @@ func (s *Service) KernelStatus(ctx context.Context, o *KernelOwner, kernelID str
 	return &st, nil
 }
 
-// StopKernel deletes the pods of one kernel of this server.
-func (s *Service) StopKernel(ctx context.Context, o *KernelOwner, kernelID string) error {
+// StopKernel deletes the pods of one kernel of this server; reason is why, for the research log (research.EndIdleRelease, research.EndStoppedPerson, research.EndStoppedServer).
+func (s *Service) StopKernel(ctx context.Context, o *KernelOwner, kernelID, reason string) error {
 	if !kernelIDPattern.MatchString(kernelID) {
 		return &KernelRefused{"Ungültige Kernel-ID."}
 	}
-	q := url.Values{"labelSelector": {"component=kernel,kernel_id=" + kernelID + "," + kernelLabelOwner + "=" + o.Pod}, "gracePeriodSeconds": {"0"}}
+	selector := "component=kernel,kernel_id=" + kernelID + "," + kernelLabelOwner + "=" + o.Pod
+	if s.research != nil {
+		if pods, err := s.kernelPods(ctx, selector); err == nil {
+			for _, p := range pods {
+				s.research.Ending(str(obj(p, "metadata"), "uid"), reason)
+			}
+		}
+	}
+	q := url.Values{"labelSelector": {selector}, "gracePeriodSeconds": {"0"}}
 	err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods?"+q.Encode(), nil, nil)
 	if errors.Is(err, ErrNotFound) {
 		return nil
@@ -473,6 +481,18 @@ func (s *Service) KernelOverview(ctx context.Context, o *KernelOwner) (KernelOve
 			out.Ends = append(out.Ends, p.Status.StartTime.Add(time.Duration(p.Spec.ActiveDeadlineSeconds)*time.Second))
 		}
 		sort.Slice(out.Ends, func(i, j int) bool { return out.Ends[i].Before(out.Ends[j]) })
+	}
+	// For the research log: what JupyterLab shows a waiting kernel (dhbw_gpu in the bases), its place and, from the place-th earliest end, when a GPU is free at the latest.
+	if s.research != nil {
+		for i, p := range pods {
+			if pos := out.Kernels[i].Position; pos > 0 && !out.Kernels[i].Admitted {
+				var estimate *time.Time
+				if pos <= len(out.Ends) {
+					estimate = &out.Ends[pos-1]
+				}
+				s.research.QueueShown(str(obj(p, "metadata"), "uid"), pos, estimate)
+			}
+		}
 	}
 	return out, nil
 }

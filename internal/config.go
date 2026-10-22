@@ -101,6 +101,10 @@ type Config struct {
 	APITokenMaxTTLHours       int
 	APITokenAllowNeverExpires bool
 	MaxAPITokensPerUser       int
+
+	// Research log of the GPU cluster's workloads (internal/research): the key of the people's pseudonyms (RESEARCH_PSEUDONYM_KEY, HMAC-SHA256; empty = no person recorded at all) and how long rows are kept (RESEARCH_RETENTION_DAYS, default 730; 0 = no log).
+	ResearchPseudonymKey  string
+	ResearchRetentionDays int
 }
 
 // GPUFleetConfig is GPU_FLEET.
@@ -223,6 +227,8 @@ func LoadConfig() (Config, error) {
 	cfg.APITokenMaxTTLHours = envconf.Int("API_TOKEN_MAX_TTL_HOURS", 365*24)
 	cfg.APITokenAllowNeverExpires = envconf.Bool("API_TOKEN_ALLOW_NEVER_EXPIRES", false)
 	cfg.MaxAPITokensPerUser = envconf.Int("MAX_API_TOKENS_PER_USER", 10)
+	cfg.ResearchPseudonymKey = envconf.String("RESEARCH_PSEUDONYM_KEY", "")
+	cfg.ResearchRetentionDays = envconf.Int("RESEARCH_RETENTION_DAYS", 730)
 	return cfg, cfg.validate()
 }
 
@@ -274,6 +280,12 @@ func (c Config) validate() error {
 	}
 	if c.MaxAPITokensPerUser < 1 || c.MaxAPITokensPerUser > maxAPITokensPerUserLimit {
 		return fmt.Errorf("MAX_API_TOKENS_PER_USER must be between 1 and %d (got %d)", maxAPITokensPerUserLimit, c.MaxAPITokensPerUser)
+	}
+	if c.ResearchRetentionDays < 0 {
+		return fmt.Errorf("RESEARCH_RETENTION_DAYS must not be negative (got %d)", c.ResearchRetentionDays)
+	}
+	if c.ResearchPseudonymKey != "" && len(c.ResearchPseudonymKey) < 16 {
+		return fmt.Errorf("RESEARCH_PSEUDONYM_KEY must be at least 16 characters: a short key makes the pseudonyms guessable from the e-mail addresses")
 	}
 	if s, ok := windowSeconds(c.LLMKeyBudgetWindow); !ok || s > 30*24*3600 {
 		return fmt.Errorf("LLM_KEY_BUDGET_WINDOW must be a duration like 4h or 1d of at most 30d, the pool's window (got %q)", c.LLMKeyBudgetWindow)

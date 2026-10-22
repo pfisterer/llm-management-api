@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/research"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 
 	"go.uber.org/zap"
@@ -85,6 +86,8 @@ type Service struct {
 	gapMu   sync.Mutex
 	// cleanupLast is the last pass of the image cleanup in Harbor (image_cleanup.go), for the metrics; nil = none yet.
 	cleanupLast atomic.Pointer[CleanupResult]
+	// research is the research log (research.go): told why the service ends a workspace pod and what a waiting GPU kernel was shown; nil = none.
+	research *research.Recorder
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
 	OnClassRenamed func(ctx context.Context, old, new string) error
 }
@@ -421,13 +424,15 @@ func (s *Service) StartServer(ctx context.Context, user string, o StartOptions) 
 	return srv, nil
 }
 
-// StopServer stops (and removes) one of the person's named servers.
-// EndServer stops a server but keeps it (named servers stay in the list and can be started again), e.g. when a budget is used up.
-func (s *Service) EndServer(ctx context.Context, user, name string) error {
+// EndServer stops a server but keeps it (named servers stay in the list and can be started again), e.g. when a budget is used up; reason is why, for the research log (research.EndBudget …).
+func (s *Service) EndServer(ctx context.Context, user, name, reason string) error {
+	s.research.ServerEnding(user, name, reason)
 	return s.servers.stopServer(ctx, user, name, false)
 }
 
+// StopServer stops (and removes) one of the person's named servers.
 func (s *Service) StopServer(ctx context.Context, user, name string) error {
+	s.research.ServerEnding(user, name, research.EndStoppedPortal)
 	return s.servers.stopServer(ctx, user, name, name != "")
 }
 

@@ -163,6 +163,9 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: gpu-hub-token}}
             - name: WORKSPACE_CREDENTIALS_KEY
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: workspace-credentials-key, optional: true}}
+            - name: RESEARCH_PSEUDONYM_KEY
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: research-pseudonym-key, optional: true}}
+            - {name: RESEARCH_RETENTION_DAYS, value: {{ .Values.gpu.researchRetentionDays | int64 | quote }}}
             {{- with .Values.gpu.imageMaxGB }}
             - {name: WORKSPACE_IMAGE_MAX_GB, value: {{ . | quote }}}
             {{- end }}

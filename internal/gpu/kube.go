@@ -116,19 +116,23 @@ func (k *kube) deleteJob(ctx context.Context, ns, name string) error {
 // podInfo is the part of a pod the inference listing reads.
 type podInfo struct {
 	Metadata struct {
-		Name              string            `json:"name"`
-		Labels            map[string]string `json:"labels"`
-		Annotations       map[string]string `json:"annotations"`
-		CreationTimestamp time.Time         `json:"creationTimestamp"`
-		DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
-		OwnerReferences   []struct {
+		Name                       string            `json:"name"`
+		UID                        string            `json:"uid"`
+		Labels                     map[string]string `json:"labels"`
+		Annotations                map[string]string `json:"annotations"`
+		CreationTimestamp          time.Time         `json:"creationTimestamp"`
+		DeletionTimestamp          *time.Time        `json:"deletionTimestamp"`
+		DeletionGracePeriodSeconds int64             `json:"deletionGracePeriodSeconds"`
+		OwnerReferences            []struct {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
+			UID  string `json:"uid"`
 		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Spec struct {
 		ActiveDeadlineSeconds int64             `json:"activeDeadlineSeconds"`
 		Priority              int32             `json:"priority"`
+		PriorityClassName     string            `json:"priorityClassName"`
 		NodeName              string            `json:"nodeName"`
 		NodeSelector          map[string]string `json:"nodeSelector"`
 		SchedulingGates       []struct {
@@ -145,6 +149,7 @@ type podInfo struct {
 	} `json:"spec"`
 	Status struct {
 		Phase             string     `json:"phase"`
+		Reason            string     `json:"reason"`
 		StartTime         *time.Time `json:"startTime"`
 		ContainerStatuses []struct {
 			RestartCount int `json:"restartCount"`
@@ -152,6 +157,14 @@ type podInfo struct {
 				Waiting *struct {
 					Reason string `json:"reason"`
 				} `json:"waiting"`
+				Running *struct {
+					StartedAt time.Time `json:"startedAt"`
+				} `json:"running"`
+				Terminated *struct {
+					Reason     string    `json:"reason"`
+					StartedAt  time.Time `json:"startedAt"`
+					FinishedAt time.Time `json:"finishedAt"`
+				} `json:"terminated"`
 			} `json:"state"`
 			LastState struct {
 				Terminated *struct {
@@ -162,6 +175,7 @@ type podInfo struct {
 		Conditions []struct {
 			Type               string    `json:"type"`
 			Status             string    `json:"status"`
+			Reason             string    `json:"reason"`
 			LastTransitionTime time.Time `json:"lastTransitionTime"`
 		} `json:"conditions"`
 		InitContainerStatuses []struct {
