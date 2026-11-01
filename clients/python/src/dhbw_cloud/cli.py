@@ -6,6 +6,7 @@ A job runs in the project's environment with the person's home and ~/project-sha
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 
@@ -73,7 +74,8 @@ def cmd_submit(args):
     project = args.project or os.environ.get("DHBW_PROJECT")
     if not project:
         raise Failed("Projekt fehlt: --project angeben.")
-    command = " ".join(args.command).strip()
+    # One argument is taken as the shell command it is (dhbw-cloud job submit -- 'python a.py | tee x'); several are quoted, so that they arrive as given.
+    command = (args.command[0] if len(args.command) == 1 else shlex.join(args.command)).strip()
     if bool(command) == bool(args.notebook):
         raise Failed("Entweder einen Befehl (nach --) oder --notebook angeben.")
     workdir = args.workdir if args.workdir is not None else (os.getcwd() if os.getcwd().startswith(HOME) and not args.notebook else "")
@@ -84,7 +86,7 @@ def cmd_submit(args):
     print(f"Job {d['id']} ({d['name']}) wartet auf eine GPU der Klasse {d.get('gpu_class')}, höchstens {d.get('max_hours')} h.")
     print(f"Ausgabe: ~/jobs/{d['name']}/, Status: dhbw-cloud job status {d['id']}, Protokoll: dhbw-cloud job log -f {d['id']}")
     if args.follow:
-        _follow(d["id"])
+        return _follow(d["id"])
 
 
 def cmd_list(args):
@@ -127,14 +129,13 @@ def _follow(job_id, interval=10):
         state = _check(get_gpu_job.sync_detailed(job_id, client=c)).to_dict().get("state")
         if state not in ("queued", "running"):
             print(f"== Job {STATES.get(state, state)}", file=sys.stderr)
-            return
+            return 0 if state == "succeeded" else 1
         time.sleep(interval)
 
 
 def cmd_log(args):
     if args.follow:
-        _follow(args.id)
-        return
+        return _follow(args.id)
     log = _check(get_gpu_job_log.sync_detailed(args.id, client=_config.client(), lines=args.lines)).to_dict().get("log", "")
     sys.stdout.write(log)
 
@@ -181,7 +182,7 @@ def main(argv=None):
     if getattr(args, "command", None) and args.command[:1] == ["--"]:
         args.command = args.command[1:]
     try:
-        args.func(args)
+        return args.func(args) or 0
     except (Failed, RuntimeError) as e:
         print(f"dhbw-cloud: {e}", file=sys.stderr)
         return 1

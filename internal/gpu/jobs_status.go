@@ -188,6 +188,10 @@ func (s *Service) syncJob(ctx context.Context, r *JobRecord, j k8sJob, w jobWork
 		r.Admitted = w.admittedAt()
 	}
 	if state, reason, at, ok := j.ended(); ok {
+		if r.SeenRunning == nil && j.Status.StartTime != nil && at.After(*j.Status.StartTime) {
+			// Started and ended between two syncs: it ran from the start of its attempt.
+			r.SeenRunning = j.Status.StartTime
+		}
 		countHours(r, at)
 		r.State, r.Reason, r.Ended = state, reason, &at
 		if r.Started == nil && j.Status.StartTime != nil {

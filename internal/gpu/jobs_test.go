@@ -167,6 +167,26 @@ func TestSubmitAndSyncJob(t *testing.T) {
 	}
 }
 
+// A job that starts and ends between two syncs is booked from its start to its end.
+func TestShortJobHours(t *testing.T) {
+	ctx := context.Background()
+	s, k := jobTestService(t)
+	j, err := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 1, Image: "img", Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, end := time.Now().UTC().Add(-30*time.Minute).Truncate(time.Second), time.Now().UTC().Add(-6*time.Minute).Truncate(time.Second)
+	k.objects["/apis/batch/v1/namespaces/jupyterhub/jobs/"+j.ID]["status"] = map[string]any{"startTime": start.Format(time.RFC3339),
+		"conditions": []any{map[string]any{"type": "Complete", "status": "True", "lastTransitionTime": end.Format(time.RFC3339)}}}
+	if err := s.SyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetJob(ctx, j.ID)
+	if got.State != JobSucceeded || got.GPUHours < 0.39 || got.GPUHours > 0.41 {
+		t.Errorf("short job: %+v", got)
+	}
+}
+
 func TestCancelJob(t *testing.T) {
 	ctx := context.Background()
 	s, k := jobTestService(t)
