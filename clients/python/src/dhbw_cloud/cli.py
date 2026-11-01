@@ -53,7 +53,7 @@ def _row(j):
         state += f" (Exit-Code {d['exit_code']})"
     if d.get("reason") and d.get("state") != "succeeded":
         state += f" [{d['reason']}]"
-    what = d.get("notebook") or d.get("command") or ""
+    what = " ".join((d.get("notebook") or d.get("command") or "").split())
     return f"{d.get('id', ''):13} {d.get('name', '')[:24]:24} {state:28} {d.get('gpu_hours', 0):6.2f} h  {what[:60]}"
 
 
