@@ -372,6 +372,8 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	}
 
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
+	// The models behind the aliases and the limits of every model name: for the self-service (/v1/models/aliases) and for the workspace keys (VS Code's maxInputTokens).
+	aliasView := webserver.NewModelAliases(lite, cfg.LLMBaseModels, log)
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser, keys.KeyBudget{Share: cfg.LLMKeyBudgetShare, Window: cfg.LLMKeyBudgetWindow})
 	if wsSvc != nil {
 		// The tree reads what a project used of its LLM tokens from the project's team.
@@ -402,7 +404,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		OnTreeChange: onTree,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
-		Aliases:      webserver.NewModelAliases(lite, cfg.LLMBaseModels, log),
+		Aliases:      aliasView,
 		Material:     fleet.Material{ProfileTemplate: cfg.ProfileTemplate, PackageDir: cfg.PackageDir, ReadmePath: cfg.Readme},
 		GPU:          gpuSvc,
 		Usage:        st.usage,
@@ -457,7 +459,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// JupyterHub in the GPU cluster asks here who may log in and how many GPUs they get (reached through the WireGuard link only).
 		servers = append(servers, &http.Server{Addr: cfg.GPUHubBind, Handler: webserver.GPUHubRouter(webserver.GPUHubOptions{Access: accessSvc,
 			Token: cfg.GPUHubToken, Usage: st.usage, Project: bookTo, Workspaces: wsSvc, SelfServiceURL: cfg.SelfServiceURL,
-			Keys: keySvc, Quota: quota, MasterKey: cfg.LiteLLMMasterKey, Gateway: cfg.LiteLLMGatewayURL, APIURL: cfg.APIURL, Kernels: gpuSvc, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
+			Keys: keySvc, Quota: quota, MasterKey: cfg.LiteLLMMasterKey, Gateway: cfg.LiteLLMGatewayURL, APIURL: cfg.APIURL, Limits: aliasView, Kernels: gpuSvc, Log: log}, cfg.DevMode), ReadHeaderTimeout: 10 * time.Second})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

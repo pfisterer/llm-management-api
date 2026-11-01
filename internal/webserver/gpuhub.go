@@ -37,6 +37,10 @@ type GPUHubOptions struct {
 	MasterKey string
 	Gateway   string // LiteLLM inference gateway inside the cluster, asked for the key's models
 	APIURL    string // the LLM API as people reach it, e.g. https://api.llm.services.dhbw.cloud/v1
+	// Limits gives the longest prompt and answer per model name (ModelAliases.Limits), for VS Code's maxInputTokens and the agents' configuration in the workspace. nil or unreadable = the answer carries none and the hub uses its defaults.
+	Limits interface {
+		Limits(ctx context.Context) (map[string]ModelLimit, error)
+	}
 	// GPU kernels (/gpu/kernels): the notebook servers of "CPU + GPU-Kernel" ask here for their kernel pods, with their own hub token instead of the shared one. nil = routes off.
 	Kernels *gpu.Service
 	Log     *zap.SugaredLogger
@@ -295,6 +299,20 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				o.Log.Warnw("workspace key: models not listed", "project", req.Project, "error", err)
 			}
 			resp := WorkspaceKeyResponse{Key: key, BaseURL: o.APIURL, Models: models}
+			if o.Limits != nil {
+				if all, err := o.Limits.Limits(ctx); err != nil {
+					o.Log.Warnw("workspace key: model limits not readable", "error", err)
+				} else {
+					for _, m := range models {
+						if l, ok := all[m]; ok {
+							if resp.Limits == nil {
+								resp.Limits = map[string]ModelLimit{}
+							}
+							resp.Limits[m] = l
+						}
+					}
+				}
+			}
 			if slices.Contains(models, DefaultWorkspaceModel) {
 				resp.DefaultModel = DefaultWorkspaceModel
 			}
@@ -342,7 +360,9 @@ type WorkspaceKeyResponse struct {
 	BaseURL      string   `json:"base_url,omitempty"`
 	Models       []string `json:"models,omitempty"`
 	DefaultModel string   `json:"default_model,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
+	// Limits per model of Models, where its deployments declare them; a model without one is missing.
+	Limits map[string]ModelLimit `json:"limits,omitempty"`
+	Reason string                `json:"reason,omitempty"`
 }
 
 func hubToken(c *gin.Context, token string) bool {

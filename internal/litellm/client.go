@@ -417,6 +417,9 @@ type Deployment struct {
 	} `json:"litellm_params"`
 	Info struct {
 		ID string `json:"id"`
+		// Set by the discovery job from the deployment's context; 0 = unknown. Numbers, since LiteLLM's model map may bring them as floats.
+		MaxInputTokens  float64 `json:"max_input_tokens"`
+		MaxOutputTokens float64 `json:"max_output_tokens"`
 	} `json:"model_info"`
 }
 

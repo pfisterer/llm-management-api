@@ -58,6 +58,8 @@ type Site struct {
 	Port          int            `json:"port,omitempty"`
 	APIBase       string         `json:"apiBase,omitempty"`
 	APIKey        string         `json:"apiKey"`
+	// Context is the context in tokens the machine runs its models with (a Mac: the profile's, or the inventory's override), 0 = unknown (Linux machines, the inference pool). The discovery job turns it into LiteLLM's max_input_tokens, so a long prompt goes to a machine that can take it; a backend that names its own context (vLLM's max_model_len) wins over it.
+	Context int `json:"context,omitempty"`
 }
 
 // Sites lists machines that should receive work: not blocked or pending, not switched
@@ -88,6 +90,10 @@ func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 			weight = 1
 		}
 		site := Site{Name: p.Name, Weight: weight, LiteLLMParams: params, Fleet: true}
+		// Only the Macs run with the profile's context (the fleet script sets OLLAMA_CONTEXT_LENGTH); a Linux machine sets up its inference service itself, so its context is unknown here (vLLM names its own).
+		if prof, ok := s.cfg.profileFor(p.RAMMb); ok && p.OS == "darwin" {
+			site.Context = s.cfg.assignment(prof, p.Serial, p.ModelOverride).Context
+		}
 		if p.Transport == "direct" {
 			site.Transport, site.APIBase, site.APIKey = "direct", p.APIBase, p.APIKey
 		} else {

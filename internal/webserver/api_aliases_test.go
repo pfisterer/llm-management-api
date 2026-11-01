@@ -20,8 +20,16 @@ import (
 // fakeModelList is LiteLLM's /model/info and /health as the discovery leaves them: per machine a passthrough deployment and one per alias, with ids "<site>::<public name>".
 func fakeModelList(t *testing.T, calls *atomic.Int32, healthDown *atomic.Bool) string {
 	dep := func(site, public, model, base string) map[string]any {
+		info := map[string]any{"id": site + "::" + public, "site": site}
+		// Limits as the discovery job sets them from the context: mac3 runs with 64k, the other Macs with 32k, the replicas say nothing.
+		switch site {
+		case "mac1", "mac2":
+			info["max_input_tokens"], info["max_output_tokens"] = 24576, 8192
+		case "mac3":
+			info["max_input_tokens"], info["max_output_tokens"] = 57344.0, 8192.0
+		}
 		return map[string]any{"model_name": public, "litellm_params": map[string]any{"model": "openai/" + model, "api_base": base, "api_key": "sk-***"},
-			"model_info": map[string]any{"id": site + "::" + public, "site": site}}
+			"model_info": info}
 	}
 	var data []any
 	for _, site := range []string{"mac1", "mac2", "mac3"} {
@@ -129,6 +137,18 @@ func TestModelAliases(t *testing.T) {
 		if got[alias] == nil {
 			t.Errorf("%s: models must be a list, not null", alias)
 		}
+	}
+
+	// The limit of an alias is the smallest of its deployments, so every one takes the prompt: 32k Macs in chat-default and code, nothing declared behind chat-fast. Limits names every model name, also the passthrough ones.
+	lim := map[string]ModelLimit{}
+	for _, a := range v.Aliases {
+		lim[a.Alias] = a.Limit
+	}
+	if lim["chat-default"] != (ModelLimit{24576, 8192}) || lim["code"] != (ModelLimit{24576, 8192}) || lim["chat-fast"] != (ModelLimit{}) {
+		t.Errorf("limits: %+v", lim)
+	}
+	if all, err := ma.Limits(context.Background()); err != nil || all["qwen3.6:35b-a3b-coding-nvfp4"].MaxInputTokens != 24576 || len(all) != 3 {
+		t.Errorf("all limits: %+v %v", all, err)
 	}
 
 	// Cached for a minute.

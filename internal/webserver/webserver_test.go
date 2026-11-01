@@ -456,6 +456,16 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 	if k := f.keyBy(keys.WorkspaceKey("master", "kc-sub-m", "t-ws")); k != nil {
 		t.Errorf("key drawn from another pool: %v", k)
 	}
+	// With a gateway and the limits of the model list, the answer carries the limits of the key's models (VS Code's maxInputTokens, the agents' configuration); models without one are missing.
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"code"},{"id":"agent"},{"id":"chat-fast"}]}`))
+	}))
+	defer gw.Close()
+	limits := fakeLimits{"code": {MaxInputTokens: 24576, MaxOutputTokens: 8192}, "agent": {MaxInputTokens: 57344, MaxOutputTokens: 8192}, "other": {MaxInputTokens: 1}}
+	r = GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", Keys: testKeys(srv.URL), Quota: quota, MasterKey: "master", Gateway: gw.URL, Limits: limits, Log: zap.NewNop().Sugar()}, true)
+	if code, out := post("t-1"); code != 200 || out.DefaultModel != "code" || len(out.Limits) != 2 || out.Limits["agent"].MaxInputTokens != 57344 || out.Limits["code"].MaxOutputTokens != 8192 {
+		t.Errorf("limits: %d %+v", code, out)
+	}
 	// Projects not readable is an error, not "no key": the hub removes the VS Code provider only on a 200 with a reason.
 	broken := quota
 	broken.Projects = nil
@@ -464,3 +474,8 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 		t.Errorf("projects not readable: %d %+v, want 503 without a reason", code, out)
 	}
 }
+
+// fakeLimits is a fixed limits table for the workspace key.
+type fakeLimits map[string]ModelLimit
+
+func (f fakeLimits) Limits(context.Context) (map[string]ModelLimit, error) { return f, nil }

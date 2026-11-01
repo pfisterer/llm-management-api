@@ -181,6 +181,16 @@ func TestSitesHubAndModels(t *testing.T) {
 	if names["ok"].Port != 11434 || names["ok"].WGAddress == "" || names["ok"].Weight != 3 || names["ok"].LiteLLMParams["extra_body"] == nil {
 		t.Fatalf("site shape: %+v", names["ok"])
 	}
+	// The context of the machine's profile (l: 32768) goes to the discovery job, which turns it into LiteLLM's max_input_tokens.
+	if names["ok"].Context != 32768 {
+		t.Fatalf("context: %d", names["ok"].Context)
+	}
+	// A Linux machine runs its own inference service: its context is unknown here, whatever its memory.
+	for _, s := range sites {
+		if s.Name != "ok" && s.Context != 0 {
+			t.Fatalf("linux context: %+v", s)
+		}
+	}
 	hub, _ := svc.HubPeers(ctx)
 	if n := len(hub["peers"].([]HubPeer)); n != 3 {
 		t.Fatalf("hub peers must exclude direct machines: %d", n)
@@ -194,6 +204,23 @@ func TestSitesHubAndModels(t *testing.T) {
 		if p.Serial == "SERIAL0001" && len(p.Models()) != 1 {
 			t.Fatalf("models overwritten: %v", p.Models())
 		}
+	}
+}
+
+// An override of the inventory changes the context the machine runs with, and so the one reported to the discovery job.
+func TestSiteContextOverride(t *testing.T) {
+	ctx := context.Background()
+	big := 65536
+	svc, _, _ := testService(t, func(c *Config) { c.Overrides["SERIAL0001"] = Override{Context: &big} })
+	join(t, svc, mac("SERIAL0001", key1, "xl", 49152))
+	join(t, svc, mac("SERIAL0002", key2, "small", 24000))
+	sites, _ := svc.Sites(ctx)
+	got := map[string]int{}
+	for _, s := range sites {
+		got[s.Name] = s.Context
+	}
+	if got["xl"] != 65536 || got["small"] != 16384 {
+		t.Fatalf("contexts: %v", got)
 	}
 }
 
