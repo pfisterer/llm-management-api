@@ -168,6 +168,8 @@ type JobSpec struct {
 	Command    string
 	Notebook   string
 	WorkingDir string
+	// requests and limits of the container (jobResources), set by SubmitJob.
+	requests, limits map[string]any
 }
 
 // Job is a job as people see it: its row in gpu_jobs with what Kueue says while it lives.
@@ -397,6 +399,13 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 	if sp.GPUs != 1 {
 		return Job{}, &JobRefused{"Ein Job hat genau eine GPU."}
 	}
+	// The project's volume comes from the hub at the first start of a workspace with storage; a job without it would wait for it for ever.
+	var pvc map[string]any
+	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/persistentvolumeclaims/ws-"+sp.Project, nil, &pvc); errors.Is(err, ErrNotFound) {
+		return Job{}, &JobRefused{"Das Projekt hat noch kein Speichervolume: Es entsteht beim ersten Start eines Workspaces im Projekt. Einmal einen Workspace starten, dann den Job erneut abschicken."}
+	} else if err != nil {
+		return Job{}, err
+	}
 	id := make([]byte, 5)
 	_, _ = rand.Read(id)
 	r := JobRecord{ID: "j-" + hex.EncodeToString(id), Name: sp.Name, Person: sp.Person, Project: sp.Project, GPUClass: sp.Class, GPUs: sp.GPUs, MaxHours: sp.MaxHours,
@@ -422,6 +431,7 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 			}
 		}
 	}
+	sp.requests, sp.limits = s.jobResources(ctx, sp.Class)
 	if err := s.jobs.SaveJob(ctx, r); err != nil {
 		return Job{}, err
 	}
@@ -456,9 +466,32 @@ func notebookCommand(nb, name string) string {
 	return "papermill --log-output " + shellQuote("$HOME/"+nb) + " " + shellQuote("$HOME/"+out)
 }
 
-// Resources of a job's container: like a GPU workspace's notebook, the memory guaranteed.
-var jobRequests = map[string]any{"cpu": "2", "memory": "8Gi"}
-var jobLimits = map[string]any{"cpu": "4", "memory": "8Gi"}
+// Resources of a job's container at most: cores (request, limit) and memory (request = limit, guaranteed). A class whose nodes have less per GPU gets its share (jobResources).
+const (
+	jobCPURequest = 2.0
+	jobCPULimit   = 4.0
+	jobMemGi      = 8.0
+)
+
+// jobResources are a job's container resources in its class: per GPU what the class's ready nodes have after the fleet's reserve (the class's quota, which Kueue checks), the smallest share of its nodes, capped at the maximums. Without fleet or nodes the maximums.
+func (s *Service) jobResources(ctx context.Context, class string) (requests, limits map[string]any) {
+	cpuReq, cpuLim, mem := jobCPURequest, jobCPULimit, jobMemGi
+	if s.fleet != nil {
+		if nodes, err := s.GPUNodes(ctx); err == nil {
+			for _, n := range nodes {
+				if n.Class != class || !n.Ready || n.GPUs <= 0 {
+					continue
+				}
+				cpu := max(n.CPU-s.fleetCfg.ReserveCPU, 0) / n.GPUs
+				cpuReq, cpuLim, mem = min(cpuReq, cpu), min(cpuLim, cpu), min(mem, max(n.MemGi-s.fleetCfg.ReserveMemoryGi, 0)/n.GPUs)
+			}
+		}
+	}
+	// Whole Mi and milli-cores, a little below the share so that rounding never exceeds the quota.
+	memMi := int(mem*1024) - 64
+	return map[string]any{"cpu": fmt.Sprintf("%dm", int(cpuReq*1000)), "memory": fmt.Sprintf("%dMi", memMi)},
+		map[string]any{"cpu": fmt.Sprintf("%dm", int(cpuLim*1000)), "memory": fmt.Sprintf("%dMi", memMi)}
+}
 
 // jobObject is the batch/v1 Job: suspended until Kueue admits it, no retries (an eviction is no failure; it is admitted again), the project's maximum as its deadline (which restarts after an eviction), deleted a day after its end.
 func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
@@ -485,13 +518,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 	user := HubUserSlug(r.Person)
 	labels := map[string]any{"app": jobApp, "component": "job", "dhbw.cloud/profile": "job", "dhbw.cloud/project": r.Project, labelClass: r.GPUClass,
 		jobLabelUser: hubLabel(r.Person), "dhbw.cloud/job-id": r.ID}
-	requests, limits := map[string]any{}, map[string]any{}
-	for k, v := range jobRequests {
-		requests[k] = v
-	}
-	for k, v := range jobLimits {
-		limits[k] = v
-	}
+	requests, limits := sp.requests, sp.limits
 	kernelScratchResources(sp.ScratchGB, requests, limits)
 	spec := map[string]any{
 		"restartPolicy":                "Never",
