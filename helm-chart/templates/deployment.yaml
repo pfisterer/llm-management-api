@@ -155,6 +155,7 @@ spec:
             {{- end }}
             - {name: GPU_KERNEL_QUEUE, value: {{ .Values.gpu.kernels.queue | quote }}}
             - {name: GPU_KERNEL_NO_GPU, value: {{ .Values.gpu.kernels.noGPU | quote }}}
+            - {name: GPU_JOB_INIT_IMAGE, value: {{ .Values.gpu.jobs.initImage | quote }}}
             {{- if .Values.gpu.workspaces }}
             - {name: WORKSPACES, value: {{ .Values.gpu.workspaces | toJson | quote }}}
             {{- end }}

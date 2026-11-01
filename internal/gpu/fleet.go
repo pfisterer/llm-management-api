@@ -574,7 +574,7 @@ func (s *Service) RenamePool(ctx context.Context, old, new string) error {
 	return s.removeClassQueues(ctx, gone)
 }
 
-// removeClassQueues deletes the Kueue objects of classes that no longer exist: the LocalQueues of the kernels and of the inference pool, the ClusterQueue and the flavor.
+// removeClassQueues deletes the Kueue objects of classes that no longer exist: the LocalQueues of the kernels and of the inference pool, the ClusterQueues, the class's cohort and the flavor (job queues of the class go with the next reconcile, reconcileJobQueues).
 func (s *Service) removeClassQueues(ctx context.Context, classes []string) error {
 	k, ok := s.pods.(fleetKube)
 	if !ok {
@@ -590,6 +590,8 @@ func (s *Service) removeClassQueues(ctx context.Context, classes []string) error
 			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + s.kernelNamespace() + "/localqueues/gpu-" + c,
 			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + ins + "/localqueues/inference-" + c,
 			"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-" + c,
+			"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gap-" + c,
+			"/apis/kueue.x-k8s.io/v1beta2/cohorts/class-" + c,
 			"/apis/kueue.x-k8s.io/v1beta2/resourceflavors/" + c,
 		} {
 			if err := k.do(ctx, http.MethodDelete, p, nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
@@ -704,18 +706,28 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 		}
 		quota[c.ID] = q
 	}
+	tiers := map[string]bool{}
 	for _, c := range classes {
+		if !tiers[c.Tier] {
+			tiers[c.Tier] = true
+			if err := ensureObject(ctx, k, tierCohortFor(c.Tier)); err != nil {
+				errs = append(errs, fmt.Errorf("tier %s: %w", c.Tier, err))
+			}
+		}
 		others := []flavorQuota{}
 		for _, o := range classes {
 			if o.Tier == c.Tier && o.ID != c.ID {
 				others = append(others, flavorQuota{class: o.ID})
 			}
 		}
-		for _, obj := range []map[string]any{flavorFor(c.ID, classArchs(nodes, c.ID)), clusterQueueFor(c.Tier, quota[c.ID], others), localQueueFor(ns, c.ID)} {
+		for _, obj := range []map[string]any{flavorFor(c.ID, classArchs(nodes, c.ID)), classCohortFor(c.Tier, quota[c.ID]), clusterQueueFor(c.ID, others), gapQueueFor(c.ID), localQueueFor(ns, c.ID)} {
 			if err := ensureObject(ctx, k, obj); err != nil {
 				errs = append(errs, fmt.Errorf("class %s: %w", c.ID, err))
 			}
 		}
+	}
+	if err := s.reconcileJobQueues(ctx, k, classes); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
@@ -786,25 +798,66 @@ func (q flavorQuota) entry(own bool) map[string]any {
 	}}
 }
 
-// clusterQueueFor is the queue of a class: its own flavor first, then the other classes of its tier with no quota of their own (borrowed only where their pool lends). A pool takes lent GPUs back at once (reclaimWithinCohort).
-func clusterQueueFor(tier string, own flavorQuota, others []flavorQuota) map[string]any {
-	flavors := []any{own.entry(true)}
+// Kueue's hierarchy (docs/architektur.md "Batch-Jobs", probed on staging 01.11.2026): a class's quota sits on its cohort class-<class>, a child of the cohort tier-<tier>; below it ClusterQueues without quota of their own, which all borrow from the class: gpu-<class> (workspaces, kernels), gap-<class> (gap fillers, base load) and per project with batch job-<slug>--<class>. Kueue only preempts what a queue borrowed in another queue, so with the quota on the cohort the workspaces evict gap fillers and preemptible jobs in other queues, and a project's jobs are bounded by their queue's borrowingLimit.
+
+func tierCohortFor(tier string) map[string]any {
+	return map[string]any{
+		"apiVersion": "kueue.x-k8s.io/v1beta2", "kind": "Cohort",
+		"metadata": map[string]any{"name": "tier-" + tier, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
+		"spec":     map[string]any{},
+	}
+}
+
+// classCohortFor holds a class's quota (its ready nodes); the classes of a tier lend to each other through the tier, where their pool lends (lendingLimit 0 otherwise).
+func classCohortFor(tier string, own flavorQuota) map[string]any {
+	return map[string]any{
+		"apiVersion": "kueue.x-k8s.io/v1beta2", "kind": "Cohort",
+		"metadata": map[string]any{"name": "class-" + own.class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
+		"spec": map[string]any{
+			"parentName": "tier-" + tier,
+			"resourceGroups": []any{map[string]any{
+				"coveredResources": []any{"cpu", "memory", "nvidia.com/gpu"},
+				"flavors":          []any{own.entry(true)},
+			}},
+		},
+	}
+}
+
+// clusterQueueFor is the workspaces' queue of a class: its own flavor first, then the other classes of its tier (borrowed only where their pool lends), all without quota of its own. It evicts lower priorities in the other queues of the class (gap fillers, preemptible jobs) and takes lent GPUs back at once (reclaimWithinCohort: a guaranteed job of its class, priority 0 like a workspace, stays).
+func clusterQueueFor(class string, others []flavorQuota) map[string]any {
+	flavors := []any{flavorQuota{class: class}.entry(false)}
 	for _, o := range others {
 		flavors = append(flavors, o.entry(false))
 	}
 	return map[string]any{
 		"apiVersion": "kueue.x-k8s.io/v1beta2", "kind": "ClusterQueue",
-		"metadata": map[string]any{"name": "gpu-" + own.class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
+		"metadata": map[string]any{"name": "gpu-" + class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
 		"spec": map[string]any{
 			"namespaceSelector": map[string]any{},
-			"cohortName":        "tier-" + tier,
-			// A workload with higher priority evicts lower ones in the same queue: that is what makes the inference gap fillers give the GPU back. Lent GPUs come back to their pool at once.
-			"preemption": map[string]any{"withinClusterQueue": "LowerPriority", "reclaimWithinCohort": "Any"},
+			"cohortName":        "class-" + class,
+			"preemption":        map[string]any{"withinClusterQueue": "LowerPriority", "reclaimWithinCohort": "Any", "borrowWithinCohort": map[string]any{"policy": "LowerPriority"}},
 			// The class's own GPUs first, even when that means evicting its gap filler: by default Kueue tries the next flavor before preempting, so a workspace of a class whose GPU a gap filler holds went to another pool of the tier (16.10.2026: the GB10 test server on an RTX PRO 6000). Borrowing stays for when the own GPUs are really taken.
 			"flavorFungibility": map[string]any{"whenCanPreempt": "MayStopSearch"},
 			"resourceGroups": []any{map[string]any{
 				"coveredResources": []any{"cpu", "memory", "nvidia.com/gpu"},
 				"flavors":          flavors,
+			}},
+		},
+	}
+}
+
+// gapQueueFor is the queue of a class's gap fillers and base load (LocalQueue inference-<class>): only its own flavor, without quota of its own; the base load (priority base-load) evicts gap fillers in it, everything else of the class evicts the gap fillers from outside.
+func gapQueueFor(class string) map[string]any {
+	return map[string]any{
+		"apiVersion": "kueue.x-k8s.io/v1beta2", "kind": "ClusterQueue",
+		"metadata": map[string]any{"name": "gap-" + class, "labels": map[string]any{"app.kubernetes.io/managed-by": "llm-management-api"}},
+		"spec": map[string]any{
+			"namespaceSelector": map[string]any{},
+			"cohortName":        "class-" + class,
+			"preemption":        map[string]any{"withinClusterQueue": "LowerPriority"},
+			"resourceGroups": []any{map[string]any{
+				"coveredResources": []any{"cpu", "memory", "nvidia.com/gpu"},
+				"flavors":          []any{flavorQuota{class: class}.entry(false)},
 			}},
 		},
 	}
@@ -825,6 +878,7 @@ func objectPath(obj map[string]any, name string) string {
 	api := map[string][2]string{
 		"ResourceFlavor": {"/apis/kueue.x-k8s.io/v1beta2/", "resourceflavors"},
 		"ClusterQueue":   {"/apis/kueue.x-k8s.io/v1beta2/", "clusterqueues"},
+		"Cohort":         {"/apis/kueue.x-k8s.io/v1beta2/", "cohorts"},
 		"LocalQueue":     {"/apis/kueue.x-k8s.io/v1beta2/", "localqueues"},
 		"Deployment":     {"/apis/apps/v1/", "deployments"},
 		"Service":        {"/api/v1/", "services"},
@@ -852,6 +906,13 @@ func ensureObject(ctx context.Context, k kubeDoer, want map[string]any) error {
 	}
 	if err != nil {
 		return err
+	}
+	// A LocalQueue's ClusterQueue cannot be changed: it is created anew (its admitted workloads keep running, waiting ones find it again). This is how inference-<class> moved from gpu-<class> to gap-<class>.
+	if want["kind"] == "LocalQueue" && str(obj(cur, "spec"), "clusterQueue") != str(obj(want, "spec"), "clusterQueue") {
+		if err := k.do(ctx, "DELETE", objectPath(want, name), nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		return k.do(ctx, "POST", objectPath(want, ""), want, nil)
 	}
 	wantLabels, _ := want["metadata"].(map[string]any)["labels"].(map[string]any)
 	curMeta := obj(cur, "metadata")

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// WorkspacePod is one running workspace pod (Jupyter server or GPU kernel) with what it reserves and, when metrics-server answers, what it uses.
+// WorkspacePod is one running workspace pod (Jupyter server, GPU kernel or batch job, profile "job") with what it reserves and, when metrics-server answers, what it uses.
 type WorkspacePod struct {
 	Pod      string
 	Running  bool   // false: waiting (Kueue, image pull); reserves nothing yet, but counts for the limits on concurrent use
@@ -45,7 +45,7 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 	if ns == "" {
 		ns = "jupyterhub"
 	}
-	pods, err := k.listPods(ctx, ns, "component in (singleuser-server,kernel)")
+	pods, err := k.listPods(ctx, ns, "component in (singleuser-server,kernel,job)")
 	if err != nil {
 		return nil, err
 	}

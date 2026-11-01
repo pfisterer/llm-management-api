@@ -81,12 +81,13 @@ type allStores struct {
 	models   gpu.ModelStore
 	tokens   *token.Service
 	research research.Store
+	jobs     gpu.JobStore
 }
 
 // stores opens the fleet, classification, GPU, usage and project stores on one connection.
 func stores(cfg Config) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore(), gpu.NewMemoryJobStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -147,7 +148,12 @@ func stores(cfg Config) (allStores, error) {
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs}, nil
+	// Batch jobs (gpu_jobs).
+	js, err := gpu.NewGormJobStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs, js}, nil
 }
 
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
@@ -311,6 +317,17 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		if err := wsSvc.MigrateBases(context.Background()); err != nil {
 			log.Warnw("workspace bases not migrated", "error", err)
 		}
+		// Batch jobs (docs/architektur.md "Batch-Jobs"): the rows in gpu_jobs, the projects' queues per class for the fleet, and what live jobs reserve of the GPU-hours budgets.
+		gpuSvc.SetJobStore(st.jobs)
+		gpuSvc.SetJobQueues(func(ctx context.Context) ([]gpu.JobQueue, error) {
+			qs, err := wsSvc.JobQueues(ctx)
+			out := make([]gpu.JobQueue, 0, len(qs))
+			for _, q := range qs {
+				out = append(out, gpu.JobQueue{Project: q.Project, Class: q.GPUClass, GPUs: q.GPUs, Guaranteed: q.Guaranteed})
+			}
+			return out, err
+		})
+		wsSvc.SetJobReservations(gpuSvc.JobReservations)
 		// A GPU kernel counts like a GPU server against the project's limits and budgets (docs/bauplan.md 6.2).
 		gpuSvc.SetKernelCheck(func(ctx context.Context, o *gpu.KernelOwner) error {
 			err := wsSvc.CheckStart(ctx, accessSvc.Who(ctx, o.Person).Tokens, workspace.StartRequest{Person: o.Person, Project: o.Project, Profile: gpu.SplitProfile, Kernel: true, CPU: 1, RAMGB: 2e9 / (1 << 30), GPUs: 1, GPUClass: o.GPUClass})
@@ -503,6 +520,23 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 			}()
 		}
+		// Batch jobs: every minute the rows of gpu_jobs follow the cluster (admitted, running, evicted, ended with its output).
+		if gpuSvc.JobsEnabled() {
+			go func() {
+				t := time.NewTicker(time.Minute)
+				defer t.Stop()
+				for {
+					if err := gpuSvc.SyncJobs(ctx); err != nil {
+						log.Warnw("batch jobs sync", "error", err)
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+					}
+				}
+			}()
+		}
 		// Budgets (W4): every five minutes, end the servers of people whose budget in the server's project is used up.
 		go func() {
 			t := time.NewTicker(5 * time.Minute)
@@ -672,7 +706,8 @@ func purgeStorage(ctx context.Context, gpuSvc *gpu.Service, wsSvc *workspace.Ser
 	}
 	for _, v := range orphans {
 		for _, p := range pods {
-			if p.Project == v.Project && p.Profile != "gpu-kernel" {
+			// Kernels end with their server; a batch job keeps the volume (in use) until it ends, at the latest after its maximum.
+			if p.Project == v.Project && p.Profile != "gpu-kernel" && p.Profile != workspace.JobProfile {
 				if err := gpuSvc.EndServer(ctx, p.Person, p.Server, research.EndProjectDeleted); err != nil {
 					log.Warnw("storage: ending a server of a deleted project failed", "project", v.Project, "person", p.Person, "server", p.Server, "error", err)
 				}

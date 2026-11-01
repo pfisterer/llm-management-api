@@ -1,0 +1,27 @@
+[project]
+name = "dhbw-cloud"
+version = "@VERSION@"
+description = "Client of the DHBW Cloud's AI service and the command dhbw-cloud (batch jobs on its GPUs, more to come)."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27,<1", "attrs>=23", "python-dateutil>=2.8"]
+
+[project.urls]
+Homepage = "https://dhbw.cloud"
+Source = "https://github.com/pfisterer/llm-management-api"
+
+[project.scripts]
+dhbw-cloud = "dhbw_cloud.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dhbw_cloud"]
+
+[tool.hatch.build]
+# The repository's .gitignore leaves out every file starting with "__" (__init__.py too); the package is assembled outside Git anyway.
+ignore-vcs = true
+exclude = ["__pycache__", "*.pyc"]

@@ -68,7 +68,7 @@ func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, erro
 		ns, selector string
 		kueue        bool
 	}
-	sources := []source{{s.kernelNamespace(), "component in (singleuser-server,kernel)", true}}
+	sources := []source{{s.kernelNamespace(), "component in (singleuser-server,kernel,job)", true}}
 	if s.InferenceEnabled() {
 		ns := s.cfg.InferenceNamespace
 		if ns == "" {
@@ -102,8 +102,9 @@ func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, erro
 				errs = append(errs, err)
 			}
 			for _, w := range wls.Items {
+				// A pod's own Workload, or a batch job's, which its pod shares.
 				for _, o := range w.Metadata.OwnerReferences {
-					if o.Kind == "Pod" {
+					if o.Kind == "Pod" || o.Kind == "Job" {
 						workloadOf[o.UID] = w
 					}
 				}
@@ -144,6 +145,11 @@ func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, erro
 			if wl, ok := workloadOf[p.Metadata.UID]; ok {
 				w = &wl
 			}
+			for _, o := range p.Metadata.OwnerReferences {
+				if wl, ok := workloadOf[o.UID]; ok && o.Kind == "Job" && w == nil {
+					w = &wl
+				}
+			}
 			snap.Pods = append(snap.Pods, researchPod(p, w, personOf, productOf))
 		}
 	}
@@ -170,6 +176,8 @@ func researchPod(p podInfo, w *kueueWorkload, personOf, productOf map[string]str
 				out.OwnerUID, out.Person = o.UID, personOf[o.UID]
 			}
 		}
+	case labels["component"] == "job":
+		out.Kind, out.Person, out.Profile = research.KindJob, p.Metadata.Annotations["hub.jupyter.org/username"], "job"
 	case labels["component"] == "singleuser-server":
 		out.Kind, out.Person, out.Server = research.KindCPUServer, p.Metadata.Annotations["hub.jupyter.org/username"], labels["hub.jupyter.org/servername"]
 	case labels["app"] == "vllm":

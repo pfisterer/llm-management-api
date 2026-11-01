@@ -9,3 +9,4 @@ private-*
 internal/generated_docs/
 client-npm/
 *.tgz
+!clients/python/**/__init__.py

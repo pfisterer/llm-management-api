@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,7 +19,9 @@ type UsageReader interface {
 // BudgetStatus is one budget of a project with what is used of it: by the person for a budget per person, by the whole project otherwise.
 type BudgetStatus struct {
 	Budget
-	Used      float64 `json:"used"`
+	Used float64 `json:"used"`
+	// Reserved is what running and waiting batch jobs still hold of a GPU-hours budget (their GPUs × the hours they may still run); it counts as used for Exhausted.
+	Reserved  float64 `json:"reserved"`
 	Exhausted bool    `json:"exhausted"`
 }
 
@@ -67,7 +70,7 @@ func (s *Service) SetUsage(u UsageReader) {
 		}
 		for _, b := range st {
 			if b.Exhausted {
-				return refuseStart("budget", "Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s.", p.Name, describe(b.Budget), num(b.Used))
+				return refuseStart("budget", "Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s%s.", p.Name, describe(b.Budget), num(b.Used), reservedNote(b))
 			}
 		}
 		return nil
@@ -91,6 +94,12 @@ func (s *Service) BudgetStatus(ctx context.Context, p Project, person string) ([
 	if err != nil {
 		return nil, err
 	}
+	var rs []Reservation
+	if s.reservations != nil && slices.ContainsFunc(p.Budgets, func(b Budget) bool { return b.Unit == "gpu_hours" }) {
+		if rs, err = s.reservations(ctx, p.Slug); err != nil {
+			return nil, err
+		}
+	}
 	for _, b := range p.Budgets {
 		from := windowStart(b.Window, now, p.CreatedAt)
 		st := BudgetStatus{Budget: b}
@@ -100,7 +109,8 @@ func (s *Service) BudgetStatus(ctx context.Context, p Project, person string) ([
 			}
 			st.Used += amountOf(r, b)
 		}
-		st.Exhausted = b.Amount > 0 && st.Used >= b.Amount
+		st.Reserved = reserved(rs, person, b)
+		st.Exhausted = b.Amount > 0 && st.Used+st.Reserved >= b.Amount
 		out = append(out, st)
 	}
 	return out, nil
@@ -123,8 +133,8 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 	type key struct{ project, person string }
 	decided := map[key]string{} // reason or ""
 	for _, r := range running {
-		if r.Project == "" || r.Profile == "gpu-kernel" {
-			continue // kernels end with their server
+		if r.Project == "" || r.Profile == "gpu-kernel" || r.Profile == JobProfile {
+			continue // kernels end with their server, jobs run to their end (their budget is reserved at submit)
 		}
 		k := key{r.Project, strings.ToLower(r.Person)}
 		reason, done := decided[k]
@@ -137,7 +147,7 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 				}
 				for _, b := range st {
 					if b.Exhausted {
-						reason = fmt.Sprintf("%s (genutzt %s)", describe(b.Budget), num(b.Used))
+						reason = fmt.Sprintf("%s (genutzt %s%s)", describe(b.Budget), num(b.Used), reservedNote(b))
 						break
 					}
 				}
@@ -157,6 +167,14 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 
 var unitNames = map[string]string{"server_hours": "Workspace-Stunden", "vcpu_hours": "vCPU-Stunden", "ram_gb_hours": "RAM-GB-Stunden", "gpu_hours": "GPU-Stunden"}
 var windowNames = map[string]string{"24h": "heute", "7d": "in 7 Tagen", "30d": "in 30 Tagen", "total": "insgesamt"}
+
+// reservedNote names what jobs reserve of a budget, for the reasons; empty when nothing is reserved.
+func reservedNote(b BudgetStatus) string {
+	if b.Reserved <= 0 {
+		return ""
+	}
+	return ", für Jobs vorgemerkt " + num(b.Reserved)
+}
 
 func describe(b Budget) string {
 	unit := unitNames[b.Unit]

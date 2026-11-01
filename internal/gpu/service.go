@@ -63,6 +63,11 @@ type Service struct {
 	kernelMax func(ctx context.Context, o *KernelOwner) time.Duration
 	// kernelScratch is the local storage in GB a GPU kernel of the owner's project may write outside the home (SetKernelScratch).
 	kernelScratch func(ctx context.Context, o *KernelOwner) int
+	// jobQueues are the projects' batch queues per GPU class the fleet keeps (SetJobQueues); nil = none.
+	jobQueues func(ctx context.Context) ([]JobQueue, error)
+	// jobs are the rows of gpu_jobs (SetJobStore); nil = no batch jobs. jobLogsPurged is when SyncJobs last forgot old output.
+	jobs          JobStore
+	jobLogsPurged time.Time
 	// whoami is the hub user of a token (kernels.go: the server's own token); cached in tokens.
 	whoami func(ctx context.Context, token string) (string, error)
 	tokens tokenCache

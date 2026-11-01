@@ -145,10 +145,12 @@ type Service struct {
 	running func(ctx context.Context) ([]Running, error)
 	budget  BudgetCheck
 	usage   UsageReader
-	llm     LLMUsed
-	now     func() time.Time
-	storage storageState
-	inspect ImageInspector
+	// reservations are what running and waiting batch jobs still hold of the GPU-hours budgets (SetJobReservations); nil = no jobs.
+	reservations Reservations
+	llm          LLMUsed
+	now          func() time.Time
+	storage      storageState
+	inspect      ImageInspector
 	// imageMax and imageHint are the size limit and hint of project images (SetImageLimits); 0 = the defaults.
 	imageMax, imageHint int64
 	// scans reads Harbor's vulnerability scans (SetImageScans); scanRead is when the scan of a project's image was last read (key: slug and image).
@@ -315,6 +317,12 @@ func (s *Service) validate(p *Project) error {
 	l := p.Limits
 	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || p.LLMMTokens < 0 || p.LLMRPM < 0 || p.LLMTPM < 0 {
 		return refuse("Grenzen dürfen nicht negativ sein.")
+	}
+	if err := checkJobLimits(l); err != nil {
+		return err
+	}
+	if p.BatchPriority != "" && p.BatchPriority != BatchGuaranteed {
+		return refuse("Priorität der Batch-Jobs: leer (verdrängbar) oder %q.", BatchGuaranteed)
 	}
 	for c, n := range p.GPUsByClass {
 		if n < 0 || !s.knownClass(c) {
@@ -484,7 +492,8 @@ func (s *Service) checkStart(ctx context.Context, tokens []string, r StartReques
 	var servers int
 	var cpu, ram, gpus, classGPUs float64
 	for _, x := range running {
-		if (!r.Kernel && x.Server == r.Server) || x.Project != p.Slug {
+		// Batch jobs have their own limits (CheckJob); Kueue decides between them and the workspaces.
+		if (!r.Kernel && x.Server == r.Server) || x.Project != p.Slug || x.Profile == JobProfile {
 			continue
 		}
 		if class != "" && x.GPUClass == class {

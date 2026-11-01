@@ -182,6 +182,13 @@ func (s *Server) Router() *gin.Engine {
 			g.GET("/start-options", s.getStartOptions)
 			g.POST("/servers", s.startServer)
 		}
+		if s.ws != nil && s.gpu.JobsEnabled() {
+			g.GET("/jobs", s.listJobs)
+			g.POST("/jobs", s.submitJob)
+			g.GET("/jobs/:id", s.getJob)
+			g.GET("/jobs/:id/log", s.getJobLog)
+			g.DELETE("/jobs/:id", s.cancelJob)
+		}
 	}
 	if s.gpu != nil && s.gpu.FleetEnabled() {
 		f := v1.Group("/gpu/fleet", require(access.RoleAdmin))

@@ -24,6 +24,7 @@ const (
 	KindCPUServer = "cpu-server" // workspace server without a GPU
 	KindVLLM      = "vllm"       // vLLM replica of the inference pool (gap filler or base load)
 	KindBuild     = "build"      // build of a project image
+	KindJob       = "job"        // batch job (one attempt: an evicted job's next attempt is a new pod)
 )
 
 // Why a workload ended (EndReason); EndDetail keeps the cluster's own reason where there is one.

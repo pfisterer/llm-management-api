@@ -175,9 +175,11 @@ func (s *Service) ReconcileGapFillers(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// inferenceQueueFor is the LocalQueue of a class's gap fillers and base load, onto the class's queue gap-<class>.
 func inferenceQueueFor(ns, class string) map[string]any {
 	q := localQueueFor(ns, class)
 	q["metadata"].(map[string]any)["name"] = "inference-" + class
+	q["spec"] = map[string]any{"clusterQueue": "gap-" + class}
 	return q
 }
 

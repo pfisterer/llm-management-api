@@ -39,6 +39,7 @@ type Config struct {
 	WorkspaceNamespace string // jupyterhub: where the workspace pods run whose usage is booked
 
 	Kernels KernelConfig // GPU kernel pods of "CPU + GPU-Kernel" (kernels.go)
+	Jobs    JobConfig    // batch jobs (jobs.go)
 }
 
 func (c Config) Validate() error {

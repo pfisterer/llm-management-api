@@ -52,7 +52,7 @@ RP_SWAGGER_URL    ?= https://github.com/pfisterer/role-provider-service/releases
 
 .DEFAULT_GOAL := all
 
-.PHONY: publish all image build clean doc convert client bundle npm-package npm-pack npm-publish check swag run help install-npm docker docker-login docker-build multi-arch-build dev helm-update test generate-role-provider-client print-rp-swagger-url bump version-check
+.PHONY: publish all image build clean doc convert client bundle npm-package npm-pack npm-publish py-package py-publish check swag run help install-npm docker docker-login docker-build multi-arch-build dev helm-update test generate-role-provider-client print-rp-swagger-url bump version-check
 
 all: test bundle build
 
@@ -219,6 +219,28 @@ npm-publish: npm-package
 	esac; \
 	echo "📤 Publishing $(NPM_PKG_NAME)@$$VERSION (dist-tag: $$TAG)"; \
 	cd $(CLIENT_PKG_DIR) && npm publish --tag "$$TAG"
+
+# Python package dhbw-cloud (import dhbw_cloud): the client generated from the same OpenAPI description as the npm package, as dhbw_cloud.api, and the hand-written parts in clients/python (configuration, the command dhbw-cloud). Assembled in $(PY_PKG_DIR), versioned as the service: a -test.N version becomes the PEP 440 dev release .devN, which pip installs only when asked (--pre).
+PY_PKG_DIR := ./tmp/client-python
+PY_PKG_NAME := dhbw-cloud
+PY_GEN_VERSION := 0.28.3
+
+py-package: convert-to-openapi3
+	@echo "📦 Assembling $(PY_PKG_NAME)..."
+	@rm -rf $(PY_PKG_DIR) && mkdir -p $(PY_PKG_DIR)/gen
+	@cp -R clients/python/. $(PY_PKG_DIR)/
+	@printf 'project_name_override: dhbw-cloud-api\npackage_name_override: api\n' > $(PY_PKG_DIR)/gen/config.yaml
+	@cd $(PY_PKG_DIR)/gen && uvx --quiet openapi-python-client@$(PY_GEN_VERSION) generate --path "$(abspath $(OPENAPI_YAML))" --config config.yaml --meta none >/dev/null 2>gen.log || { cat gen.log; exit 1; }
+	@mv $(PY_PKG_DIR)/gen/api $(PY_PKG_DIR)/src/dhbw_cloud/api && rm -rf $(PY_PKG_DIR)/gen
+	@V=$$(tr -d '\n' < VERSION | sed -E 's/-test\.([0-9]+)$$/.dev\1/'); sed "s/@VERSION@/$$V/" clients/python/pyproject.toml > $(PY_PKG_DIR)/pyproject.toml
+	@cd $(PY_PKG_DIR) && uv build --quiet && ls dist
+	@echo "✅ Package built in $(PY_PKG_DIR)/dist"
+
+# Publish the package to PyPI with the token in the macOS keychain (service pypi-dhbw-cloud, account __token__), never in a file. Deliberately not a CI step, like npm-publish.
+py-publish: py-package
+	@T=$$(security find-generic-password -s pypi-dhbw-cloud -a __token__ -w) || { echo "✗ no PyPI token in the keychain (security add-generic-password -s pypi-dhbw-cloud -a __token__ -w)"; exit 1; }; \
+	cd $(PY_PKG_DIR) && UV_PUBLISH_TOKEN="$$T" uv publish
+	@echo "✅ $(PY_PKG_NAME) published"
 
 # Run Go tests
 test: check-modules

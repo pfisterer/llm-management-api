@@ -24,12 +24,15 @@ type Member struct {
 	Role  string `json:"role" example:"member" enums:"reader,member,manager"`
 }
 
-// Limits on concurrent use. 0 = no limit, except GPUsPerPerson where 0 = no GPU.
+// Limits on concurrent use. 0 = no limit, except GPUsPerPerson where 0 = no GPU and JobsPerPerson where 0 = no batch jobs.
 type Limits struct {
 	ServersPerPerson int     `json:"servers_per_person" example:"2"`
 	CPUPerPerson     float64 `json:"cpu_per_person" example:"4"`     // requested cores of all running servers of a person in the project
 	RAMGBPerPerson   float64 `json:"ram_gb_per_person" example:"16"` // requested GiB
 	GPUsPerPerson    int     `json:"gpus_per_person" example:"1"`    // GPU servers and GPU kernels together
+	// JobsPerPerson is how many batch jobs a person may have running and waiting at the same time (docs/architektur.md "Batch-Jobs"); 0 = the project has no batch jobs. JobMaxHours is how long one may run at the latest (the job's activeDeadlineSeconds and what it reserves of the budget); 0 = DefaultJobMaxHours, at most MaxJobHours.
+	JobsPerPerson int     `json:"jobs_per_person" example:"2"`
+	JobMaxHours   float64 `json:"job_max_hours" example:"4"`
 }
 
 // Budget is a limit on accumulated use in a window, in one unit (W4). Amount per person when PerPerson, else for the whole project. Tree marks a budget the budget tree set: the project's share of a budget there, which only the tree changes; the others are the managers' (shares per person, shorter windows).
@@ -91,6 +94,8 @@ type Project struct {
 	LLMTPM int `json:"llm_tpm" gorm:"column:llm_tpm"`
 	// LLMModels are model groups the tree granted the project on top of the base models.
 	LLMModels []string `json:"llm_models" gorm:"column:llm_models;serializer:json"`
+	// BatchPriority is how the project's batch jobs run, from the budget tree: BatchGuaranteed (priority as a workspace, never evicted) or empty, preemptible (a workspace of the class evicts the job, which starts again from the beginning).
+	BatchPriority string `json:"batch_priority,omitempty" gorm:"column:batch_priority" enums:"guaranteed"`
 	// StorageGB is the project's workspace storage in GB, from the budget tree: one volume for the homes of its members and their shared folder (StoragePVCPrefix); 0 = no volume, servers then start with an empty home that is lost when they end.
 	StorageGB int `json:"storage_gb" gorm:"column:storage_gb"`
 	// DeleteAt is the day the budget tree deletes the project with its workspace storage (its end plus a grace period); nil = not planned.

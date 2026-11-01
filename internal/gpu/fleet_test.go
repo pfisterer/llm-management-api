@@ -63,6 +63,7 @@ func (f *fakeFleetKube) do(_ context.Context, method, path string, body, out any
 		f.objects[path] = body.(map[string]any)
 		f.writes++
 	case "DELETE":
+		path, _, _ = strings.Cut(path, "?")
 		if _, ok := f.objects[path]; !ok {
 			return ErrNotFound
 		}
@@ -118,10 +119,19 @@ func TestReconcileFleet(t *testing.T) {
 	if k.nodes[0].Metadata.Labels[labelClass] != "general-small" {
 		t.Errorf("assigned node labelled: %v", k.nodes[0].Metadata.Labels)
 	}
-	cq := k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-small"]
-	b, _ := json.Marshal(cq)
-	if !strings.Contains(string(b), `"nominalQuota":"7"`) || !strings.Contains(string(b), `"nominalQuota":"22Gi"`) || !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"1"`) {
-		t.Errorf("queue of general-small: %s", b)
+	// The class's quota sits on its cohort, below the tier's; its queues have none of their own and borrow from it.
+	b, _ := json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/cohorts/class-general-small"])
+	if !strings.Contains(string(b), `"nominalQuota":"7"`) || !strings.Contains(string(b), `"nominalQuota":"22Gi"`) || !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"1"`) || !strings.Contains(string(b), `"parentName":"tier-small"`) {
+		t.Errorf("cohort of general-small: %s", b)
+	}
+	if k.objects["/apis/kueue.x-k8s.io/v1beta2/cohorts/tier-small"] == nil {
+		t.Errorf("tier cohort missing")
+	}
+	for _, q := range []string{"gpu-general-small", "gap-general-small"} {
+		b, _ = json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/"+q])
+		if !strings.Contains(string(b), `"cohortName":"class-general-small"`) || strings.Contains(string(b), `"nominalQuota":"1"`) {
+			t.Errorf("queue %s: %s", q, b)
+		}
 	}
 	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-general-small"] == nil || k.objects["/apis/kueue.x-k8s.io/v1beta2/resourceflavors/general-small"] == nil {
 		t.Errorf("flavor and local queue: %v", k.objects)
@@ -157,9 +167,9 @@ func TestReconcileFleet(t *testing.T) {
 	if _, has := k.nodes[1].Metadata.Labels[labelClass]; has {
 		t.Errorf("unassigned node keeps its class: %v", k.nodes[1].Metadata.Labels)
 	}
-	b, _ = json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-medium"])
-	if !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"0"`) {
-		t.Errorf("empty class keeps its queue with quota 0: %s", b)
+	b, _ = json.Marshal(k.objects["/apis/kueue.x-k8s.io/v1beta2/cohorts/class-general-medium"])
+	if !strings.Contains(string(b), `"name":"nvidia.com/gpu","nominalQuota":"0"`) || k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-medium"] == nil {
+		t.Errorf("empty class keeps its queue, its cohort with quota 0: %s", b)
 	}
 }
 
@@ -215,14 +225,20 @@ func TestFleetLending(t *testing.T) {
 	}
 	wi := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-wi-medium"])
 	all := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-general-medium"])
-	for _, q := range []string{wi, all} {
-		if !strings.Contains(q, `"cohortName":"tier-medium"`) || !strings.Contains(q, `"reclaimWithinCohort":"Any"`) {
-			t.Errorf("cohort: %s", q)
+	for class, q := range map[string]string{"wi-medium": wi, "general-medium": all} {
+		if !strings.Contains(q, `"cohortName":"class-`+class+`"`) || !strings.Contains(q, `"reclaimWithinCohort":"Any"`) || !strings.Contains(q, `"borrowWithinCohort":{"policy":"LowerPriority"}`) {
+			t.Errorf("queue of %s: %s", class, q)
 		}
 	}
-	// wi lends: no lendingLimit on its own flavor; general keeps its GPUs; each lists the other with no quota of its own.
-	if strings.Contains(wi, `"lendingLimit"`) || !strings.Contains(all, `"lendingLimit":"0"`) || !strings.Contains(all, `"name":"wi-medium"`) || !strings.Contains(wi, `"name":"general-medium"`) {
-		t.Errorf("lending:\nwi  %s\nall %s", wi, all)
+	// Each queue lists the other class of its tier, without quota of its own.
+	if !strings.Contains(all, `"name":"wi-medium"`) || !strings.Contains(wi, `"name":"general-medium"`) {
+		t.Errorf("borrowing:\nwi  %s\nall %s", wi, all)
+	}
+	// wi lends: no lendingLimit on its cohort; general keeps its GPUs.
+	wic := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/cohorts/class-wi-medium"])
+	allc := dump(k.objects["/apis/kueue.x-k8s.io/v1beta2/cohorts/class-general-medium"])
+	if strings.Contains(wic, `"lendingLimit"`) || !strings.Contains(allc, `"lendingLimit":"0"`) || !strings.Contains(wic, `"parentName":"tier-medium"`) {
+		t.Errorf("lending:\nwi  %s\nall %s", wic, allc)
 	}
 }
 
@@ -291,7 +307,7 @@ func TestRenamePool(t *testing.T) {
 	if k.objects["/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-ma-arm64-large"] == nil {
 		t.Errorf("queue of the new class missing")
 	}
-	for _, p := range []string{"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/resourceflavors/maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-maarm64-large"} {
+	for _, p := range []string{"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gap-maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/cohorts/class-maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/resourceflavors/maarm64-large", "/apis/kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/gpu-maarm64-large"} {
 		if _, ok := k.objects[p]; ok {
 			t.Errorf("%s kept", p)
 		}
@@ -320,7 +336,7 @@ func TestFlavorArch(t *testing.T) {
 
 // A class's queue preempts within its own flavor (its gap filler) before it borrows another pool's GPU.
 func TestClusterQueuePrefersOwnFlavor(t *testing.T) {
-	q := clusterQueueFor("large", flavorQuota{class: "gb10", gpus: 1}, []flavorQuota{{class: "rtx"}})
+	q := clusterQueueFor("gb10", []flavorQuota{{class: "rtx"}})
 	ff, _ := q["spec"].(map[string]any)["flavorFungibility"].(map[string]any)
 	if ff["whenCanPreempt"] != "MayStopSearch" {
 		t.Fatalf("flavorFungibility %v", ff)
