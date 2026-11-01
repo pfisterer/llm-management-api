@@ -34,9 +34,6 @@ func jobTestService(t *testing.T) (*Service, *fakeFleetKube) {
 	s, k := fleetTestService()
 	s.k8s = k
 	s.cfg.Jobs.InitImage = "reg/platform/base-python:v2.7.2@sha256:abc"
-	for _, p := range []string{"t-a"} {
-		k.objects["/api/v1/namespaces/jupyterhub/persistentvolumeclaims/ws-"+p] = map[string]any{"metadata": map[string]any{"name": "ws-" + p}}
-	}
 	s.SetJobStore(NewMemoryJobStore())
 	if err := s.SeedFleet(ctx); err != nil {
 		t.Fatal(err)
@@ -93,16 +90,16 @@ func TestSubmitAndSyncJob(t *testing.T) {
 	ctx := context.Background()
 	s, k := jobTestService(t)
 	sp := JobSpec{Name: "training-1", Person: "dennis.pfisterer@dhbw.de", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 2, Image: "reg/envs/t-a:1", Archs: []string{"amd64"},
-		SharedReadOnly: true, ScratchGB: 5, Command: "python train.py", WorkingDir: "/home/jovyan/projects/kurs"}
+		SharedReadOnly: true, ScratchGB: 5, StorageGB: 10, Command: "python train.py", WorkingDir: "/home/jovyan/projects/kurs"}
 	for name, bad := range map[string]JobSpec{
-		"no command":  {GPUs: 1},
+		"no command":  {GPUs: 1, StorageGB: 1},
 		"both":        {GPUs: 1, Command: "x", Notebook: "a.ipynb"},
 		"outside":     {GPUs: 1, Command: "x", WorkingDir: "../other"},
 		"not ipynb":   {GPUs: 1, Notebook: "a.py"},
 		"bad name":    {GPUs: 1, Command: "x", Name: "Mein Job"},
 		"two gpus":    {GPUs: 2, Command: "x"},
 		"notebook up": {GPUs: 1, Notebook: "../x.ipynb"},
-		"no volume":   {GPUs: 1, Command: "x", Project: "t-ohne"},
+		"no storage":  {GPUs: 1, Command: "x", Project: "t-ohne"},
 	} {
 		var refused *JobRefused
 		if _, err := s.SubmitJob(ctx, bad); !errors.As(err, &refused) {
@@ -171,7 +168,7 @@ func TestSubmitAndSyncJob(t *testing.T) {
 func TestShortJobHours(t *testing.T) {
 	ctx := context.Background()
 	s, k := jobTestService(t)
-	j, err := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 1, Image: "img", Command: "true"})
+	j, err := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 1, Image: "img", Command: "true", StorageGB: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,10 +184,32 @@ func TestShortJobHours(t *testing.T) {
 	}
 }
 
+// A job before any workspace of its project makes the project's volume as the hub would; a smaller one is grown, never shrunk.
+func TestJobProjectVolume(t *testing.T) {
+	ctx := context.Background()
+	s, k := jobTestService(t)
+	if err := s.ensureProjectVolume(ctx, "t-neu", 7); err != nil {
+		t.Fatal(err)
+	}
+	pvc := dump(k.objects["/api/v1/namespaces/jupyterhub/persistentvolumeclaims/ws-t-neu"])
+	for _, want := range []string{`"storage":"7Gi"`, `"storageClassName":"juicefs-projects"`, `"ReadWriteMany"`, `"dhbw.cloud/project":"t-neu"`, `"dhbw.cloud/workspace-storage":"true"`} {
+		if !strings.Contains(pvc, want) {
+			t.Errorf("volume lacks %s: %s", want, pvc)
+		}
+	}
+	if err := s.ensureProjectVolume(ctx, "t-neu", 9); err != nil || k.patched["/api/v1/namespaces/jupyterhub/persistentvolumeclaims/ws-t-neu"] == nil {
+		t.Errorf("grow: %v %v", err, k.patched)
+	}
+	delete(k.patched, "/api/v1/namespaces/jupyterhub/persistentvolumeclaims/ws-t-neu")
+	if err := s.ensureProjectVolume(ctx, "t-neu", 3); err != nil || k.patched["/api/v1/namespaces/jupyterhub/persistentvolumeclaims/ws-t-neu"] != nil {
+		t.Errorf("shrunk: %v %v", err, k.patched)
+	}
+}
+
 func TestCancelJob(t *testing.T) {
 	ctx := context.Background()
 	s, k := jobTestService(t)
-	j, err := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 1, Image: "img", Notebook: "kurs/a.ipynb"})
+	j, err := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 1, Image: "img", Notebook: "kurs/a.ipynb", StorageGB: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

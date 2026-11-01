@@ -13,6 +13,7 @@ type fakeFleetKube struct {
 	nodes   []nodeInfo
 	patches map[string]map[string]any
 	objects map[string]map[string]any
+	patched map[string]any
 	writes  int
 }
 
@@ -62,6 +63,11 @@ func (f *fakeFleetKube) do(_ context.Context, method, path string, body, out any
 	case "PUT":
 		f.objects[path] = body.(map[string]any)
 		f.writes++
+	case "PATCH":
+		if f.patched == nil {
+			f.patched = map[string]any{}
+		}
+		f.patched[path] = body
 	case "DELETE":
 		path, _, _ = strings.Cut(path, "?")
 		if _, ok := f.objects[path]; !ok {

@@ -51,6 +51,9 @@ func (k *kube) do(ctx context.Context, method, path string, body, out any) error
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if method == http.MethodPatch {
+		req.Header.Set("Content-Type", "application/merge-patch+json")
+	}
 	resp, err := k.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("kubernetes %s %s: %w", method, path, err)

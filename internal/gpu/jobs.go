@@ -27,6 +27,9 @@ import (
 type JobConfig struct {
 	// InitImage creates the person's home in the project's volume before the job (the hub's init image, a base pinned by digest). Empty = no batch jobs.
 	InitImage string
+	// StorageClass and StorageAccess are how the project's volume ws-<slug> is made when a job comes before any workspace with storage, as the hub makes it (juicefs-projects and ReadWriteMany; local-path and ReadWriteOnce without JuiceFS).
+	StorageClass  string
+	StorageAccess string
 }
 
 const (
@@ -164,6 +167,7 @@ type JobSpec struct {
 	PullSecret     string
 	SharedReadOnly bool
 	ScratchGB      int
+	StorageGB      int // the project's volume ws-<slug>, made or grown to this size before the job
 	// What runs: Command in a shell, or Notebook (a path in the home) through papermill; WorkingDir is relative to the home (empty = the home, for a notebook its folder).
 	Command    string
 	Notebook   string
@@ -399,12 +403,8 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 	if sp.GPUs != 1 {
 		return Job{}, &JobRefused{"Ein Job hat genau eine GPU."}
 	}
-	// The project's volume comes from the hub at the first start of a workspace with storage; a job without it would wait for it for ever.
-	var pvc map[string]any
-	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/persistentvolumeclaims/ws-"+sp.Project, nil, &pvc); errors.Is(err, ErrNotFound) {
-		return Job{}, &JobRefused{"Das Projekt hat noch kein Speichervolume: Es entsteht beim ersten Start eines Workspaces im Projekt. Einmal einen Workspace starten, dann den Job erneut abschicken."}
-	} else if err != nil {
-		return Job{}, err
+	if err := s.ensureProjectVolume(ctx, sp.Project, sp.StorageGB); err != nil {
+		return Job{}, fmt.Errorf("project volume: %w", err)
 	}
 	id := make([]byte, 5)
 	_, _ = rand.Read(id)
@@ -443,6 +443,44 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 	}
 	s.log.Infow("batch job submitted", "job", r.ID, "person", r.Person, "project", r.Project, "class", r.GPUClass, "max_hours", r.MaxHours, "guaranteed", r.Guaranteed)
 	return r.job(), nil
+}
+
+// ensureProjectVolume makes the project's volume ws-<slug> or grows it to gb, as the hub does before a start (10-dhbw-storage): a job may come before any workspace of the project, and a volume never shrinks.
+func (s *Service) ensureProjectVolume(ctx context.Context, project string, gb int) error {
+	if gb <= 0 {
+		return &JobRefused{"Das Projekt hat keinen Workspace-Speicher; Jobs brauchen ihn für Daten und Ausgabe."}
+	}
+	path := "/api/v1/namespaces/" + s.kernelNamespace() + "/persistentvolumeclaims"
+	size := fmt.Sprintf("%dGi", gb)
+	var pvc map[string]any
+	err := s.k8s.do(ctx, http.MethodGet, path+"/ws-"+project, nil, &pvc)
+	if errors.Is(err, ErrNotFound) {
+		class, access := s.cfg.Jobs.StorageClass, s.cfg.Jobs.StorageAccess
+		if class == "" {
+			class = "juicefs-projects"
+		}
+		if access == "" {
+			access = "ReadWriteMany"
+		}
+		s.log.Infow("project volume created for a job", "project", project, "size", size)
+		err = s.k8s.do(ctx, http.MethodPost, path, map[string]any{
+			"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+			"metadata": map[string]any{"name": "ws-" + project, "labels": map[string]any{"dhbw.cloud/workspace-storage": "true", "dhbw.cloud/project": project}},
+			"spec":     map[string]any{"accessModes": []any{access}, "storageClassName": class, "resources": map[string]any{"requests": map[string]any{"storage": size}}},
+		}, nil)
+		if errors.Is(err, errAlreadyExists) {
+			return nil
+		}
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if parseGiB(str(obj(obj(obj(pvc, "spec"), "resources"), "requests"), "storage")) < float64(gb) {
+		s.log.Infow("project volume grown for a job", "project", project, "size", size)
+		return s.k8s.do(ctx, http.MethodPatch, path+"/ws-"+project, map[string]any{"spec": map[string]any{"resources": map[string]any{"requests": map[string]any{"storage": size}}}}, nil)
+	}
+	return nil
 }
 
 // jobScript runs the job's command in the working directory, its output also into ~/jobs/<name>/output-<n>.log (n = the attempt: an evicted job starts again and writes the next file), and ends with the command's exit code. bash where the image has it, else sh.
@@ -557,7 +595,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		"image":   r.Image,
 		"command": []any{"sh", "-c", jobScript},
 		"env": []any{envVar("HOME", "/home/jovyan"), envVar("DHBW_JOB_ID", r.ID), envVar("DHBW_JOB_NAME", r.Name), envVar("DHBW_JOB_DIR", "/home/jovyan/jobs/"+r.Name),
-			envVar("DHBW_JOB_WORKDIR", workdir), envVar("DHBW_JOB_COMMAND", command), envVar("PYTHONUNBUFFERED", "1")},
+			envVar("DHBW_JOB_WORKDIR", workdir), envVar("DHBW_JOB_COMMAND", command), envVar("DHBW_PROJECT", r.Project), envVar("PYTHONUNBUFFERED", "1")},
 		"workingDir":      "/home/jovyan",
 		"securityContext": sec,
 		"resources":       map[string]any{"requests": requests, "limits": limits},

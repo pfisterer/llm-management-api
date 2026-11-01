@@ -65,7 +65,7 @@ func submitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a job
 		return gpu.Job{}, &workspace.Refusal{Reason: "Kein aktives Projekt " + req.Project + " mit Workspace-Zugang."}
 	}
 	return g.SubmitJob(ctx, gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed,
-		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, SharedReadOnly: hp.SharedReadOnly, ScratchGB: hp.ScratchGB,
+		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, SharedReadOnly: hp.SharedReadOnly, ScratchGB: hp.ScratchGB, StorageGB: hp.StorageGB,
 		Command: req.Command, Notebook: req.Notebook, WorkingDir: req.WorkingDir})
 }
 

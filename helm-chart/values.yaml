@@ -108,6 +108,9 @@ gpu:
   # Batch jobs (POST /v1/gpu/jobs, docs/architektur.md "Batch-Jobs"): batch/v1 Jobs in the workspace namespace, in the project's queue job-<slug>--<class>; initImage is the image that creates the person's home in the project's volume before the job (the hub's init image, a base pinned by digest). Empty = no batch jobs. The ServiceAccount needs create/delete/list on jobs and get on pods/log there, and create/delete on Kueue cohorts.
   jobs:
     initImage: ""
+    # The project's volume ws-<slug> when a job comes before any workspace with storage, as the hub makes it; empty = juicefs-projects, ReadWriteMany. Needs create/patch on persistentvolumeclaims in the workspace namespace.
+    storageClass: ""
+    storageAccess: ""
   # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default, archs}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSets kernel-image-prepull and kernel-image-prepull-arm64 in the workspace namespace, one per architecture, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
   workspaces: {}
   # Project images (docs/todo.md image_hardening): refused when saved above imageMaxGB (compressed; admins may save larger ones), a hint from imageHintGB; empty = 15 and 5. Harbor's vulnerability scans of images in the registry are read anonymously (public projects) unless harborScanUser and secrets.harborScanToken name a robot account that may read artifacts and scans.

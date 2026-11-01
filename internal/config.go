@@ -181,7 +181,7 @@ func LoadConfig() (Config, error) {
 		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", "inference"),
 		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", "jupyterhub"),
 		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", ""), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
-		Jobs:               gpu.JobConfig{InitImage: envconf.String("GPU_JOB_INIT_IMAGE", "")},
+		Jobs:               gpu.JobConfig{InitImage: envconf.String("GPU_JOB_INIT_IMAGE", ""), StorageClass: envconf.String("GPU_JOB_STORAGE_CLASS", ""), StorageAccess: envconf.String("GPU_JOB_STORAGE_ACCESS", "")},
 	}
 	// GPU administration: {"enabled": true, "reserveCPU": 1, "reserveMemoryGi": 2, "inference": {…}}.
 	if raw := envconf.String("GPU_FLEET", ""); raw != "" {
