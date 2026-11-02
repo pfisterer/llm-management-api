@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -20,7 +21,8 @@ type k8sJob struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		Suspend *bool `json:"suspend"`
+		Suspend               *bool  `json:"suspend"`
+		ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds"`
 	} `json:"spec"`
 	Status struct {
 		Active         int        `json:"active"`
@@ -140,7 +142,7 @@ func (s *Service) liveJobs(ctx context.Context) (map[string]k8sJob, map[string]j
 	return byID, workloads, nil
 }
 
-// SyncJobs brings the live rows of gpu_jobs to what the cluster says: queued or running, admitted and started, evictions, the GPU hours while it runs, and at its end the state, reason, exit code and the end of its output. A job that is gone without an end (deleted by hand) is cancelled. Once an hour it also forgets the output of jobs that ended more than JobLogKeep ago.
+// SyncJobs brings the live rows of gpu_jobs to what the cluster says: queued or running, admitted and started, evictions, the GPU hours while it runs, and at its end the state, reason, exit code and the end of its output. A job that is gone without an end (deleted by hand) is cancelled. A job is kept within its MaxHours over all its attempts (limitJobHours). Once an hour it also forgets the output of jobs that ended more than JobLogKeep ago.
 func (s *Service) SyncJobs(ctx context.Context) error {
 	if !s.JobsEnabled() {
 		return nil
@@ -160,6 +162,11 @@ func (s *Service) SyncJobs(ctx context.Context) error {
 			before := r
 			if j, ok := jobs[r.ID]; ok {
 				s.syncJob(ctx, &r, j, workloads[r.ID], now)
+				if r.live() {
+					if err := s.limitJobHours(ctx, &r, j, now); err != nil {
+						errs = append(errs, err)
+					}
+				}
 			} else if now.Sub(r.Submitted) > time.Minute {
 				// Gone without an end we saw (deleted by hand); a job just submitted may not be listed yet.
 				countHours(&r, now)
@@ -225,6 +232,64 @@ func (s *Service) syncJob(ctx context.Context, r *JobRecord, j k8sJob, w jobWork
 	countHours(r, now)
 	r.SeenRunning = nil
 	r.State = JobQueued
+}
+
+// JobMaxHoursUsed is the reason of a job ended by the service because it ran its MaxHours over all its attempts (limitJobHours); a job that runs out of time within one attempt ends with Kubernetes' DeadlineExceeded.
+const JobMaxHoursUsed = "MaxHoursUsed"
+
+// jobOverrun is how long a running job may pass its MaxHours over all attempts before the service ends it: its own deadline (activeDeadlineSeconds, which Kubernetes may have restarted) and the grace after TERM go first, and the sync runs every minute.
+const jobOverrun = jobGraceSeconds*time.Second + 2*time.Minute
+
+// limitJobHours keeps a live job within its MaxHours over all its attempts. Kubernetes restarts a job's deadline (activeDeadlineSeconds) when Kueue admits it again after an eviction, so a job evicted late would get its whole MaxHours again, beyond what it reserved of the budget. A waiting job that already ran gets what is left as its deadline before it starts again; one with nothing left, or one that runs past its MaxHours (admitted again before a sync saw it wait), is ended with JobMaxHoursUsed.
+func (s *Service) limitJobHours(ctx context.Context, r *JobRecord, j k8sJob, now time.Time) error {
+	ran := r.ranHours(now)
+	if ran <= 0 {
+		return nil
+	}
+	left := time.Duration((r.MaxHours - ran) * float64(time.Hour))
+	if r.State == JobRunning {
+		if left > -jobOverrun {
+			return nil
+		}
+	} else if left >= time.Minute {
+		secs := int64(math.Ceil(left.Seconds()))
+		if j.Spec.ActiveDeadlineSeconds != nil && *j.Spec.ActiveDeadlineSeconds <= secs {
+			return nil
+		}
+		// Best effort: should it fail, the job is ended once it runs past its MaxHours.
+		if err := s.k8s.do(ctx, http.MethodPatch, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+r.ID, map[string]any{"spec": map[string]any{"activeDeadlineSeconds": secs}}, nil); err != nil {
+			s.log.Warnw("batch job: deadline for the rest of its hours", "job", r.ID, "seconds", secs, "error", err)
+		}
+		return nil
+	}
+	if err := s.stopJob(ctx, r, JobFailed, JobMaxHoursUsed, now); err != nil {
+		return err
+	}
+	s.log.Infow("batch job ended: its maximum run time over all attempts is used", "job", r.ID, "project", r.Project, "max_hours", r.MaxHours, "evictions", r.Evictions)
+	return nil
+}
+
+// ranHours is how long the job has run over all its attempts (its GPU hours per GPU), up to now while it runs.
+func (r JobRecord) ranHours(now time.Time) float64 {
+	h := r.GPUHours
+	if r.State == JobRunning && r.SeenRunning != nil && now.After(*r.SeenRunning) {
+		h += float64(r.GPUs) * now.Sub(*r.SeenRunning).Hours()
+	}
+	return h / float64(max(r.GPUs, 1))
+}
+
+// stopJob deletes the job with its pod (Kubernetes sends TERM and gives it jobGraceSeconds) and ends its row with state and reason; the row keeps what it used and, while the pod still answers, the end of its output.
+func (s *Service) stopJob(ctx context.Context, r *JobRecord, state, reason string, now time.Time) error {
+	if code, tail := s.jobOutcome(ctx, r.ID); tail != "" {
+		r.ExitCode, r.LogTail = code, tail
+	}
+	err := s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	countHours(r, now)
+	r.State, r.Reason, r.Ended = state, reason, &now
+	return nil
 }
 
 // countHours adds the GPU hours since the sync last saw the job running, up to until.
@@ -407,16 +472,9 @@ func (s *Service) CancelJob(ctx context.Context, id, by string) (Job, error) {
 	if !r.live() {
 		return r.job(), nil
 	}
-	now := time.Now().UTC()
-	if code, tail := s.jobOutcome(ctx, id); tail != "" {
-		r.ExitCode, r.LogTail = code, tail
-	}
-	err = s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+id+"?propagationPolicy=Background", nil, nil)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	if err := s.stopJob(ctx, &r, JobCancelled, "Cancelled", time.Now().UTC()); err != nil {
 		return Job{}, err
 	}
-	countHours(&r, now)
-	r.State, r.Reason, r.Ended = JobCancelled, "Cancelled", &now
 	if err := s.jobs.SaveJob(ctx, r); err != nil {
 		return Job{}, err
 	}
@@ -424,7 +482,7 @@ func (s *Service) CancelJob(ctx context.Context, id, by string) (Job, error) {
 	return r.job(), nil
 }
 
-// JobReservations is what a project's live jobs still hold of its GPU-hours budgets (workspace.SetJobReservations): a waiting job its GPUs × its maximum, a running one × what is left of it (its deadline restarts after an eviction, so a job evicted later reserves its maximum again).
+// JobReservations is what a project's live jobs still hold of its GPU-hours budgets (workspace.SetJobReservations): its GPUs × what is left of its MaxHours over all its attempts, waiting or running (limitJobHours keeps a job evicted and admitted again within it).
 func (s *Service) JobReservations(ctx context.Context, project string) ([]workspace.Reservation, error) {
 	if s.jobs == nil {
 		return nil, nil
@@ -436,10 +494,7 @@ func (s *Service) JobReservations(ctx context.Context, project string) ([]worksp
 	now := time.Now()
 	out := make([]workspace.Reservation, 0, len(live))
 	for _, r := range live {
-		left := r.MaxHours
-		if r.State == JobRunning && r.AttemptStarted != nil {
-			left = max(0, r.MaxHours-now.Sub(*r.AttemptStarted).Hours())
-		}
+		left := max(0, r.MaxHours-r.ranHours(now))
 		out = append(out, workspace.Reservation{Person: r.Person, GPUClass: r.GPUClass, GPUHours: float64(r.GPUs) * left})
 	}
 	return out, nil

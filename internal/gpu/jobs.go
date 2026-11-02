@@ -566,7 +566,7 @@ func (s *Service) jobResources(ctx context.Context, class string) (requests, lim
 		map[string]any{"cpu": fmt.Sprintf("%dm", int(cpuLim*1000)), "memory": fmt.Sprintf("%dMi", memMi)}
 }
 
-// jobObject is the batch/v1 Job: suspended until Kueue admits it, no retries (an eviction is no failure; it is admitted again), the project's maximum as its deadline (which restarts after an eviction), deleted a day after its end.
+// jobObject is the batch/v1 Job: suspended until Kueue admits it, no retries (an eviction is no failure; it is admitted again), the project's maximum as its deadline (which Kubernetes restarts after an eviction; limitJobHours cuts it to what is left over all attempts), deleted a day after its end.
 func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 	queue, priority := JobQueueName(r.Project, r.GPUClass), JobPriority
 	if r.Guaranteed {

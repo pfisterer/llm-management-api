@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -271,5 +272,69 @@ func TestQueuePositions(t *testing.T) {
 	got := s.queuePositions(context.Background(), "q")
 	if len(got) != 2 || got["j-0123456789"] != 1 || got["j-abcdefabcd"] != 2 {
 		t.Errorf("positions %v", got)
+	}
+}
+
+// A job evicted and admitted again keeps to its MaxHours over all attempts: it reserves only what is left, waits with the rest as its deadline, and is ended once nothing is left or it runs past it.
+func TestJobHoursOverAttempts(t *testing.T) {
+	ctx := context.Background()
+	s, k := jobTestService(t)
+	j, err := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 2, Image: "img", Command: "train", StorageGB: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobPath := "/apis/batch/v1/namespaces/jupyterhub/jobs/" + j.ID
+	// Ran 90 minutes, then Kueue evicted it: suspended, waiting again.
+	started := time.Now().UTC().Add(-90 * time.Minute)
+	k.objects[jobPath]["spec"].(map[string]any)["suspend"] = false
+	k.objects[jobPath]["status"] = map[string]any{"active": 1, "ready": 1, "startTime": started.Format(time.RFC3339)}
+	if err := s.SyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	k.objects[jobPath]["spec"].(map[string]any)["suspend"] = true
+	k.objects[jobPath]["status"] = map[string]any{}
+	if err := s.SyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetJob(ctx, j.ID); got.State != JobQueued {
+		t.Fatalf("evicted: %+v", got)
+	}
+	if rs, _ := s.JobReservations(ctx, "t-a"); len(rs) != 1 || rs[0].GPUHours < 0.49 || rs[0].GPUHours > 0.51 {
+		t.Errorf("an evicted job reserves only what is left: %+v", rs)
+	}
+	patch := dump(k.patched[jobPath])
+	if !regexp.MustCompile(`"activeDeadlineSeconds":(179\d|180\d)\b`).MatchString(patch) {
+		t.Errorf("deadline for the rest (about 1800 s): %s", patch)
+	}
+
+	// Admitted again before the patch took: it runs past its 2 hours over both attempts and is ended.
+	again := time.Now().UTC().Add(-40 * time.Minute)
+	k.objects[jobPath]["spec"].(map[string]any)["suspend"] = false
+	k.objects[jobPath]["status"] = map[string]any{"active": 1, "ready": 1, "startTime": again.Format(time.RFC3339)}
+	if err := s.SyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetJob(ctx, j.ID)
+	if got.State != JobFailed || got.Reason != JobMaxHoursUsed || k.objects[jobPath] != nil {
+		t.Fatalf("past its hours: %+v", got)
+	}
+	if rs, _ := s.JobReservations(ctx, "t-a"); len(rs) != 0 {
+		t.Errorf("an ended job reserves: %+v", rs)
+	}
+
+	// Waiting with nothing left: ended without starting again.
+	j2, _ := s.SubmitJob(ctx, JobSpec{Person: "alice", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 1, Image: "img", Command: "train", StorageGB: 5})
+	p2 := "/apis/batch/v1/namespaces/jupyterhub/jobs/" + j2.ID
+	k.objects[p2]["spec"].(map[string]any)["suspend"] = false
+	k.objects[p2]["status"] = map[string]any{"active": 1, "ready": 1, "startTime": time.Now().UTC().Add(-61 * time.Minute).Format(time.RFC3339)}
+	_ = s.SyncJobs(ctx)
+	if got, _ := s.GetJob(ctx, j2.ID); got.State != JobRunning {
+		t.Fatalf("first attempt still within its deadline and the overrun: %+v", got)
+	}
+	k.objects[p2]["spec"].(map[string]any)["suspend"] = true
+	k.objects[p2]["status"] = map[string]any{}
+	_ = s.SyncJobs(ctx)
+	if got, _ := s.GetJob(ctx, j2.ID); got.State != JobFailed || got.Reason != JobMaxHoursUsed {
+		t.Errorf("waiting with nothing left: %+v", got)
 	}
 }
