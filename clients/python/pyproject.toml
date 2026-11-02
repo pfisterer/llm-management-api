@@ -9,7 +9,8 @@ dependencies = ["httpx>=0.27,<1", "attrs>=23", "python-dateutil>=2.8"]
 
 [project.urls]
 Homepage = "https://dhbw.cloud"
-Source = "https://github.com/pfisterer/llm-management-api"
+Source = "https://github.com/pfisterer/llm-management-api/tree/main/clients/python"
+Documentation = "https://github.com/pfisterer/llm-management-api/blob/main/clients/python/README.md"
 
 [project.scripts]
 dhbw-cloud = "dhbw_cloud.cli:main"
