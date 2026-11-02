@@ -242,20 +242,20 @@ func TestHomeRel(t *testing.T) {
 	}
 }
 
-// A job gets what a GPU of its class has after the reserve, at most 2/4 cores and 8 GiB: gpu-1 (general-small) has 8 cores and 24 GiB for one GPU, minus 1 core and 2 GiB.
+// A job gets what a GPU of its class has after the reserve, all of it: gpu-1 (general-small) has 8 cores and 24 GiB for one GPU, minus 1 core and 2 GiB.
 func TestJobResources(t *testing.T) {
 	ctx := context.Background()
 	s, _ := jobTestService(t)
 	req, lim := s.jobResources(ctx, "general-small")
-	if req["cpu"] != "2000m" || lim["cpu"] != "4000m" || req["memory"] != "8128Mi" || lim["memory"] != "8128Mi" {
-		t.Errorf("large share: %v %v", req, lim)
+	if req["cpu"] != "7000m" || lim["cpu"] != "7000m" || req["memory"] != "22464Mi" || lim["memory"] != "22464Mi" {
+		t.Errorf("whole share: %v %v", req, lim)
 	}
 	s.fleetCfg.ReserveMemoryGi, s.fleetCfg.ReserveCPU = 20, 6.5
 	req, lim = s.jobResources(ctx, "general-small")
 	if req["cpu"] != "1500m" || lim["cpu"] != "1500m" || req["memory"] != "4032Mi" {
 		t.Errorf("small share: %v %v", req, lim)
 	}
-	if req, _ := s.jobResources(ctx, "unknown"); req["memory"] != "8128Mi" {
+	if req, lim := s.jobResources(ctx, "unknown"); req["memory"] != "8128Mi" || lim["cpu"] != "4000m" {
 		t.Errorf("class without nodes: %v", req)
 	}
 }

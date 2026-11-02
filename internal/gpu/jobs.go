@@ -504,24 +504,32 @@ func notebookCommand(nb, name string) string {
 	return "papermill --log-output " + shellQuote("$HOME/"+nb) + " " + shellQuote("$HOME/"+out)
 }
 
-// Resources of a job's container at most: cores (request, limit) and memory (request = limit, guaranteed). A class whose nodes have less per GPU gets its share (jobResources).
+// Resources of a job's container when its class has no ready nodes to measure (jobResources): cores (request, limit) and memory (request = limit, guaranteed).
 const (
 	jobCPURequest = 2.0
 	jobCPULimit   = 4.0
 	jobMemGi      = 8.0
 )
 
-// jobResources are a job's container resources in its class: per GPU what the class's ready nodes have after the fleet's reserve (the class's quota, which Kueue checks), the smallest share of its nodes, capped at the maximums. Without fleet or nodes the maximums.
+// jobResources are a job's container resources in its class: its whole share per GPU, what the class's ready nodes have after the fleet's reserve divided by their GPUs (the class's quota, which Kueue checks), the smallest share of its nodes. The share leaves every other GPU of a node its own, so no cap is needed on top. Without fleet or nodes the fallbacks above.
 func (s *Service) jobResources(ctx context.Context, class string) (requests, limits map[string]any) {
 	cpuReq, cpuLim, mem := jobCPURequest, jobCPULimit, jobMemGi
 	if s.fleet != nil {
 		if nodes, err := s.GPUNodes(ctx); err == nil {
+			found := false
 			for _, n := range nodes {
 				if n.Class != class || !n.Ready || n.GPUs <= 0 {
 					continue
 				}
 				cpu := max(n.CPU-s.fleetCfg.ReserveCPU, 0) / n.GPUs
-				cpuReq, cpuLim, mem = min(cpuReq, cpu), min(cpuLim, cpu), min(mem, max(n.MemGi-s.fleetCfg.ReserveMemoryGi, 0)/n.GPUs)
+				m := max(n.MemGi-s.fleetCfg.ReserveMemoryGi, 0) / n.GPUs
+				if !found {
+					cpuReq, mem, found = cpu, m, true
+				}
+				cpuReq, mem = min(cpuReq, cpu), min(mem, m)
+			}
+			if found {
+				cpuLim = cpuReq
 			}
 		}
 	}
