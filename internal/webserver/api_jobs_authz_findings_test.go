@@ -24,7 +24,6 @@ func befund(t *testing.T, what string) {
 
 // Befund 1: check and submit are not atomic. Requests of the same person that arrive together all pass CheckJob (jobs_per_person, budget with reservations) before any of them is saved, so a script with parallel requests gets more jobs than jobs_per_person and more GPU hours than the budget. Here three at once into a project with one job per person: all three are created.
 func TestBefundJobSubmitRace(t *testing.T) {
-	befund(t, "parallele Abschicke umgehen jobs_per_person und die Budget-Vormerkung (submitJob prüft und speichert nicht atomar)")
 	ctx := context.Background()
 	e := newJobEnv(t)
 	p := jobProject("t-eins", "Ein Job", workspace.Member{Token: "user:" + jzMember})

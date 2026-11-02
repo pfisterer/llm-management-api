@@ -68,6 +68,8 @@ type Service struct {
 	// jobs are the rows of gpu_jobs (SetJobStore); nil = no batch jobs. jobLogsPurged is when SyncJobs last forgot old output.
 	jobs          JobStore
 	jobLogsPurged time.Time
+	// jobLocks serialise check and submit of a project's jobs within this process (LockProjectJobs), by slug: a chan with room for one.
+	jobLocks sync.Map
 	// whoami is the hub user of a token (kernels.go: the server's own token); cached in tokens.
 	whoami func(ctx context.Context, token string) (string, error)
 	tokens tokenCache

@@ -336,6 +336,40 @@ func (g *GormJobStore) SaveJob(ctx context.Context, r JobRecord) error {
 	return g.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&r).Error
 }
 
+// jobProjectLocker is a JobStore that serialises check and submit of a project's jobs across the replicas of the service (GormJobStore: a Postgres advisory lock).
+type jobProjectLocker interface {
+	lockProject(ctx context.Context, project string, fn func(context.Context) error) error
+}
+
+// jobLockClass is the first key of the advisory locks of jobs ("jobs"), the second the hash of the project's slug.
+const jobLockClass = 0x6a6f6273
+
+// lockProject runs fn in a transaction that holds the project's advisory lock until it ends, after what fn saved through the store (on other connections) is committed: the next one sees it.
+func (g *GormJobStore) lockProject(ctx context.Context, project string, fn func(context.Context) error) error {
+	return g.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?::integer, hashtext(?::text))", jobLockClass, project).Error; err != nil {
+			return fmt.Errorf("job lock: %w", err)
+		}
+		return fn(ctx)
+	})
+}
+
+// LockProjectJobs runs fn alone among the submits to the project: what fn counts (the person's live jobs, the budget with the reservations of live jobs) holds until the job it submits is saved. In the process a lock per project, across replicas (a rolling update runs two) the store's advisory lock; the process lock first, so a burst of requests waits in memory and holds no database connection.
+func (s *Service) LockProjectJobs(ctx context.Context, project string, fn func(context.Context) error) error {
+	l, _ := s.jobLocks.LoadOrStore(project, make(chan struct{}, 1))
+	lock := l.(chan struct{})
+	select {
+	case lock <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-lock }()
+	if pl, ok := s.jobs.(jobProjectLocker); ok {
+		return pl.lockProject(ctx, project, fn)
+	}
+	return fn(ctx)
+}
+
 // SetJobStore turns batch jobs on (with JobConfig.InitImage).
 func (s *Service) SetJobStore(st JobStore) { s.jobs = st }
 

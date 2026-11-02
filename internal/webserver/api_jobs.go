@@ -41,8 +41,18 @@ type jobActor struct {
 	admin  bool
 }
 
-// submitJob checks the job against the project (membership, batch jobs, class, limits, budget with reservations) and submits it with the project's environment as a start sees it.
+// submitJob checks the job against the project (membership, batch jobs, class, limits, budget with reservations) and submits it with the project's environment as a start sees it. Check and submit hold the project's job lock: requests sent together cannot all pass the check before any of them is saved.
 func submitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jobActor, req SubmitJobRequest) (gpu.Job, error) {
+	var job gpu.Job
+	err := g.LockProjectJobs(ctx, req.Project, func(ctx context.Context) error {
+		var err error
+		job, err = checkAndSubmitJob(ctx, ws, g, a, req)
+		return err
+	})
+	return job, err
+}
+
+func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jobActor, req SubmitJobRequest) (gpu.Job, error) {
 	live, err := g.Jobs(ctx, gpu.JobFilter{Project: req.Project, Person: a.person, Live: true})
 	if err != nil {
 		return gpu.Job{}, err
