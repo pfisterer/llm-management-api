@@ -260,6 +260,33 @@ func (c *Client) DeleteKeys(ctx context.Context, tokens ...string) error {
 	return c.do(ctx, http.MethodPost, "/key/delete", map[string]any{"keys": tokens}, nil)
 }
 
+// TeamKeys returns the tokens (hashes) of a team's keys. /key/list answers only the tokens without return_full_object, at most 100 per page.
+func (c *Client) TeamKeys(ctx context.Context, teamID string) ([]string, error) {
+	var out []string
+	for page := 1; ; page++ {
+		var r struct {
+			Keys       []string `json:"keys"`
+			TotalPages int      `json:"total_pages"`
+		}
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/key/list?team_id=%s&page=%d&size=100", url.QueryEscape(teamID), page), nil, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r.Keys...)
+		if page >= r.TotalPages || len(r.Keys) == 0 {
+			return out, nil
+		}
+	}
+}
+
+// DeleteTeam deletes a team; a team LiteLLM does not know (404) is no error. LiteLLM 1.94 deletes the team's keys along with it, but only in its database: the key cache keeps them until it expires, so the keys are deleted first with DeleteKeys, which also clears the cache. Both are kept in LiteLLM's tables of deleted teams and keys; the spend logs stay.
+func (c *Client) DeleteTeam(ctx context.Context, teamID string) error {
+	err := c.do(ctx, http.MethodPost, "/team/delete", map[string]any{"team_ids": []string{teamID}}, nil)
+	if IsStatus(err, http.StatusNotFound) {
+		return nil
+	}
+	return err
+}
+
 // Team is the part of a LiteLLM team this service reads.
 type Team struct {
 	TeamID         string         `json:"team_id"`

@@ -140,6 +140,31 @@ func (f *fakeLiteLLM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			f.writes = append(f.writes, "key/delete:"+t.(string))
 		}
+	case "/key/list":
+		toks := []string{}
+		for tok, k := range f.keys {
+			if k["team_id"] == r.URL.Query().Get("team_id") {
+				toks = append(toks, tok)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": toks, "total_pages": 1})
+	case "/team/delete":
+		// Like LiteLLM 1.94: 404 for a team it does not know; the team's keys go with it.
+		for _, id := range body["team_ids"].([]any) {
+			if _, ok := f.teams[id.(string)]; !ok {
+				w.WriteHeader(404)
+				return
+			}
+		}
+		for _, id := range body["team_ids"].([]any) {
+			delete(f.teams, id.(string))
+			for tok, k := range f.keys {
+				if k["team_id"] == id {
+					delete(f.keys, tok)
+				}
+			}
+			f.writes = append(f.writes, "team/delete:"+id.(string))
+		}
 	case "/team/info":
 		t, ok := f.teams[r.URL.Query().Get("team_id")]
 		if !ok {
@@ -198,6 +223,11 @@ var poolA = Pool{Slug: "t-a", Name: "Kurs A", MTokens: 100, RPM: 60, TPM: 200000
 var poolB = Pool{Slug: "t-b", Name: "Kurs B", MTokens: 20, RPM: 120, TPM: 400000, Models: []string{"chat-default", "chat-fast", "code", "embedding"}}
 
 func grant(pools ...Pool) Grant { return Grant{Pools: pools} }
+
+// pools loads the given pools for SyncTeams.
+func pools(ps []Pool) func(context.Context) ([]Pool, error) {
+	return func(context.Context) ([]Pool, error) { return ps, nil }
+}
 
 func setup(t *testing.T) (*Service, *fakeLiteLLM) {
 	t.Helper()
@@ -395,12 +425,10 @@ func TestSyncQuota(t *testing.T) {
 	}
 }
 
-// Every pool has a team with the project's budget, rate limits and models; an ended project and a team whose project is gone keep their team with a budget of 0 (the gone one keeps its limits); teams of others are left alone; the window is sent only when it differs.
+// Every pool has a team with the project's budget, rate limits and models; an ended project keeps its team with a budget of 0; teams of others are left alone; the window is sent only when it differs.
 func TestSyncTeams(t *testing.T) {
 	ctx := context.Background()
 	svc, f := setup(t)
-	f.teams["t-gone"] = map[string]any{"team_id": "t-gone", "team_alias": "Alt", "max_budget": 5.0, "budget_duration": "30d", "spend": 3.0, "rpm_limit": 30.0, "models": []any{"chat-default"},
-		"metadata": map[string]any{"source": "llm-management-api", "project": "t-gone"}}
 	f.teams["foreign"] = map[string]any{"team_id": "foreign", "max_budget": 7.0, "metadata": map[string]any{}}
 	f.teams["t-b"] = map[string]any{"team_id": "t-b", "team_alias": "Kurs B", "max_budget": 2.0, "budget_duration": "30d", "spend": 1.0, "rpm_limit": 120.0, "tpm_limit": 400000.0,
 		"models": []any{"embedding", "code", "chat-fast", "chat-default"}, "metadata": map[string]any{"source": "llm-management-api", "project": "t-b"}}
@@ -408,44 +436,86 @@ func TestSyncTeams(t *testing.T) {
 	ended.MTokens = 0
 	never := Pool{Slug: "t-never", Name: "Ohne Tokens", RPM: 60, TPM: 200000, Models: poolA.Models}
 
-	n, err := svc.SyncTeams(ctx, []Pool{poolA, ended, never})
-	if err != nil || n != 3 {
+	n, err := svc.SyncTeams(ctx, pools([]Pool{poolA, ended, never}))
+	if err != nil || n != 2 {
 		t.Fatalf("sync: %d %v %v", n, err, f.writes)
 	}
-	if f.teams["t-a"]["max_budget"] != 10.0 || f.teams["t-b"]["max_budget"] != 0.0 || f.teams["t-gone"]["max_budget"] != 0.0 || f.teams["foreign"]["max_budget"] != 7.0 {
-		t.Fatalf("budgets: a=%v b=%v gone=%v foreign=%v", f.teams["t-a"]["max_budget"], f.teams["t-b"]["max_budget"], f.teams["t-gone"]["max_budget"], f.teams["foreign"]["max_budget"])
-	}
-	if f.teams["t-gone"]["rpm_limit"] != 30.0 || fmt.Sprint(f.teams["t-gone"]["models"]) != "[chat-default]" {
-		t.Fatalf("gone team's limits changed: %v", f.teams["t-gone"])
+	if f.teams["t-a"]["max_budget"] != 10.0 || f.teams["t-b"]["max_budget"] != 0.0 || f.teams["foreign"]["max_budget"] != 7.0 {
+		t.Fatalf("budgets: a=%v b=%v foreign=%v", f.teams["t-a"]["max_budget"], f.teams["t-b"]["max_budget"], f.teams["foreign"]["max_budget"])
 	}
 	if _, ok := f.teams["t-never"]; ok {
 		t.Fatal("team made for a project without tokens")
-	}
-	if f.teams["t-gone"]["spend"] != 3.0 || f.teams["t-gone"]["team_alias"] != "Alt" {
-		t.Fatalf("gone team: %v", f.teams["t-gone"])
 	}
 	for _, w := range f.writes {
 		if strings.HasSuffix(w, ":duration") {
 			t.Fatalf("window restarted although it was the same: %v", f.writes)
 		}
 	}
-	if n, err := svc.SyncTeams(ctx, []Pool{poolA, ended, never}); err != nil || n != 0 {
+	if n, err := svc.SyncTeams(ctx, pools([]Pool{poolA, ended, never})); err != nil || n != 0 {
 		t.Fatalf("second sync: %d %v", n, err)
 	}
 	// More tokens, a higher rate limit, one more model: the team follows.
 	more := poolA
 	more.MTokens, more.RPM, more.Models = 300, 90, []string{"chat-default", "chat-fast", "code", "embedding"}
-	if n, _ := svc.SyncTeams(ctx, []Pool{more}); n != 1 || f.teams["t-a"]["max_budget"] != 30.0 || f.teams["t-a"]["rpm_limit"] != 90.0 || fmt.Sprint(f.teams["t-a"]["models"]) != "[chat-default chat-fast code embedding]" {
+	if n, _ := svc.SyncTeams(ctx, pools([]Pool{more, ended, never})); n != 1 || f.teams["t-a"]["max_budget"] != 30.0 || f.teams["t-a"]["rpm_limit"] != 90.0 || fmt.Sprint(f.teams["t-a"]["models"]) != "[chat-default chat-fast code embedding]" {
 		t.Fatalf("raised: %d %v", n, f.teams["t-a"])
 	}
 	// No rate limit at all: sent as null.
 	more.TPM = 0
-	if n, _ := svc.SyncTeams(ctx, []Pool{more}); n != 1 || f.teams["t-a"]["tpm_limit"] != nil {
+	if n, _ := svc.SyncTeams(ctx, pools([]Pool{more, ended, never})); n != 1 || f.teams["t-a"]["tpm_limit"] != nil {
 		t.Fatalf("no tpm: %d %v", n, f.teams["t-a"])
 	}
-	used, err := svc.UsedMTokens(ctx, []string{"t-b", "t-gone", "t-never"})
-	if err != nil || used["t-b"] != 10 || used["t-gone"] != 30 || len(used) != 2 {
+	used, err := svc.UsedMTokens(ctx, []string{"t-b", "t-never"})
+	if err != nil || used["t-b"] != 10 || len(used) != 1 {
 		t.Fatalf("used: %v %v", used, err)
+	}
+}
+
+// A team of this service whose project is gone is deleted with all its keys, the keys first; keys in other teams, teams of others and teams of projects that are there stay. Without any project nothing is deleted, the team only gets a budget of 0 and keeps its limits. A team that is gone already is no error.
+func TestSyncTeamsDeletesGoneProjects(t *testing.T) {
+	ctx := context.Background()
+	svc, f := setup(t)
+	ours := func(id string) map[string]any {
+		return map[string]any{"team_id": id, "team_alias": "Alt", "max_budget": 5.0, "budget_duration": "30d", "spend": 3.0, "rpm_limit": 30.0, "models": []any{"chat-default"}, "metadata": map[string]any{"source": "llm-management-api", "project": id}}
+	}
+	f.teams["t-gone"] = ours("t-gone")
+	f.teams["t-a"] = ours("t-a")
+	f.teams["foreign"] = map[string]any{"team_id": "foreign", "max_budget": 7.0, "metadata": map[string]any{"project": "foreign"}}
+	f.keys["k1"] = map[string]any{"token": "k1", "user_id": "kc-a", "team_id": "t-gone"}
+	f.keys["k2"] = map[string]any{"token": "k2", "user_id": "kc-b", "team_id": "t-gone"}
+	f.keys["k3"] = map[string]any{"token": "k3", "user_id": "kc-a", "team_id": "t-a"}
+	f.keys["k4"] = map[string]any{"token": "k4", "user_id": "kc-c", "team_id": "foreign"}
+
+	// No project at all: rather a fault than the truth, so the team only gets a budget of 0.
+	if _, err := svc.SyncTeams(ctx, pools(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if g := f.teams["t-gone"]; g == nil || g["max_budget"] != 0.0 || g["rpm_limit"] != 30.0 || fmt.Sprint(g["models"]) != "[chat-default]" || g["spend"] != 3.0 || f.keys["k1"] == nil {
+		t.Fatalf("deleted without any project: %v %v", f.teams["t-gone"], f.writes)
+	}
+
+	f.writes = nil
+	n, err := svc.SyncTeams(ctx, pools([]Pool{poolA}))
+	if err != nil || n != 2 {
+		t.Fatalf("sync: %d %v %v", n, err, f.writes)
+	}
+	if _, ok := f.teams["t-gone"]; ok {
+		t.Fatalf("team of a gone project kept: %v", f.writes)
+	}
+	if f.keys["k1"] != nil || f.keys["k2"] != nil || f.keys["k3"] == nil || f.keys["k4"] == nil || f.teams["t-a"] == nil || f.teams["foreign"] == nil {
+		t.Fatalf("keys %v teams %v", f.keys, f.teams)
+	}
+	// The keys are deleted by themselves before the team (LiteLLM's team delete would not clear its key cache).
+	del := slices.Index(f.writes, "team/delete:t-gone")
+	if del < 0 || !slices.Contains(f.writes[:del], "key/delete:k1") || !slices.Contains(f.writes[:del], "key/delete:k2") {
+		t.Fatalf("writes: %v", f.writes)
+	}
+	// Nothing left: the next pass writes nothing, and a team deleted already is no error.
+	if n, err := svc.SyncTeams(ctx, pools([]Pool{poolA})); err != nil || n != 0 {
+		t.Fatalf("second sync: %d %v", n, err)
+	}
+	if err := svc.deleteTeam(ctx, "t-gone"); err != nil {
+		t.Fatalf("deleted twice: %v", err)
 	}
 }
 

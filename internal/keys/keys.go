@@ -3,7 +3,7 @@
 // LLM tokens belong to projects, not to people: every project with tokens is one pool, a LiteLLM team (team id = the project's slug) whose budget all its members share. Every key is in the pool of one project the person may draw from; the person's own LiteLLM budget is 0, so a key outside every pool cannot spend anything. Who may draw from which pool is decided here (project membership, including groups), not by LiteLLM's team members.
 //
 // Carried over from the Node key broker, including the lessons learned there:
-//   - Limits are the project's, set on its team: the budget (its LLM tokens), requests and tokens per minute and the models, all from the tree (with defaults from the configuration). Keys carry only a short-term safety budget, a share of their pool's budget per window, and no rate limits or models of their own; the person's own LiteLLM budget is 0 and their user-level limits never stop a key below its project's (see userQuota). All kept in step on every request and by SyncQuota/SyncTeams/SyncKeys, so a change made in the LiteLLM admin UI does not last. Spend is never touched.
+//   - Limits are the project's, set on its team: the budget (its LLM tokens), requests and tokens per minute and the models, all from the tree (with defaults from the configuration). Keys carry only a short-term safety budget, a share of their pool's budget per window, and no rate limits or models of their own; the person's own LiteLLM budget is 0 and their user-level limits never stop a key below its project's (see userQuota). All kept in step on every request and by SyncQuota/SyncTeams/SyncKeys, so a change made in the LiteLLM admin UI does not last. Spend is never touched. When a project is deleted, its team and all keys in it are deleted too (SyncTeams).
 //   - Key aliases are unique across ALL users in LiteLLM, so every alias gets a
 //     short, stable tag of its owner ("laptop@3f9a12c4"); it is shown without.
 //   - The chat key ("librechat@…") is created by the chat exchange, not by the
@@ -479,9 +479,14 @@ func (s *Service) ensureTeam(ctx context.Context, p Pool) (litellm.Team, error) 
 	return t, err
 }
 
-// SyncTeams keeps a team per pool: created for a pool with tokens, its budget, limits, models and name kept in step; a pool without tokens (ended) keeps its team with a budget of 0, and so does a team of this service whose project is gone (its limits and models stay as they are). Teams are never deleted, so their spend stays. Returns how many teams were written.
-func (s *Service) SyncTeams(ctx context.Context, pools []Pool) (int, error) {
+// SyncTeams keeps a team per pool: created for a pool with tokens, its budget, limits, models and name kept in step; a pool without tokens (ended) keeps its team with a budget of 0. A team of this service (metadata source llm-management-api, see teamSpec; teams of others are never touched) whose project is gone is deleted together with its keys; its spend stays in LiteLLM's spend logs. A team that cannot be deleted now gets a budget of 0 (its limits and models stay as they are) and is tried again on the next pass; without any pool at all nothing is deleted, as an empty list of projects is more likely a fault than the truth. The pools are loaded by load. Returns how many teams were written.
+func (s *Service) SyncTeams(ctx context.Context, load func(context.Context) ([]Pool, error)) (int, error) {
+	// Teams first, then the pools: every team listed was made for a project that was there before the pools were read, so one made in between for a new project cannot look gone.
 	teams, err := s.lite.ListTeams(ctx)
+	if err != nil {
+		return 0, err
+	}
+	pools, err := load(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -513,6 +518,14 @@ func (s *Service) SyncTeams(ctx context.Context, pools []Pool) (int, error) {
 		if known[t.TeamID] || t.Metadata["source"] != "llm-management-api" {
 			continue
 		}
+		if len(pools) > 0 {
+			if err := s.deleteTeam(ctx, t.TeamID); err != nil {
+				errs = append(errs, fmt.Errorf("team %s not deleted: %w", t.TeamID, err))
+			} else {
+				written++
+				continue
+			}
+		}
 		alias := t.TeamID
 		if t.Alias != nil {
 			alias = *t.Alias
@@ -532,6 +545,20 @@ func (s *Service) SyncTeams(ctx context.Context, pools []Pool) (int, error) {
 		}
 	}
 	return written, errors.Join(errs...)
+}
+
+// deleteTeam deletes a team and its keys, the keys first (see litellm.DeleteTeam). Nothing is left to do when the team is gone already.
+func (s *Service) deleteTeam(ctx context.Context, teamID string) error {
+	tokens, err := s.lite.TeamKeys(ctx, teamID)
+	if err != nil {
+		return err
+	}
+	if len(tokens) > 0 {
+		if err := s.lite.DeleteKeys(ctx, tokens...); err != nil {
+			return err
+		}
+	}
+	return s.lite.DeleteTeam(ctx, teamID)
 }
 
 // UsedMTokens is what the pools used in their current windows, in millions of tokens (the teams' spend); a pool without a team is missing. A few pools are asked one by one, more with one list of all teams.

@@ -106,6 +106,33 @@ func (f *fakeLite) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				k[field] = v
 			}
 		}
+	case "/key/list":
+		toks := []string{}
+		for tok, k := range f.keys {
+			if k["team_id"] == q.Get("team_id") {
+				toks = append(toks, tok)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": toks, "total_pages": 1})
+	case "/key/delete":
+		for _, t := range body["keys"].([]any) {
+			delete(f.keys, t.(string))
+		}
+	case "/team/delete":
+		for _, id := range body["team_ids"].([]any) {
+			if _, ok := f.teams[id.(string)]; !ok {
+				w.WriteHeader(404)
+				return
+			}
+		}
+		for _, id := range body["team_ids"].([]any) {
+			delete(f.teams, id.(string))
+			for tok, k := range f.keys {
+				if k["team_id"] == id {
+					delete(f.keys, tok)
+				}
+			}
+		}
 	case "/team/info":
 		t, ok := f.teams[q.Get("team_id")]
 		if !ok {

@@ -14,7 +14,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/promtext"
 )
 
-// BudgetSync keeps LiteLLM in step with the budget tree: one team per project with the project's LLM tokens as its budget (0 once it ended or is gone) and its rate limits and models, every person's quota (budget 0, see keys.SyncQuota), and every person's keys in pools they may draw from, with their pool's short-term budget. Without it this only happens when the person asks this service for something (keys, usage, chat): somebody who left a project would go on spending its pool with the keys they made. Runs every Interval and right after the tree changed a project (Nudge).
+// BudgetSync keeps LiteLLM in step with the budget tree: one team per project with the project's LLM tokens as its budget (0 once it ended; deleted with its keys once the project is gone) and its rate limits and models, every person's quota (budget 0, see keys.SyncQuota), and every person's keys in pools they may draw from, with their pool's short-term budget. Without it this only happens when the person asks this service for something (keys, usage, chat): somebody who left a project would go on spending its pool with the keys they made. Runs every Interval and right after the tree changed a project (Nudge).
 type BudgetSync struct {
 	Lite     *litellm.Client
 	Keys     *keys.Service
@@ -78,11 +78,15 @@ func (b *BudgetSync) Pass(ctx context.Context) (int, error) {
 	if b.Quota.Projects == nil {
 		return 0, nil
 	}
-	pools, err := b.Quota.Projects.LLMPools(ctx)
-	if err != nil {
-		return 0, err
+	var loadErr error
+	written, err := b.Keys.SyncTeams(ctx, func(ctx context.Context) ([]keys.Pool, error) {
+		pools, err := b.Quota.Projects.LLMPools(ctx)
+		loadErr = err
+		return b.Quota.toPools(pools), err
+	})
+	if loadErr != nil {
+		return 0, loadErr
 	}
-	written, err := b.Keys.SyncTeams(ctx, b.Quota.toPools(pools))
 	if err != nil {
 		// A team that could not be written does not keep the people's quotas and keys from being right.
 		b.Log.Warnw("budget sync: teams not all in step", "error", err)

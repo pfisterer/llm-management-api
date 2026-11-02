@@ -17,16 +17,17 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// The pass makes a team per project with the project's tokens (0 for an ended project and for a team whose project is gone), sets every person's budget to 0 (the pools pay), moves a member's keys into their project and takes the keys of somebody without a project out of every team; a user without email is not touched.
+// The pass makes a team per project with the project's tokens (0 for an ended project), deletes the team of a deleted project with its keys, sets every person's budget to 0 (the pools pay), moves a member's keys into their project and takes the keys of somebody without a project out of every team; a user without email is not touched.
 func TestBudgetSyncPass(t *testing.T) {
 	f, srv := newFakeLite(t)
 	f.users["kc-member"] = map[string]any{"user_id": "kc-member", "user_email": "member@dhbw.de", "max_budget": 8.0, "budget_duration": "30d"}
 	f.users["kc-gone"] = map[string]any{"user_id": "kc-gone", "user_email": "gone@dhbw.de", "max_budget": 0.0, "budget_duration": "30d"}
 	f.users["service"] = map[string]any{"user_id": "service", "max_budget": 5.0}
 	f.keys["old"] = map[string]any{"token": "old", "user_id": "kc-member", "rpm_limit": 60.0}  // from before the pools, with a limit of its own
-	f.keys["stale"] = map[string]any{"token": "stale", "user_id": "kc-gone", "team_id": "t-x"} // in a project that is gone
+	f.keys["stale"] = map[string]any{"token": "stale", "user_id": "kc-gone", "team_id": "t-x"} // in a team LiteLLM no longer knows
 	f.keys["svc"] = map[string]any{"token": "svc", "user_id": "service"}
-	f.teams["t-x"] = map[string]any{"team_id": "t-x", "team_alias": "Alt", "max_budget": 3.0, "budget_duration": "30d", "spend": 1.0, "metadata": map[string]any{"source": "llm-management-api"}}
+	f.keys["deleted"] = map[string]any{"token": "deleted", "user_id": "kc-member", "team_id": "t-y"} // in a project that was deleted
+	f.teams["t-y"] = map[string]any{"team_id": "t-y", "team_alias": "Gelöscht", "max_budget": 3.0, "budget_duration": "30d", "metadata": map[string]any{"source": "llm-management-api", "project": "t-y"}}
 
 	acc := accessFor(t, &roleprovider.Mock{}, nil, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{Profiles: []workspace.Profile{{Slug: "cpu", Name: "CPU"}}},
@@ -44,7 +45,7 @@ func TestBudgetSyncPass(t *testing.T) {
 	b := NewBudgetSync(BudgetSync{Lite: client, Keys: keys.NewService(client, 5, keys.KeyBudget{Share: 0.05, Window: "4h"}), Access: acc, Interval: time.Hour, Log: zap.NewNop().Sugar(),
 		Quota: LLMQuota{DefaultRPM: 60, DefaultTPM: 200000, BaseModels: []string{"chat-default"}, Projects: ws}})
 
-	// Teams: t-1 new, t-2 and t-x to 0 (t-2 also gets its limits). Quotas: the member's budget back to 0. Keys: old moved and given its budget (its own limit cleared), stale detached and given a budget of 0.
+	// Teams: t-1 new, t-2 to 0 (and gets its limits), t-y deleted with its key. Quotas: the member's budget back to 0. Keys: old moved and given its budget (its own limit cleared), stale detached and given a budget of 0.
 	n, err := b.Pass(ctx)
 	if err != nil || n != 8 {
 		t.Fatalf("pass: %d %v", n, err)
@@ -52,8 +53,11 @@ func TestBudgetSyncPass(t *testing.T) {
 	if tm := f.teams["t-1"]; tm["max_budget"] != 30*keys.DollarsPerMTokens || tm["rpm_limit"] != 60.0 || tm["tpm_limit"] != 200000.0 || fmt.Sprint(tm["models"]) != "[chat-default]" {
 		t.Fatalf("project team: %v", tm)
 	}
-	if f.teams["t-2"]["max_budget"] != 0.0 || f.teams["t-x"]["max_budget"] != 0.0 || f.teams["t-2"]["spend"] != 4.0 {
-		t.Fatalf("ended/gone teams: %v %v", f.teams["t-2"], f.teams["t-x"])
+	if f.teams["t-2"]["max_budget"] != 0.0 || f.teams["t-2"]["spend"] != 4.0 {
+		t.Fatalf("ended team: %v", f.teams["t-2"])
+	}
+	if _, ok := f.teams["t-y"]; ok || f.keys["deleted"] != nil {
+		t.Fatalf("deleted project's team or key kept: %v %v", f.teams["t-y"], f.keys["deleted"])
 	}
 	if got := f.users["kc-member"]["max_budget"]; got != 0.0 {
 		t.Fatalf("member budget: %v", got)
