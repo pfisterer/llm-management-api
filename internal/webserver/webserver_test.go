@@ -227,7 +227,8 @@ func TestRequireWorkspace(t *testing.T) {
 func TestStartServer(t *testing.T) {
 	_, _, h := llmServer(t)
 	code, body := do(t, h, "GET", "/v1/gpu/start-options", "member@dhbw.de", nil)
-	if code != 200 || !strings.Contains(string(body), `"slug":"t-1"`) || strings.Contains(string(body), "Nur LLM") || !strings.Contains(string(body), `"profiles":[{"slug":"cpu"`) {
+	// The LLM-only project is no workspace project, but it is one to draw the workspaces' LLM tokens from.
+	if code != 200 || !strings.Contains(string(body), `"slug":"t-1"`) || strings.Contains(string(body), `"projects":[{"slug":"t-1","name":"Kurs"},{"slug":"t-llm"`) || !strings.Contains(string(body), `"profiles":[{"slug":"cpu"`) || !strings.Contains(string(body), `"llm_projects":[{"slug":"t-1","name":"Kurs"},{"slug":"t-llm","name":"Nur LLM"}]`) {
 		t.Fatalf("start options: %d %s", code, body)
 	}
 	for _, tc := range []struct {
@@ -276,7 +277,7 @@ func TestGPUHubAccess(t *testing.T) {
 		{"wrong", "root@dhbw.de", 401, ""},
 		{"secret", "root@dhbw.de", 200, `"allowed":true,"max_gpus":0,"admin":true,"projects":[]`},
 		{"secret", "member@dhbw.de", 200, `"allowed":true,"max_gpus":1,"admin":false,"projects":[{"slug":"t-1"`},
-		{"secret", "nobody@dhbw.de", 200, `"allowed":false,"max_gpus":0,"admin":false,"projects":[],"get_project_url":"https://self-service"`},
+		{"secret", "nobody@dhbw.de", 200, `"allowed":false,"max_gpus":0,"admin":false,"projects":[],"llm_projects":[],"get_project_url":"https://self-service"`},
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/gpu/hub/access?user="+tc.user, nil)
 		if tc.token != "" {
@@ -432,8 +433,12 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 	quota := testQuota
 	quota.Projects = ws
 	r := GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", Keys: testKeys(srv.URL), Quota: quota, MasterKey: "master", Log: zap.NewNop().Sugar()}, true)
-	post := func(project string) (int, WorkspaceKeyResponse) {
-		b, _ := json.Marshal(WorkspaceKeyRequest{User: "member@dhbw.de", Subject: "sub-m", Project: project})
+	post := func(project string, llm ...string) (int, WorkspaceKeyResponse) {
+		body := WorkspaceKeyRequest{User: "member@dhbw.de", Subject: "sub-m", Project: project}
+		if len(llm) > 0 {
+			body.LLMProject = llm[0]
+		}
+		b, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/gpu/hub/workspace-key", bytes.NewReader(b))
 		req.Header.Set("Authorization", "Bearer secret")
 		w := httptest.NewRecorder()
@@ -450,11 +455,18 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 			t.Errorf("%s: %d %+v, want 403 without a key", project, code, out)
 		}
 	}
-	if code, out := post("t-ws"); code != 200 || out.Key != "" || out.Reason == "" {
-		t.Errorf("project without tokens: %d %+v, want no key", code, out)
+	// A project without tokens draws from the person's LLM project (chosen at the start, else the first); its own key never exists.
+	if code, out := post("t-ws"); code != 200 || out.LLMProject != "t-1" || out.Key != keys.WorkspaceKey("master", "kc-sub-m", "t-1") || f.keyBy(out.Key)["team_id"] != "t-1" {
+		t.Errorf("project without tokens: %d %+v, want the key of t-1", code, out)
+	}
+	if code, out := post("t-ws", "t-1"); code != 200 || out.LLMProject != "t-1" {
+		t.Errorf("chosen LLM project: %d %+v", code, out)
+	}
+	if code, out := post("t-ws", "t-other"); code != 200 || out.Key != "" || out.Reason == "" {
+		t.Errorf("LLM project of somebody else: %d %+v, want no key", code, out)
 	}
 	if k := f.keyBy(keys.WorkspaceKey("master", "kc-sub-m", "t-ws")); k != nil {
-		t.Errorf("key drawn from another pool: %v", k)
+		t.Errorf("key in the pool of a project without tokens: %v", k)
 	}
 	// With a gateway and the limits of the model list, the answer carries the limits of the key's models (VS Code's maxInputTokens, the agents' configuration); models without one are missing.
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

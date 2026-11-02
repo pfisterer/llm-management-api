@@ -121,6 +121,8 @@ func (s *Server) getServerProgress(c *gin.Context) {
 type StartOptionsResponse struct {
 	Projects []HubProject        `json:"projects"`
 	Profiles []workspace.Profile `json:"profiles"`
+	// LLMProjects are the caller's projects with LLM tokens, for the choice whose tokens the server's LLM key draws from; empty = no choice.
+	LLMProjects []HubLLMProject `json:"llm_projects"`
 }
 
 // getStartOptions godoc
@@ -135,7 +137,7 @@ type StartOptionsResponse struct {
 //	@Router		/v1/gpu/start-options [get]
 func (s *Server) getStartOptions(c *gin.Context) {
 	ctx := c.Request.Context()
-	c.JSON(http.StatusOK, StartOptionsResponse{Projects: hubProjects(ctx, s.ws, s.myProjects(c)), Profiles: s.ws.Catalog(ctx).Profiles})
+	c.JSON(http.StatusOK, StartOptionsResponse{Projects: hubProjects(ctx, s.ws, s.myProjects(c)), Profiles: s.ws.Catalog(ctx).Profiles, LLMProjects: llmProjects(ctx, s.quota, caller(c).Tokens)})
 }
 
 // StartServerRequest chooses a project, a profile and, for a profile with a GPU, a GPU class (optional when the project has only one).
@@ -143,6 +145,8 @@ type StartServerRequest struct {
 	Project  string `json:"project" binding:"required"`
 	Profile  string `json:"profile" binding:"required"`
 	GPUClass string `json:"gpu_class"`
+	// LLMProject is the project whose LLM tokens the server's key draws from (one of llm_projects of the start options); empty = the project itself, else the first LLM project.
+	LLMProject string `json:"llm_project"`
 }
 
 // startServer godoc
@@ -192,7 +196,12 @@ func (s *Server) startOptions(c *gin.Context, req StartServerRequest) (gpu.Start
 	if !slices.Contains(project.Profiles, req.Profile) || (req.Profile == workspace.SplitProfile && !project.Derived()) {
 		return gpu.StartOptions{}, "Diese Umgebung ist im Projekt nicht freigegeben."
 	}
-	o := gpu.StartOptions{Project: req.Project, Profile: req.Profile}
+	o := gpu.StartOptions{Project: req.Project, Profile: req.Profile, LLMProject: req.LLMProject}
+	if o.LLMProject != "" {
+		if _, ok := llmProjectFor(llmProjects(c.Request.Context(), s.quota, caller(c).Tokens), o.LLMProject, ""); !ok {
+			return gpu.StartOptions{}, "Dieses LLM-Projekt steht nicht zur Wahl."
+		}
+	}
 	usesGPU := false
 	for _, p := range s.ws.Catalog(c.Request.Context()).Profiles {
 		if p.Slug == req.Profile {

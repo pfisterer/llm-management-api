@@ -390,6 +390,8 @@ type StartOptions struct {
 	Project  string
 	Profile  string
 	GPUClass string
+	// LLMProject is the project whose LLM tokens the server's key draws from (the hub's option llm_project); empty = the project itself, else the person's first LLM project.
+	LLMProject string
 }
 
 // StartServer starts a new named server for the person through the hub API: named <project>-<profile>, with -2, -3 … while that name runs. A stopped server of that name is started again with the new options. The person is created in the hub if they never logged in there.
@@ -412,6 +414,9 @@ func (s *Service) StartServer(ctx context.Context, user string, o StartOptions) 
 		name = fmt.Sprintf("%s-%s-%d", o.Project, o.Profile, i)
 	}
 	options := map[string]any{"profile": o.Profile, "project": o.Project}
+	if o.LLMProject != "" {
+		options["llm_project"] = o.LLMProject
+	}
 	if o.GPUClass != "" {
 		options["gpu_class"] = o.GPUClass
 	}

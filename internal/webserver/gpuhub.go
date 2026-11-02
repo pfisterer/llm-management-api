@@ -81,6 +81,43 @@ type HubProject struct {
 	ScratchGB int `json:"scratch_gb" example:"1"`
 }
 
+// HubLLMProject is a project with LLM tokens, as the start form offers it.
+type HubLLMProject struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+// llmProjects are the pools of the person's grant that have tokens, in the grant's order; none when the grant cannot be read.
+func llmProjects(ctx context.Context, q LLMQuota, tokens []string) []HubLLMProject {
+	out := []HubLLMProject{}
+	g, status, _ := q.GrantFor(ctx, tokens)
+	if status != 0 {
+		return out
+	}
+	for _, p := range g.Pools {
+		if p.MTokens > 0 {
+			out = append(out, HubLLMProject{Slug: p.Slug, Name: p.Name})
+		}
+	}
+	return out
+}
+
+// llmProjectFor is the project whose tokens a workspace key draws from: the chosen one, else the workspace project itself, else the first LLM project; "" when the person has none. A chosen project that is no LLM project of theirs gives "" and false.
+func llmProjectFor(llm []HubLLMProject, chosen, project string) (string, bool) {
+	has := func(slug string) bool {
+		return slices.ContainsFunc(llm, func(p HubLLMProject) bool { return p.Slug == slug })
+	}
+	switch {
+	case chosen != "":
+		return chosen, has(chosen)
+	case has(project):
+		return project, true
+	case len(llm) > 0:
+		return llm[0].Slug, true
+	}
+	return "", true
+}
+
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
 type HubGPUClass struct {
 	ID        string `json:"id"`
@@ -96,6 +133,8 @@ type GPUHubAccessResponse struct {
 	MaxGPUs  int          `json:"max_gpus"`
 	Admin    bool         `json:"admin"`
 	Projects []HubProject `json:"projects"`
+	// LLMProjects are the person's projects with LLM tokens: the choice at the start of whose tokens the server's key draws from (VS Code's chat, the agents, OPENAI_API_KEY); empty = no LLM in the workspaces, the choice is not offered.
+	LLMProjects []HubLLMProject `json:"llm_projects"`
 	// GetProjectURL is where somebody without a project gets one (self-service start page); set when not allowed.
 	GetProjectURL string `json:"get_project_url,omitempty"`
 }
@@ -162,6 +201,10 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			for _, m := range mine {
 				resp.MaxGPUs = max(resp.MaxGPUs, m.Limits.GPUsPerPerson)
 			}
+		}
+		resp.LLMProjects = []HubLLMProject{}
+		if o.Quota.Projects != nil {
+			resp.LLMProjects = llmProjects(c.Request.Context(), o.Quota, who.Tokens)
 		}
 		resp.Allowed = len(resp.Projects) > 0 || resp.Admin
 		if !resp.Allowed {
@@ -284,7 +327,22 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: msg})
 				return
 			}
-			key, err := o.Keys.EnsureWorkspaceKey(ctx, keys.Person{Subject: sub, Email: email}, g, o.MasterKey, req.Project)
+			var llm []HubLLMProject
+			for _, p := range g.Pools {
+				if p.MTokens > 0 {
+					llm = append(llm, HubLLMProject{Slug: p.Slug, Name: p.Name})
+				}
+			}
+			target, ok := llmProjectFor(llm, strings.TrimSpace(req.LLMProject), req.Project)
+			switch {
+			case !ok:
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the chosen LLM project is none of the person's projects with LLM tokens"})
+				return
+			case target == "":
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "no project with LLM tokens"})
+				return
+			}
+			key, err := o.Keys.EnsureWorkspaceKey(ctx, keys.Person{Subject: sub, Email: email}, g, o.MasterKey, target)
 			if errors.Is(err, keys.ErrNotEligible) {
 				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "project has no LLM tokens"})
 				return
@@ -298,7 +356,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			if err != nil {
 				o.Log.Warnw("workspace key: models not listed", "project", req.Project, "error", err)
 			}
-			resp := WorkspaceKeyResponse{Key: key, BaseURL: o.APIURL, Models: models}
+			resp := WorkspaceKeyResponse{Key: key, BaseURL: o.APIURL, Models: models, LLMProject: target}
 			if o.Limits != nil {
 				if all, err := o.Limits.Limits(ctx); err != nil {
 					o.Log.Warnw("workspace key: model limits not readable", "error", err)
@@ -352,12 +410,16 @@ type WorkspaceKeyRequest struct {
 	User    string `json:"user"`
 	Subject string `json:"sub"`
 	Project string `json:"project"`
+	// LLMProject is the project whose LLM tokens the key draws from, as chosen at the start; empty = the project itself, else the person's first LLM project.
+	LLMProject string `json:"llm_project"`
 }
 
 // WorkspaceKeyResponse is the key with where and what it may ask; Key empty with a Reason when there is none.
 type WorkspaceKeyResponse struct {
 	Key          string   `json:"key,omitempty"`
 	BaseURL      string   `json:"base_url,omitempty"`
+	// LLMProject is the project the key draws from.
+	LLMProject string `json:"llm_project,omitempty"`
 	Models       []string `json:"models,omitempty"`
 	DefaultModel string   `json:"default_model,omitempty"`
 	// Limits per model of Models, where its deployments declare them; a model without one is missing.
