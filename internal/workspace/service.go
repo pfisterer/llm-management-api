@@ -232,6 +232,29 @@ func (s *Service) profile(slug string) (Profile, bool) {
 }
 
 // Mine is a project with the person's role in it and its budgets as far as used (by the person for budgets per person).
+// withLists is the project with empty lists and maps instead of nil, so the API answers [] and {} as its description says (generated clients reject null there).
+func (p Project) withLists() Project {
+	if p.Members == nil {
+		p.Members = []Member{}
+	}
+	if p.Profiles == nil {
+		p.Profiles = []string{}
+	}
+	if p.GPUClasses == nil {
+		p.GPUClasses = []string{}
+	}
+	if p.Budgets == nil {
+		p.Budgets = []Budget{}
+	}
+	if p.LLMModels == nil {
+		p.LLMModels = []string{}
+	}
+	if p.GPUsByClass == nil {
+		p.GPUsByClass = map[string]int{}
+	}
+	return p
+}
+
 type Mine struct {
 	Project
 	Role         string         `json:"role" enums:"reader,member,manager,admin"`
@@ -260,7 +283,7 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if role == "" || (!all && !p.Active(s.now())) || p.NoWorkspaces {
 			continue
 		}
-		m := Mine{Project: p, Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p), ScratchEffectiveGB: s.ScratchGB(p)}
+		m := Mine{Project: p.withLists(), Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p), ScratchEffectiveGB: s.ScratchGB(p)}
 		if p.ImageGitURL != "" && s.builds != nil {
 			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
 				m.ImageBuild = b

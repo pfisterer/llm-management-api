@@ -347,10 +347,7 @@ func (s *Service) queuePositions(ctx context.Context, queue string) map[string]i
 	var pending struct {
 		Items []struct {
 			Metadata struct {
-				OwnerReferences []struct {
-					Kind string `json:"kind"`
-					Name string `json:"name"`
-				} `json:"ownerReferences"`
+				Name string `json:"name"`
 			} `json:"metadata"`
 			Position int `json:"positionInLocalQueue"`
 		} `json:"items"`
@@ -359,11 +356,11 @@ func (s *Service) queuePositions(ctx context.Context, queue string) map[string]i
 	if err := s.k8s.do(ctx, http.MethodGet, "/apis/visibility.kueue.x-k8s.io/v1beta2/namespaces/"+s.kernelNamespace()+"/localqueues/"+queue+"/pendingworkloads", nil, &pending); err != nil {
 		return out
 	}
+	// The visibility API names the Workload only, not its Job: a Job's Workload is "job-<job name>-<hash>" (Kueue's naming), and job ids contain no "-" after their prefix "j-".
 	for _, w := range pending.Items {
-		for _, o := range w.Metadata.OwnerReferences {
-			if o.Kind == "Job" {
-				out[o.Name] = w.Position + 1
-			}
+		name := strings.TrimPrefix(w.Metadata.Name, "job-")
+		if i := strings.LastIndex(name, "-"); i > 0 && JobID(name[:i]) {
+			out[name[:i]] = w.Position + 1
 		}
 	}
 	return out

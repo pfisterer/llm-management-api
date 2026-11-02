@@ -259,3 +259,17 @@ func TestJobResources(t *testing.T) {
 		t.Errorf("class without nodes: %v", req)
 	}
 }
+
+// Kueue's visibility API names the waiting Workloads only ("job-<job id>-<hash>"): their places map to the job ids.
+func TestQueuePositions(t *testing.T) {
+	s, k := jobTestService(t)
+	k.objects["/apis/visibility.kueue.x-k8s.io/v1beta2/namespaces/jupyterhub/localqueues/q/pendingworkloads"] = map[string]any{"items": []any{
+		map[string]any{"metadata": map[string]any{"name": "job-j-0123456789-ab12c"}, "positionInLocalQueue": 0},
+		map[string]any{"metadata": map[string]any{"name": "job-j-abcdefabcd-9f8e7"}, "positionInLocalQueue": 1},
+		map[string]any{"metadata": map[string]any{"name": "pod-jupyter-x-1a2b3"}, "positionInLocalQueue": 2},
+	}}
+	got := s.queuePositions(context.Background(), "q")
+	if len(got) != 2 || got["j-0123456789"] != 1 || got["j-abcdefabcd"] != 2 {
+		t.Errorf("positions %v", got)
+	}
+}

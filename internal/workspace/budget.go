@@ -188,6 +188,11 @@ func describe(b Budget) string {
 	return fmt.Sprintf("%s %s %s %s", num(b.Amount), unit, windowNames[b.Window], who)
 }
 
+// num writes a number for people: one decimal, two below 1 (job reservations are often fractions of an hour).
 func num(v float64) string {
-	return strings.TrimSuffix(strings.TrimRight(fmt.Sprintf("%.1f", v), "0"), ".")
+	f := "%.1f"
+	if v != 0 && v < 1 && v > -1 {
+		f = "%.2f"
+	}
+	return strings.TrimSuffix(strings.TrimRight(fmt.Sprintf(f, v), "0"), ".")
 }
