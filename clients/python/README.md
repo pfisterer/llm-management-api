@@ -69,6 +69,52 @@ dhbw-cloud job submit --gpu-class general-large -- python train.py
 
 Ein Job läuft ohne geöffneten Workspace weiter. Ist er verdrängbar und braucht ein Workspace die GPU, wird er angehalten, wartet erneut und beginnt dann von vorn. Wer lange rechnet, speichert deshalb Zwischenstände (Checkpoints) im Ordner `DHBW_JOB_DIR` (`~/jobs/<name>`) und setzt dort beim nächsten Versuch fort.
 
+### Verdrängung und Checkpoints
+
+Wird ein Job verdrängt, abgebrochen oder erreicht er seine Höchstlaufzeit, bekommt der Befehl das Signal `SIGTERM`, und zwar alle seine Prozesse (auch die Programme, die ein Skript startet). Danach bleiben ihm 120 Sekunden, um seinen Zwischenstand zu speichern; dann wird er hart beendet. Die letzten Ausgaben landen noch im Protokoll. Endet der Befehl nach dem Signal mit 0, zählt der Lauf trotzdem nicht als erfolgreich (Exit-Code 143), denn der Job ist nicht fertig.
+
+`DHBW_JOB_ATTEMPT` sagt, der wievielte Start des Jobs das ist: 1 beim ersten, nach jeder Verdrängung einer mehr. Gezählt wird im Ordner des Jobs, je Job-ID; ein neuer Job mit demselben Namen beginnt wieder bei 1, sieht aber die Dateien im Ordner (so kann er an Checkpoints eines früheren Jobs anknüpfen).
+
+Das Muster: regelmäßig speichern (etwa nach jeder Epoche), beim Start einen vorhandenen Stand laden, und auf `SIGTERM` noch einmal speichern und sich beenden. Gespeichert wird zuerst in eine temporäre Datei, die dann umbenannt wird, damit ein Abbruch mitten im Schreiben keinen halben Checkpoint hinterlässt.
+
+```python
+import os, signal, sys, torch
+
+ordner = os.environ["DHBW_JOB_DIR"]
+pfad = os.path.join(ordner, "checkpoint.pt")
+
+def speichern(epoche):
+    tmp = pfad + ".tmp"
+    torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoche": epoche}, tmp)
+    os.replace(tmp, pfad)
+
+start = 0
+if os.path.exists(pfad):
+    zustand = torch.load(pfad)
+    model.load_state_dict(zustand["model"])
+    optimizer.load_state_dict(zustand["optimizer"])
+    start = zustand["epoche"] + 1
+print(f"Versuch {os.environ.get('DHBW_JOB_ATTEMPT', '1')}, beginne bei Epoche {start}", flush=True)
+
+angehalten = False
+def bei_sigterm(signum, frame):
+    global angehalten
+    angehalten = True  # erst nach dem laufenden Schritt speichern, nicht mitten darin
+signal.signal(signal.SIGTERM, bei_sigterm)
+
+for epoche in range(start, 100):
+    for batch in daten:
+        schritt(model, optimizer, batch)
+        if angehalten:
+            break
+    if angehalten:
+        speichern(epoche - 1)  # die angefangene Epoche wird beim nächsten Versuch wiederholt
+        sys.exit(143)
+    speichern(epoche)
+```
+
+Hinweise: Ein Schritt muss deutlich kürzer als 120 Sekunden sein, sonst reicht die Zeit nicht; dauert er länger, auf das Speichern beim Signal verzichten und nur regelmäßig speichern. Notebooks (papermill) bekommen das Signal nicht in ihre Zellen; dort helfen nur regelmäßige Checkpoints. Bibliotheken wie PyTorch Lightning oder Hugging Face `Trainer` speichern selbst regelmäßig (`ModelCheckpoint`, `save_steps`) und setzen mit `ckpt_path` bzw. `resume_from_checkpoint` fort; als Ordner `DHBW_JOB_DIR` angeben.
+
 ### Verfolgen und abbrechen
 
 ```
@@ -90,6 +136,7 @@ Ein wartender Job zeigt seinen Platz in der Warteschlange. Nach dem Ende bleiben
 | `DHBW_JOB_ID` | ID des Jobs (`j-…`) |
 | `DHBW_JOB_NAME` | Name des Jobs |
 | `DHBW_JOB_DIR` | `~/jobs/<name>`, für Ausgaben und Zwischenstände |
+| `DHBW_JOB_ATTEMPT` | der wievielte Start dieses Jobs (1, nach jeder Verdrängung einer mehr) |
 | `DHBW_PROJECT` | Projekt |
 
 ## Von Python aus

@@ -483,17 +483,44 @@ func (s *Service) ensureProjectVolume(ctx context.Context, project string, gb in
 	return nil
 }
 
-// jobScript runs the job's command in the working directory, its output also into ~/jobs/<name>/output-<n>.log (n = the attempt: an evicted job starts again and writes the next file), and ends with the command's exit code. bash where the image has it, else sh.
-const jobScript = `d="$HOME/jobs/$DHBW_JOB_NAME"
+// jobScript runs the job's command in the working directory, its output also into ~/jobs/<name>/output-<n>.log (one file per start, numbered in the folder), and ends with the command's exit code. bash where the image has it, else sh; only POSIX sh is assumed, no tini (the projects' own images need not have it).
+//
+// Signals: the shell is PID 1, which the kernel spares every signal it has no handler for, and a pipeline would hide the command from it. So the command runs in the background in its own process group (setsid where the image has it) with its output through a FIFO into tee; the trap passes TERM and INT on to the whole group (a script's children too), the shell waits until the command has really ended (a trapped signal ends the first wait early) and tee, which ignores the signals, writes the last lines. Kubernetes sends TERM when Kueue evicts the job, at its deadline and when it is cancelled, and kills after terminationGracePeriodSeconds (jobGraceSeconds): the time the command has to save a checkpoint. A command that ends with 0 after the signal leaves with 143: the pod of an evicted job must not count as the job's success.
+//
+// DHBW_JOB_ATTEMPT is how often this job (its id, not its name, which another job may reuse) has started, counted in ~/jobs/<name>/.attempt-<id> on the project's volume, which outlives the pods: 1 at the first start, one more after each eviction. The service cannot hand it in: the pod's environment is fixed when the Job is created, the pod has no token to read its Workload, and Kueue's eviction count also counts evictions before the pod ever ran.
+const jobScript = `p= stop=
+fwd() { stop=1; [ -n "$p" ] && { kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; }; }
+trap fwd TERM INT
+d="$HOME/jobs/$DHBW_JOB_NAME"
 mkdir -p "$d" || exit 1
 n=1; while [ -e "$d/output-$n.log" ]; do n=$((n+1)); done
+log="$d/output-$n.log"
+a=$(cat "$d/.attempt-$DHBW_JOB_ID" 2>/dev/null); case "$a" in ''|*[!0-9]*) a=0;; esac
+a=$((a+1)); echo "$a" > "$d/.attempt-$DHBW_JOB_ID" || exit 1
+export DHBW_JOB_ATTEMPT="$a"
 cd "$HOME/$DHBW_JOB_WORKDIR" || exit 1
 sh=sh; command -v bash >/dev/null 2>&1 && sh=bash
-echo "== $(date -Iseconds) Job $DHBW_JOB_NAME ($DHBW_JOB_ID), Versuch $n" | tee "$d/output-$n.log"
-{ "$sh" -c "$DHBW_JOB_COMMAND"; echo $? > "$d/.exit-$n"; } 2>&1 | tee -a "$d/output-$n.log"
-rc=$(cat "$d/.exit-$n" 2>/dev/null || echo 1); rm -f "$d/.exit-$n"
-echo "== $(date -Iseconds) Ende, Exit-Code $rc" | tee -a "$d/output-$n.log"
+s=; command -v setsid >/dev/null 2>&1 && s=setsid
+f="${TMPDIR:-/tmp}/dhbw-job-$$.out"; rm -f "$f"; mkfifo "$f" || exit 1
+echo "== $(date -Iseconds) Job $DHBW_JOB_NAME ($DHBW_JOB_ID), Versuch $a" | tee "$log"
+(trap '' TERM INT; exec tee -a "$log") < "$f" &
+t=$!
+$s "$sh" -c "$DHBW_JOB_COMMAND" > "$f" 2>&1 &
+p=$!
+[ -n "$stop" ] && fwd
+wait "$p"; rc=$?
+while [ -n "$stop" ] && kill -0 "$p" 2>/dev/null; do wait "$p"; rc=$?; done
+while kill -0 "$t" 2>/dev/null; do wait "$t"; done
+rm -f "$f"
+if [ -n "$stop" ]; then
+  echo "== $(date -Iseconds) Signal erhalten (Verdrängung, Abbruch oder Höchstlaufzeit), Exit-Code des Befehls $rc" | tee -a "$log"
+  [ "$rc" = 0 ] && rc=143
+fi
+echo "== $(date -Iseconds) Ende, Exit-Code $rc" | tee -a "$log"
 exit "$rc"`
+
+// jobGraceSeconds is the pod's terminationGracePeriodSeconds: how long a job has after TERM to save its state before Kubernetes kills it.
+const jobGraceSeconds = 120
 
 // shellQuote quotes s for a POSIX shell.
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
@@ -567,11 +594,12 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 	requests, limits := sp.requests, sp.limits
 	kernelScratchResources(sp.ScratchGB, requests, limits)
 	spec := map[string]any{
-		"restartPolicy":                "Never",
-		"automountServiceAccountToken": false,
-		"enableServiceLinks":           false,
-		"securityContext":              map[string]any{"runAsUser": 1000, "runAsGroup": 100, "fsGroup": 100},
-		"volumes":                      []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]any{"claimName": "ws-" + r.Project}}},
+		"restartPolicy":                 "Never",
+		"terminationGracePeriodSeconds": jobGraceSeconds,
+		"automountServiceAccountToken":  false,
+		"enableServiceLinks":            false,
+		"securityContext":               map[string]any{"runAsUser": 1000, "runAsGroup": 100, "fsGroup": 100},
+		"volumes":                       []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]any{"claimName": "ws-" + r.Project}}},
 	}
 	if !s.cfg.Kernels.NoGPU {
 		requests["nvidia.com/gpu"], limits["nvidia.com/gpu"] = fmt.Sprint(r.GPUs), fmt.Sprint(r.GPUs)
