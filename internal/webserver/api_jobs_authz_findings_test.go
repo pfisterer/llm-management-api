@@ -67,7 +67,6 @@ func TestBefundJobSubmitRace(t *testing.T) {
 
 // Befund 2: the refusal tells a foreign project from one that does not exist and names it. Anybody with access to workspaces can probe slugs (POST /v1/gpu/jobs) and learns which exist and their names ("Kein Mitglied im Projekt „…“" against „Projekt … gibt es nicht“).
 func TestBefundJobForeignProjectDisclosed(t *testing.T) {
-	befund(t, "Ablehnung beim Abschicken in ein fremdes Projekt verrät Existenz und Namen des Projekts")
 	e := newJobEnv(t)
 	_, foreign := call(t, e.h, "POST", "/v1/gpu/jobs", "oidc:"+jzMember, "", SubmitJobRequest{Project: "t-fremd", Command: "x"})
 	_, unknown := call(t, e.h, "POST", "/v1/gpu/jobs", "oidc:"+jzMember, "", SubmitJobRequest{Project: "t-gibtsnicht", Command: "x"})

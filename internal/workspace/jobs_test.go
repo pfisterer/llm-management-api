@@ -40,7 +40,7 @@ func TestCheckJob(t *testing.T) {
 		r      JobRequest
 		want   string
 	}{
-		"no member":     {nil, JobRequest{Project: "kurs", GPUs: 1}, "Kein Mitglied"},
+		"no member":     {nil, JobRequest{Project: "kurs", GPUs: 1}, "kein Zugang"},
 		"too many jobs": {member, JobRequest{Project: "kurs", GPUs: 1, Jobs: 2}, "2 Jobs gleichzeitig"},
 		"too long":      {member, JobRequest{Project: "kurs", GPUs: 1, MaxHours: 4}, "Höchstlaufzeit"},
 		"other class":   {member, JobRequest{Project: "kurs", GPUs: 1, GPUClass: "general-medium"}, "nicht freigegeben"},

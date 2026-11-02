@@ -469,6 +469,9 @@ type StartRequest struct {
 	Kernel bool `json:"-"`
 }
 
+// noProjectAccess refuses a project that does not exist and one the person is no member of alike: a refusal must not tell which slugs exist, nor name a foreign project.
+const noProjectAccess = "Projekt nicht gefunden oder kein Zugang."
+
 // CheckStart decides whether a person may start a profile in a project now. The reason of a refusal is shown in JupyterHub. Every decision is counted (aiaas_workspace_starts_total, metrics.go).
 func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartRequest) error {
 	err := s.checkStart(ctx, tokens, r)
@@ -482,13 +485,13 @@ func (s *Service) checkStart(ctx context.Context, tokens []string, r StartReques
 	}
 	p, err := s.store.Get(ctx, r.Project)
 	if errors.Is(err, ErrNotFound) {
-		return refuseStart("project", "Projekt %q gibt es nicht.", r.Project)
+		return refuseStart("project", noProjectAccess)
 	}
 	if err != nil {
 		return err
 	}
 	if p.RoleOf(tokens) == "" {
-		return refuseStart("project", "Kein Mitglied im Projekt „%s“.", p.Name)
+		return refuseStart("project", noProjectAccess)
 	}
 	if !p.Active(s.now()) {
 		return refuseStart("project", "Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))

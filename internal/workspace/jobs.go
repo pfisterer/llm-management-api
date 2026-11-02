@@ -98,14 +98,14 @@ type JobGrant struct {
 func (s *Service) CheckJob(ctx context.Context, tokens []string, r JobRequest) (JobGrant, error) {
 	p, err := s.store.Get(ctx, r.Project)
 	if errors.Is(err, ErrNotFound) {
-		return JobGrant{}, refuse("Projekt %q gibt es nicht.", r.Project)
+		return JobGrant{}, refuse(noProjectAccess)
 	}
 	if err != nil {
 		return JobGrant{}, err
 	}
 	switch {
 	case p.RoleOf(tokens) == "":
-		return JobGrant{}, refuse("Kein Mitglied im Projekt „%s“.", p.Name)
+		return JobGrant{}, refuse(noProjectAccess)
 	case !p.Active(s.now()):
 		return JobGrant{}, refuse("Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))
 	case p.NoWorkspaces:

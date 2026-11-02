@@ -97,8 +97,8 @@ func TestCheckStart(t *testing.T) {
 	}{
 		{"allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu", CPU: 0.5, RAMGB: 2}, ""},
 		{"no project", StartRequest{Person: "a@dhbw.de", Profile: "cpu"}, "Kein Projekt"},
-		{"unknown project", StartRequest{Person: "a@dhbw.de", Project: "x", Profile: "cpu"}, "gibt es nicht"},
-		{"not a member", StartRequest{Person: "c@dhbw.de", Project: "cpu-only", Profile: "cpu"}, "Kein Mitglied"},
+		{"unknown project", StartRequest{Person: "a@dhbw.de", Project: "x", Profile: "cpu"}, "nicht gefunden oder kein Zugang"},
+		{"not a member", StartRequest{Person: "c@dhbw.de", Project: "cpu-only", Profile: "cpu"}, "nicht gefunden oder kein Zugang"},
 		{"ended", StartRequest{Person: "a@dhbw.de", Project: "alt", Profile: "cpu"}, "abgelaufen"},
 		{"profile not allowed", StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: SplitProfile}, "nicht freigegeben"},
 		{"no GPUs in project", StartRequest{Person: "a@dhbw.de", Project: "cpu-only", Profile: "gpu", GPUs: 1}, "keine GPUs"},
