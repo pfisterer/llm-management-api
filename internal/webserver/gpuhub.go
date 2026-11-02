@@ -164,9 +164,17 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 		if ws.HasCredentials(ctx, m.Slug) {
 			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
 		}
-		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: m.Profiles, ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
+		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: offeredProfiles(m), ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
 	}
 	return out
+}
+
+// offeredProfiles are the profiles a project's start offers: "CPU + GPU kernel" needs an environment built on one of our bases (Derived), as the start checks, so a project with a free image is not offered it.
+func offeredProfiles(m workspace.Mine) []string {
+	if m.Derived() {
+		return m.Profiles
+	}
+	return slices.DeleteFunc(slices.Clone(m.Profiles), func(p string) bool { return p == workspace.SplitProfile })
 }
 
 // GPUHubRouter serves GET /gpu/hub/access?user=<email> for JupyterHub in the
