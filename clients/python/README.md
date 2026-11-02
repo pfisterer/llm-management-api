@@ -18,6 +18,17 @@ dhbw-cloud login                 # fragt das Token verdeckt ab und speichert es 
 
 Statt der Datei geht auch die Umgebungsvariable `DHBW_CLOUD_TOKEN`. Die Adresse des Dienstes ist `DHBW_CLOUD_URL`, ohne Angabe die des Produktivbetriebs. In einem Workspace setzt die Plattform `DHBW_CLOUD_URL` und `DHBW_PROJECT` selbst.
 
+## Projekt finden
+
+Jobs laufen in einem Projekt. `dhbw-cloud project list` zeigt die eigenen aktiven Projekte mit ihrer Projekt-ID (`t-…`), den GPU-Klassen und, ob das Projekt Batch-Jobs erlaubt (wie viele je Person, wie lange höchstens). Die Projekt-ID steht auch im Self-Service-Portal in den Einstellungen des Projekts.
+
+```
+dhbw-cloud project list          # Name, Projekt-ID, GPU-Klassen, Jobs
+dhbw-cloud project list --json   # dasselbe als JSON
+```
+
+Für `--project` genügt statt der ID auch der Name des Projekts oder ein eindeutiger Teil davon, Groß- und Kleinschreibung egal (`--project ki-kurs`). Passt der Teil auf mehrere Projekte, nennt das Werkzeug sie mit ihrer ID.
+
 ## Batch-Jobs
 
 Ein Job läuft auf einer GPU einer Klasse, die das Projekt hat, in der Umgebung des Projekts, mit dem eigenen Home und `~/project-shared` des Projekts. Er wartet in der Warteschlange des Projekts, bis eine GPU frei ist. Die Ausgabe landet zusätzlich in `~/jobs/<name>/output-<n>.log`, für jeden Versuch eine eigene Datei.
@@ -29,6 +40,9 @@ Ob ein Projekt Jobs erlaubt, wie viele je Person, wie lange einer höchstens lä
 ```
 # Ein Befehl: alles nach -- läuft in einer Shell, im aktuellen Verzeichnis (im Workspace) bzw. im Home
 dhbw-cloud job submit --project t-7841d99e-… -- python train.py --epochs 10
+
+# Projekt über einen Teil seines Namens
+dhbw-cloud job submit --project ki-kurs -- python train.py
 
 # Im Workspace ohne --project (DHBW_PROJECT), mit Namen, Höchstlaufzeit und Ausgabe verfolgen
 dhbw-cloud job submit --name training-1 --max-hours 2 -f -- python train.py
@@ -45,7 +59,7 @@ dhbw-cloud job submit --gpu-class general-large -- python train.py
 
 | Option | Bedeutung |
 |---|---|
-| `--project` | Projekt (Kurzname `t-…`), Standard `DHBW_PROJECT` |
+| `--project` | Projekt: Projekt-ID (`t-…`), Name oder eindeutiger Teil des Namens; Standard `DHBW_PROJECT` |
 | `--name` | Name des Jobs und seines Ausgabeordners `~/jobs/<name>`; Standard die Job-ID |
 | `--gpu-class` | GPU-Klasse; nötig, wenn das Projekt mehrere hat |
 | `--max-hours` | Höchstlaufzeit in Stunden; Standard die des Projekts |
@@ -60,7 +74,7 @@ Ein Job läuft ohne geöffneten Workspace weiter. Ist er verdrängbar und brauch
 ```
 dhbw-cloud job list                      # eigene Jobs, die warten oder laufen (sonst die letzten zehn)
 dhbw-cloud job list -a                   # auch beendete
-dhbw-cloud job list --project t-…        # Jobs eines Projekts; Verwaltende sehen alle
+dhbw-cloud job list --project ki-kurs    # Jobs eines Projekts (ID oder Name); Verwaltende sehen alle
 dhbw-cloud job status j-4f3a9c0d2e       # Einzelheiten; --json für alles
 dhbw-cloud job log j-4f3a9c0d2e          # Ende der Ausgabe (-n Zeilen)
 dhbw-cloud job log -f j-4f3a9c0d2e       # verfolgen, bis der Job endet
