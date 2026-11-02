@@ -44,6 +44,14 @@ type TreeProject struct {
 	WorkspaceScratchGB int `json:"workspace_scratch_gb" example:"5"`
 	// BatchPriority is how the project's batch jobs run: "guaranteed" or "preemptible" (empty = preemptible), the strictest value of the budgets above it. The tree owns it.
 	BatchPriority string `json:"batch_priority,omitempty" example:"preemptible" enums:"preemptible,guaranteed"`
+	// BatchJobs are the batch jobs the budgets above the project allow, the strictest values along its chain; {0, 0} where they have none. They replace the project's own (Limits.JobsPerPerson, Limits.JobMaxHours) and nobody changes them here. Nil = a tree from before: the admins decide here.
+	BatchJobs *TreeJobs `json:"batch_jobs,omitempty"`
+}
+
+// TreeJobs are the batch jobs a budget allows: how many a person may have running and waiting at the same time (0 = no batch jobs) and how long one may run at the latest, in hours (at most MaxJobHours).
+type TreeJobs struct {
+	JobsPerPerson int     `json:"jobs_per_person" example:"2"`
+	MaxHours      float64 `json:"max_hours" example:"4"`
 }
 
 // TreeUse is a tree budget with what the project used of it in the current window.
@@ -155,6 +163,13 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	p.StorageGB = max(tp.StorageGB, 0)
 	p.ScratchGB = s.scratchFromTree(tp.WorkspaceScratchGB)
 	p.BatchPriority = batchPriorityFromTree(tp.BatchPriority)
+	if tp.BatchJobs != nil {
+		p.Limits.JobsPerPerson, p.Limits.JobMaxHours = jobsFromTree(*tp.BatchJobs)
+		p.TreeJobs = true
+	} else {
+		// A tree from before batch jobs in budgets: the values stay and are the admins'.
+		p.TreeJobs = false
+	}
 	p.DeleteAt = tp.DeleteAt
 	p.NoWorkspaces = !tp.Workspaces
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
@@ -272,7 +287,7 @@ func cleanModels(in []string) []string {
 	return slices.Compact(out)
 }
 
-// keepTreeFields puts back everything UpsertFromTree sets on every call into a project a person changed, whoever it is: members, end and deletion day, whether it has workspaces at all, the tree's budgets, GPU classes and GPUs per class, the LLM tokens, rate limits and models, the storage and the local storage per workspace, the batch priority, name and the node, and the budget's release times once the tree sends them. Limits per person and profiles the tree only presets; they are the admins' (Update keeps them from managers).
+// keepTreeFields puts back everything UpsertFromTree sets on every call into a project a person changed, whoever it is: members, end and deletion day, whether it has workspaces at all, the tree's budgets, GPU classes and GPUs per class, the LLM tokens, rate limits and models, the storage and the local storage per workspace, the batch priority, name and the node, and the budget's release times and batch jobs once the tree sends them. Limits per person and profiles the tree only presets; they are the admins' (Update keeps them from managers).
 func keepTreeFields(p *Project, cur Project) {
 	p.TreeNode, p.Name, p.Members, p.EndsAt = cur.TreeNode, cur.Name, cur.Members, cur.EndsAt
 	p.GPUClasses, p.GPUsByClass, p.LLMMTokens = cur.GPUClasses, cur.GPUsByClass, cur.LLMMTokens
@@ -285,6 +300,10 @@ func keepTreeFields(p *Project, cur Project) {
 	}
 	if cur.TreeRelease {
 		p.ReleaseMax, p.TreeRelease = cur.ReleaseMax, true
+	}
+	p.TreeJobs = cur.TreeJobs
+	if cur.TreeJobs {
+		p.Limits.JobsPerPerson, p.Limits.JobMaxHours = cur.Limits.JobsPerPerson, cur.Limits.JobMaxHours
 	}
 	own := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range cur.Budgets {

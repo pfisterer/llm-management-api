@@ -128,7 +128,7 @@ func (s *Server) myProjects(c *gin.Context) []workspace.Mine {
 //
 //	@ID				getWorkspaceCatalog
 //	@Summary		Profiles and GPU classes
-//	@Description	What a project can allow: the JupyterHub profiles (with the GPU class they use) and the GPU classes.
+//	@Description	What a project can allow: the JupyterHub profiles (with the GPU class they use), the GPU classes, the bases, and the defaults of local storage and release times. For everybody signed in; without access to workspaces (no project, not an admin) without what the bases say about the projects on them (projects, last_end).
 //	@Tags			workspaces
 //	@Produce		json
 //	@Security		BearerAuth
@@ -136,7 +136,11 @@ func (s *Server) myProjects(c *gin.Context) []workspace.Mine {
 //	@Failure		403	{object}	ErrorResponse
 //	@Router			/v1/workspaces/catalog [get]
 func (s *Server) getWorkspaceCatalog(c *gin.Context) {
-	c.JSON(http.StatusOK, s.ws.Catalog(c.Request.Context()))
+	cat := s.ws.Catalog(c.Request.Context())
+	if !caller(c).Role.AtLeast(access.RoleAdmin) && len(s.myProjects(c)) == 0 {
+		cat = cat.Public()
+	}
+	c.JSON(http.StatusOK, cat)
 }
 
 // listWorkspaceProjects godoc

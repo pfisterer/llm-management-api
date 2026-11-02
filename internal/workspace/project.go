@@ -104,12 +104,14 @@ type Project struct {
 	// NoWorkspaces: the tree gives the project no workspace resources (LLM tokens only, docs/bauplan.md 8.14); it is then not offered for servers.
 	NoWorkspaces bool `json:"no_workspaces,omitempty" gorm:"column:no_workspaces"`
 	// TreeProfiles: the budget tree grants the server types (Profiles); they are then the tree's like its other fields.
-	TreeProfiles bool      `json:"tree_profiles,omitempty" gorm:"column:tree_profiles"`
-	TreeNode     string    `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
-	CreatedBy    string    `json:"created_by,omitempty"`
-	UpdatedBy    string    `json:"updated_by,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	TreeProfiles bool `json:"tree_profiles,omitempty" gorm:"column:tree_profiles"`
+	// TreeJobs: the budget tree sets the batch jobs (Limits.JobsPerPerson and Limits.JobMaxHours, TreeProject.BatchJobs); they are then the tree's like its other fields. For a project outside the tree, or a tree from before, admins set them.
+	TreeJobs  bool      `json:"tree_jobs,omitempty" gorm:"column:tree_jobs"`
+	TreeNode  string    `json:"tree_node,omitempty"` // the project's node in the budget tree (resource-management-api); set = the tree manages members, end, the project's budgets and GPUs, and the LLM tokens, rate limits and models
+	CreatedBy string    `json:"created_by,omitempty"`
+	UpdatedBy string    `json:"updated_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (Project) TableName() string { return "workspace_projects" }

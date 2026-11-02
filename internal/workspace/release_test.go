@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func ip(v int) *int { return &v }
@@ -192,5 +193,29 @@ func TestGPUKernelsCountPerProject(t *testing.T) {
 	_, _ = s.create(ctx, project("kurs"), "admin")
 	if got := reason(s.CheckStart(ctx, me, kernel)); !strings.Contains(got, "1 GPU") {
 		t.Fatalf("second kernel in the project: %q", got)
+	}
+}
+
+// The catalogue names the release times an empty field stands for: today's smallest per kind (the GPU kernel's 5 min for GPU), every time set.
+func TestCatalogReleaseDefaults(t *testing.T) {
+	d := releaseService().Catalog(context.Background()).ReleaseDefaults
+	if *d.CPU.IdleOpenMinutes != 120 || *d.CPU.IdleClosedMinutes != 120 || *d.CPU.MaxHours != 12 {
+		t.Errorf("cpu %+v", d.CPU)
+	}
+	if *d.GPU.IdleOpenMinutes != 5 || *d.GPU.IdleClosedMinutes != 5 || *d.GPU.MaxHours != 4 {
+		t.Errorf("gpu %+v", d.GPU)
+	}
+}
+
+// The public catalogue keeps everything but what the bases say about the projects on them.
+func TestCatalogPublic(t *testing.T) {
+	end := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := Config{Bases: []Base{{ID: "pytorch", Projects: 3, LastEnd: &end}}, ReleaseDefaults: Release{CPU: ReleaseTimes{MaxHours: ip(12)}}}
+	p := c.Public()
+	if p.Bases[0].Projects != 0 || p.Bases[0].LastEnd != nil || p.Bases[0].ID != "pytorch" || *p.ReleaseDefaults.CPU.MaxHours != 12 {
+		t.Errorf("public %+v", p)
+	}
+	if c.Bases[0].Projects != 3 {
+		t.Error("the original changed")
 	}
 }

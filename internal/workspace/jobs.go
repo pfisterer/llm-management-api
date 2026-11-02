@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Batch jobs (docs/architektur.md "Batch-Jobs"): GPU jobs without a workspace, in the project's volume and environment. What a project allows (JobsPerPerson, JobMaxHours, BatchPriority) is checked here; the GPU part builds the job and keeps it.
+// Batch jobs (docs/architektur.md "Batch-Jobs"): GPU jobs without a workspace, in the project's volume and environment. What a project allows (JobsPerPerson, JobMaxHours, BatchPriority) is checked here; the GPU part builds the job and keeps it. In a tree project whose budgets set batch jobs (TreeProject.BatchJobs) the first two are the tree's (Project.TreeJobs), else the admins'.
 
 // BatchGuaranteed is a project whose jobs are never evicted (BatchPriority).
 const BatchGuaranteed = "guaranteed"
@@ -27,6 +27,17 @@ func batchPriorityFromTree(v string) string {
 		return BatchGuaranteed
 	}
 	return ""
+}
+
+// jobsFromTree are the job limits for what the tree allows: no negative count, and without jobs no run time; a run time within (0, MaxJobHours], 0 = DefaultJobMaxHours.
+func jobsFromTree(j TreeJobs) (int, float64) {
+	if j.JobsPerPerson <= 0 {
+		return 0, 0
+	}
+	if j.MaxHours <= 0 || math.IsNaN(j.MaxHours) {
+		return j.JobsPerPerson, 0
+	}
+	return j.JobsPerPerson, min(j.MaxHours, MaxJobHours)
 }
 
 // JobMaxHours is how long a job of the project may run at the latest.

@@ -189,12 +189,18 @@ func (s *Service) EffectiveRelease(p Project) EffectiveRelease {
 	return out
 }
 
+// ReleaseDefaults are the release times per kind where no budget sets any (kindDefaults): every time set.
+func (s *Service) ReleaseDefaults() Release {
+	return Release{CPU: s.kindDefaults("cpu").releaseTimes(), GPU: s.kindDefaults("gpu").releaseTimes()}
+}
+
+func (t times) releaseTimes() ReleaseTimes {
+	return ReleaseTimes{IdleOpenMinutes: &t.idleOpen, IdleClosedMinutes: &t.idleClosed, MaxHours: &t.maxHours}
+}
+
 // ReleaseCeiling is the most the project may choose, per kind, for its settings: every time set; MaxHours 0 = no upper bound allowed.
 func (s *Service) ReleaseCeiling(p Project) Release {
-	conv := func(t times) ReleaseTimes {
-		return ReleaseTimes{IdleOpenMinutes: &t.idleOpen, IdleClosedMinutes: &t.idleClosed, MaxHours: &t.maxHours}
-	}
-	return Release{CPU: conv(s.ceiling(p, "cpu")), GPU: conv(s.ceiling(p, "gpu"))}
+	return Release{CPU: s.ceiling(p, "cpu").releaseTimes(), GPU: s.ceiling(p, "gpu").releaseTimes()}
 }
 
 var kindNames = map[string]string{"cpu": "CPU", "gpu": "GPU"}

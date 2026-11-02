@@ -32,6 +32,8 @@ type Config struct {
 	// ScratchDefaultGB is the local storage (GB, ephemeral storage outside the home) of a workspace or GPU kernel whose budget sets none; ScratchMaxGB the most any project gets (scratch.go). 0 = 1 and 200.
 	ScratchDefaultGB int `json:"scratchDefaultGB"`
 	ScratchMaxGB     int `json:"scratchMaxGB"`
+	// ReleaseDefaults are the release times per kind where no budget (and no project) sets any (kindDefaults in release.go): what an empty field in the budget's maximums or the project's times stands for. Every time set.
+	ReleaseDefaults Release `json:"releaseDefaults"`
 }
 
 // GPUClass is a combination of pool and tier of the GPU administration (docs/bauplan.md 10.13): what the tree grants (ws-gpus-<id>, ws-gpu-hours-<id>) and what a start chooses.
@@ -219,7 +221,18 @@ func (s *Service) Catalog(ctx context.Context) Config {
 	if classes == nil {
 		classes = []GPUClass{}
 	}
-	return Config{Profiles: s.cfg.Profiles, GPUClasses: classes, Bases: s.basesInUse(ctx)}
+	return Config{Profiles: s.cfg.Profiles, GPUClasses: classes, Bases: s.basesInUse(ctx), ReleaseDefaults: s.ReleaseDefaults()}
+}
+
+// Public is the catalogue without what it says about projects: how many run a base and when the last of them ends. For people without access to workspaces.
+func (c Config) Public() Config {
+	bases := make([]Base, len(c.Bases))
+	for i, b := range c.Bases {
+		b.Projects, b.LastEnd = 0, nil
+		bases[i] = b
+	}
+	c.Bases = bases
+	return c
 }
 
 func (s *Service) profile(slug string) (Profile, bool) {

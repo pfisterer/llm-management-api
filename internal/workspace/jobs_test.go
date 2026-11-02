@@ -112,3 +112,61 @@ func TestJobsOutsideStartLimits(t *testing.T) {
 		t.Errorf("start next to a job: %v", err)
 	}
 }
+
+// Batch jobs from the budget tree replace the project's own, which nobody changes here then, and a job is granted with them without an admin; off from the tree is off. A tree from before (no value) leaves what the admins set.
+func TestTreeJobs(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	tp := TreeProject{Name: "Kurs", Members: []Member{{Token: "group:k", Role: RoleMember}}, Workspaces: true, StorageGB: 10,
+		Budgets: []TreeBudget{{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "30d", Amount: 100}}}
+	st, err := s.UpsertFromTree(ctx, "p_kurs", tp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := []string{"group:k"}
+	// A tree from before: the admins decide, as before.
+	p := mustGet(t, s, st.Slug)
+	p.Limits.JobsPerPerson, p.Limits.JobMaxHours = 3, 8
+	if out, err := s.Update(ctx, p, "admin@dhbw.de", true); err != nil || out.Limits.JobsPerPerson != 3 || out.TreeJobs {
+		t.Fatalf("admin sets the jobs: %+v %v", out.Limits, err)
+	}
+	if _, err := s.UpsertFromTree(ctx, "p_kurs", tp); err != nil {
+		t.Fatal(err)
+	}
+	if p = mustGet(t, s, st.Slug); p.Limits.JobsPerPerson != 3 || p.TreeJobs {
+		t.Fatalf("a tree from before changed the admins' jobs: %+v %v", p.Limits, p.TreeJobs)
+	}
+
+	tp.BatchJobs = &TreeJobs{JobsPerPerson: 2, MaxHours: 30}
+	if _, err := s.UpsertFromTree(ctx, "p_kurs", tp); err != nil {
+		t.Fatal(err)
+	}
+	p = mustGet(t, s, st.Slug)
+	if !p.TreeJobs || p.Limits.JobsPerPerson != 2 || p.Limits.JobMaxHours != MaxJobHours {
+		t.Fatalf("from the tree: %v %+v", p.TreeJobs, p.Limits)
+	}
+	g, err := s.CheckJob(ctx, member, JobRequest{Project: st.Slug, GPUs: 1})
+	if err != nil || g.MaxHours != MaxJobHours {
+		t.Fatalf("grant with the tree's values: %+v %v", g, err)
+	}
+	if _, err := s.CheckJob(ctx, member, JobRequest{Project: st.Slug, GPUs: 1, Jobs: 2}); !strings.Contains(reason(err), "2 Jobs gleichzeitig") {
+		t.Errorf("the tree's jobs per person: %q", reason(err))
+	}
+	// Nobody changes them here, not even an admin.
+	p.Limits.JobsPerPerson, p.Limits.JobMaxHours, p.TreeJobs = 9, 1, false
+	if out, err := s.Update(ctx, p, "admin@dhbw.de", true); err != nil || out.Limits.JobsPerPerson != 2 || out.Limits.JobMaxHours != MaxJobHours || !out.TreeJobs {
+		t.Fatalf("admin changed the tree's jobs: %+v %v %v", out.Limits, out.TreeJobs, err)
+	}
+	// The budget has none: off.
+	tp.BatchJobs = &TreeJobs{}
+	_, _ = s.UpsertFromTree(ctx, "p_kurs", tp)
+	if p = mustGet(t, s, st.Slug); !p.TreeJobs || p.Limits.JobsPerPerson != 0 || p.Limits.JobMaxHours != 0 {
+		t.Fatalf("switched off: %v %+v", p.TreeJobs, p.Limits)
+	}
+	if _, err := s.CheckJob(ctx, member, JobRequest{Project: st.Slug, GPUs: 1}); !strings.Contains(reason(err), "keine Batch-Jobs") {
+		t.Errorf("off from the tree: %q", reason(err))
+	}
+	if qs, _ := s.JobQueues(ctx); len(qs) != 0 {
+		t.Errorf("no queue without jobs: %+v", qs)
+	}
+}

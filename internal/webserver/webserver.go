@@ -159,7 +159,8 @@ func (s *Server) Router() *gin.Engine {
 		w.GET("/usage/me", s.requireWorkspace, s.getMyWorkspaceUsage)
 		// Admins: everything; project managers: their project (?project=).
 		w.GET("/usage", s.getWorkspaceUsage)
-		w.GET("/catalog", s.requireWorkspace, s.getWorkspaceCatalog)
+		// Readable for everybody signed in: the budget dialog shows its defaults also to managers of a budget without a project of their own.
+		w.GET("/catalog", s.getWorkspaceCatalog)
 		w.GET("/projects", s.listWorkspaceProjects)
 		w.PUT("/projects/:slug", s.updateWorkspaceProject)
 		w.POST("/projects/:slug/image/rebuild", s.rebuildProjectImage)
