@@ -99,6 +99,17 @@ func (w jobWorkload) evictions() int {
 	return n
 }
 
+// evictedAt is when Kueue last evicted the job (its Evicted condition), so a waiting job's hours end there and not at the sync that saw it wait; nil without one.
+func (w jobWorkload) evictedAt() *time.Time {
+	for _, c := range w.Status.Conditions {
+		if c.Type == "Evicted" && c.Status == "True" && !c.LastTransitionTime.IsZero() {
+			t := c.LastTransitionTime
+			return &t
+		}
+	}
+	return nil
+}
+
 func (w jobWorkload) admittedAt() *time.Time {
 	if w.Status.Admission == nil {
 		return nil
@@ -228,8 +239,12 @@ func (s *Service) syncJob(ctx context.Context, r *JobRecord, j k8sJob, w jobWork
 		r.State = JobRunning
 		return
 	}
-	// Waiting: not admitted yet, or evicted and in the queue again.
-	countHours(r, now)
+	// Waiting: not admitted yet, or evicted and in the queue again. An evicted one ran until its eviction, not until this sync.
+	until := now
+	if at := w.evictedAt(); at != nil && at.Before(now) {
+		until = *at
+	}
+	countHours(r, until)
 	r.SeenRunning = nil
 	r.State = JobQueued
 }
