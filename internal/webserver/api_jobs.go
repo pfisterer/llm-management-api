@@ -152,7 +152,7 @@ func (s *Server) listJobs(c *gin.Context) {
 //
 //	@ID				submitGPUJob
 //	@Summary		Submit a batch job
-//	@Description	Checks the job against the project (membership, batch jobs and GPU class allowed, jobs per person, maximum run time, budget: used plus what running and waiting jobs reserve plus GPUs × max_hours of this one must fit), then queues it in the project's queue. A refusal is 409 with its reason. The job runs in the project's environment with the person's home and the shared folder; its output also goes to ~/jobs/<name>/output-<attempt>.log. A preemptible job (the project's batch_priority) is evicted for a workspace and starts again from the beginning.
+//	@Description	Checks the job against the project (membership, batch jobs and GPU class allowed, jobs per person, maximum run time, budget: used plus what running and waiting jobs reserve plus GPUs × max_hours of this one must fit), then queues it in the project's queue. A refusal is 409 with its reason; an unknown project and one the caller is no member of are refused alike. Callers without any project get 403. The job runs in the project's environment with the person's home and the shared folder; its output also goes to ~/jobs/<name>/output-<attempt>.log. A preemptible job (the project's batch_priority) is evicted for a workspace and starts again from the beginning; max_hours counts over all its attempts.
 //	@Tags			gpu
 //	@Accept			json
 //	@Produce		json
@@ -229,7 +229,7 @@ func (s *Server) getJobLog(c *gin.Context) {
 //
 //	@ID				cancelGPUJob
 //	@Summary		Cancel a batch job
-//	@Description	Ends a waiting or running job; what it used stays booked. The person's own jobs, all of the project for its managers and admins. An ended job is returned as it is.
+//	@Description	Ends a waiting or running job; what it used stays booked. The person's own jobs (also after they left the project), all of the project for its managers and admins. An ended job is returned as it is.
 //	@Tags			gpu
 //	@Produce		json
 //	@Security		BearerAuth

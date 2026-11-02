@@ -184,11 +184,13 @@ func (s *Server) Router() *gin.Engine {
 			g.POST("/servers", s.startServer)
 		}
 		if s.ws != nil && s.gpu.JobsEnabled() {
-			g.GET("/jobs", s.listJobs)
 			g.POST("/jobs", s.submitJob)
-			g.GET("/jobs/:id", s.getJob)
-			g.GET("/jobs/:id/log", s.getJobLog)
-			g.DELETE("/jobs/:id", s.cancelJob)
+			// Without requireWorkspace: a person removed from their only project still sees and cancels their own jobs, which run on; visibleJob and listJobs show only their own and those of projects they manage.
+			j := v1.Group("/gpu/jobs")
+			j.GET("", s.listJobs)
+			j.GET("/:id", s.getJob)
+			j.GET("/:id/log", s.getJobLog)
+			j.DELETE("/:id", s.cancelJob)
 		}
 	}
 	if s.gpu != nil && s.gpu.FleetEnabled() {

@@ -187,7 +187,7 @@ func (e *jobEnv) actors(t *testing.T) []jobActorCase {
 	}
 }
 
-// The matrix of reading: details, log and the project's list. Invisible jobs are 404 like unknown ones (no oracle for ids), people without any project 403 for the whole /v1/gpu.
+// The matrix of reading: details, log and the project's list. Invisible jobs are 404 like unknown ones (no oracle for ids); people without any project read like everybody else (their own jobs only, so that one removed from their only project still sees the jobs they left running), the rest of /v1/gpu is 403 for them.
 func TestJobRightsRead(t *testing.T) {
 	e := newJobEnv(t)
 	jobA := e.submit(t, jzMember, SubmitJobRequest{Project: "t-kurs", Command: "python a.py"})
@@ -205,8 +205,8 @@ func TestJobRightsRead(t *testing.T) {
 		"reader":                    {hidden, hidden, hidden, hidden, 1, 1},
 		"manager (group)":           {ok, ok, hidden, hidden, 3, 0},
 		"outsider (other project)":  {hidden, hidden, ok, hidden, 0, 1},
-		"no project":                {forbidden, forbidden, forbidden, forbidden, -1, -1},
-		"fleet admin, no project":   {forbidden, forbidden, forbidden, forbidden, -1, -1},
+		"no project":                {hidden, hidden, hidden, hidden, 0, 0},
+		"fleet admin, no project":   {hidden, hidden, hidden, hidden, 0, 0},
 		"platform admin":            {ok, ok, ok, hidden, 3, 0},
 		"admin as member":           {ok, hidden, hidden, hidden, 1, 1},
 		"admin as outsider":         {hidden, hidden, ok, hidden, 0, 1},
@@ -250,7 +250,7 @@ func TestJobRightsRead(t *testing.T) {
 	}
 }
 
-// The matrix of writing: submitting into the own and a foreign project, cancelling the own and others' jobs. Read-only tokens write nothing; membership, not the platform role, lets one submit; acting on behalf has exactly the person's rights.
+// The matrix of writing: submitting into the own and a foreign project, cancelling the own and others' jobs. Read-only tokens write nothing; membership, not the platform role, lets one submit (people without any project not at all); acting on behalf has exactly the person's rights.
 func TestJobRightsWrite(t *testing.T) {
 	const created, ok, hidden, refused, forbidden = http.StatusCreated, http.StatusOK, http.StatusNotFound, http.StatusConflict, http.StatusForbidden
 	type want struct{ submitKurs, submitFremd, cancelA, cancelO, cancelB int }
@@ -260,8 +260,8 @@ func TestJobRightsWrite(t *testing.T) {
 		"reader":                    {created, refused, hidden, hidden, hidden},
 		"manager (group)":           {created, refused, ok, ok, hidden},
 		"outsider (other project)":  {refused, created, hidden, hidden, ok},
-		"no project":                {forbidden, forbidden, forbidden, forbidden, forbidden},
-		"fleet admin, no project":   {forbidden, forbidden, forbidden, forbidden, forbidden},
+		"no project":                {forbidden, forbidden, hidden, hidden, hidden},
+		"fleet admin, no project":   {forbidden, forbidden, hidden, hidden, hidden},
 		"platform admin":            {refused, refused, ok, ok, ok},
 		"admin as member":           {created, refused, ok, hidden, hidden},
 		"admin as outsider":         {refused, created, hidden, hidden, ok},

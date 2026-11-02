@@ -3,7 +3,6 @@ package webserver
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -13,16 +12,9 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
-// Findings of the rights test of the batch-job API (todo job_submit, security_tests): each test asserts the behaviour wanted and fails today. They are skipped so that the suite stays green; JOB_AUTHZ_FINDINGS=1 runs them (go test ./internal/webserver -run Befund). Once a finding is fixed, remove the skip and keep the test as a regression test.
+// Findings of the rights test of the batch-job API (todo job_submit, security_tests), fixed and kept as regression tests: each asserts the behaviour wanted.
 
-func befund(t *testing.T, what string) {
-	t.Helper()
-	if os.Getenv("JOB_AUTHZ_FINDINGS") == "" {
-		t.Skip("Befund: " + what + " (JOB_AUTHZ_FINDINGS=1 zeigt ihn)")
-	}
-}
-
-// Befund 1: check and submit are not atomic. Requests of the same person that arrive together all pass CheckJob (jobs_per_person, budget with reservations) before any of them is saved, so a script with parallel requests gets more jobs than jobs_per_person and more GPU hours than the budget. Here three at once into a project with one job per person: all three are created.
+// Befund 1: check and submit were not atomic. Requests of the same person that arrive together all pass CheckJob (jobs_per_person, budget with reservations) before any of them is saved, so a script with parallel requests gets more jobs than jobs_per_person and more GPU hours than the budget. Here three at once into a project with one job per person: only one may be created (LockProjectJobs).
 func TestBefundJobSubmitRace(t *testing.T) {
 	ctx := context.Background()
 	e := newJobEnv(t)
@@ -32,7 +24,7 @@ func TestBefundJobSubmitRace(t *testing.T) {
 	if err := e.store.Create(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	// Hold every request at the project volume (after CheckJob, before the job is saved) until all three are there, at most a second (a fixed service lets only one through at a time).
+	// Hold every request at the project volume (after CheckJob, before the job is saved) until all three are there, at most a second (the lock lets only one through at a time).
 	const n = 3
 	var mu sync.Mutex
 	arrived := 0
@@ -65,7 +57,7 @@ func TestBefundJobSubmitRace(t *testing.T) {
 	}
 }
 
-// Befund 2: the refusal tells a foreign project from one that does not exist and names it. Anybody with access to workspaces can probe slugs (POST /v1/gpu/jobs) and learns which exist and their names ("Kein Mitglied im Projekt „…“" against „Projekt … gibt es nicht“).
+// Befund 2: the refusal told a foreign project from one that does not exist and names it. Anybody with access to workspaces can probe slugs (POST /v1/gpu/jobs) and learns which exist and their names ("Kein Mitglied im Projekt „…“" against „Projekt … gibt es nicht“).
 func TestBefundJobForeignProjectDisclosed(t *testing.T) {
 	e := newJobEnv(t)
 	_, foreign := call(t, e.h, "POST", "/v1/gpu/jobs", "oidc:"+jzMember, "", SubmitJobRequest{Project: "t-fremd", Command: "x"})
@@ -78,9 +70,8 @@ func TestBefundJobForeignProjectDisclosed(t *testing.T) {
 	}
 }
 
-// Befund 3: once a person is in no active project any more (removed, project ended), requireWorkspace refuses the whole /v1/gpu: their job that still waits or runs can neither be seen nor cancelled by them, it keeps using the project's GPU hours. Their own jobs should stay visible and cancellable.
+// Befund 3: once a person was in no active project any more (removed, project ended), requireWorkspace refused the whole /v1/gpu: their job that still waits or runs could neither be seen nor cancelled by them while it kept using the project's GPU hours. Their own jobs stay visible and cancellable.
 func TestBefundJobOwnJobAfterRemoval(t *testing.T) {
-	befund(t, "nach Entfernen aus dem (einzigen) Projekt kann die Person ihren laufenden Job weder sehen noch abbrechen")
 	ctx := context.Background()
 	e := newJobEnv(t)
 	id := e.submit(t, jzOutsider, SubmitJobRequest{Project: "t-fremd", Command: "sleep 1d"})
