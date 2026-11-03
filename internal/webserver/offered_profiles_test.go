@@ -17,8 +17,18 @@ func TestOfferedProfilesWithoutSplitForFreeImages(t *testing.T) {
 	if !slices.Contains(free.Profiles, workspace.SplitProfile) {
 		t.Error("the project's own profiles were changed")
 	}
+	if !splitNeedsBase(free) {
+		t.Error("free image: the start should say how to get CPU + GPU kernel")
+	}
 	derived := workspace.Mine{Project: workspace.Project{Profiles: profiles}}
 	if got := offeredProfiles(derived); !slices.Equal(got, profiles) {
 		t.Errorf("derived: %v", got)
+	}
+	if splitNeedsBase(derived) {
+		t.Error("derived: nothing to say")
+	}
+	cpuOnly := workspace.Mine{Project: workspace.Project{ProjectImage: "quay.io/jupyter/scipy-notebook:latest", Profiles: []string{"cpu"}}}
+	if splitNeedsBase(cpuOnly) {
+		t.Error("a project without CPU + GPU kernel has nothing to miss")
 	}
 }

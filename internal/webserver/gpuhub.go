@@ -55,6 +55,8 @@ type HubProject struct {
 	ProjectImage string `json:"project_image,omitempty"`
 	ImageDerived bool   `json:"image_derived"`
 	ImageLabel   string `json:"image_label,omitempty"`
+	// SplitNeedsBase: the project allows "CPU + GPU-Kernel", but its environment is not built on one of our bases, so the start does not offer it and says how to get it.
+	SplitNeedsBase bool `json:"split_needs_base,omitempty"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
 	// GPUClasses the project may use, for the choice at the start (only offered with more than one).
@@ -164,9 +166,14 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 		if ws.HasCredentials(ctx, m.Slug) {
 			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
 		}
-		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: offeredProfiles(m), ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
+		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: offeredProfiles(m), ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), SplitNeedsBase: splitNeedsBase(m), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
 	}
 	return out
+}
+
+// splitNeedsBase: the project would offer "CPU + GPU kernel", were its environment built on one of our bases.
+func splitNeedsBase(m workspace.Mine) bool {
+	return !m.Derived() && slices.Contains(m.Profiles, workspace.SplitProfile)
 }
 
 // offeredProfiles are the profiles a project's start offers: "CPU + GPU kernel" needs an environment built on one of our bases (Derived), as the start checks, so a project with a free image is not offered it.
@@ -424,10 +431,10 @@ type WorkspaceKeyRequest struct {
 
 // WorkspaceKeyResponse is the key with where and what it may ask; Key empty with a Reason when there is none.
 type WorkspaceKeyResponse struct {
-	Key          string   `json:"key,omitempty"`
-	BaseURL      string   `json:"base_url,omitempty"`
+	Key     string `json:"key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
 	// LLMProject is the project the key draws from.
-	LLMProject string `json:"llm_project,omitempty"`
+	LLMProject   string   `json:"llm_project,omitempty"`
 	Models       []string `json:"models,omitempty"`
 	DefaultModel string   `json:"default_model,omitempty"`
 	// Limits per model of Models, where its deployments declare them; a model without one is missing.
