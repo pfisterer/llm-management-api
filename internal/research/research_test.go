@@ -102,7 +102,7 @@ func TestKernelLifecycle(t *testing.T) {
 func TestVLLMPreempted(t *testing.T) {
 	f := newFixture(t, "")
 	prio := int32(-100)
-	f.snap = Snapshot{Pods: []Pod{{UID: "v1", WorkloadUID: "wl-v1", Kind: KindVLLM, Model: "qwen", PriorityClass: "gap-filler", Priority: &prio, GPUs: 1, Created: t0, Phase: "Running", ReadyAt: at(3 * time.Minute)}}}
+	f.snap = Snapshot{Pods: []Pod{{UID: "v1", WorkloadUID: "wl-v1", Kind: KindInference, Model: "qwen", PriorityClass: "gap-filler", Priority: &prio, GPUs: 1, Created: t0, Phase: "Running", ReadyAt: at(3 * time.Minute)}}}
 	f.tick(t, 5*time.Minute)
 	f.snap = Snapshot{Events: []Event{{UID: "wl-v1", Reason: "Preempted", Message: "Preempted to accommodate a workload (UID: 11111111-2222-3333-4444-555555555555, JobUID: AAAAAAAA-2222-3333-4444-555555555555) due to prioritization in the ClusterQueue", At: *at(6 * time.Minute)}}}
 	f.tick(t, 7*time.Minute)
@@ -150,7 +150,7 @@ func TestFinishedPods(t *testing.T) {
 		{UID: "o", Kind: KindGPUKernel, Created: t0, Phase: "Failed", ContainerReason: "OOMKilled", FinishedAt: at(time.Hour)},
 		{UID: "e", Kind: KindGPUServer, Created: t0, Phase: "Failed", StatusReason: "Evicted"},
 		{UID: "b", Kind: KindBuild, Created: t0, Phase: "Succeeded", FinishedAt: at(10 * time.Minute)},
-		{UID: "x", Kind: KindVLLM, Created: t0, Phase: "Running", DeletingAt: at(time.Minute), Disruption: "DeletionByTaintManager"},
+		{UID: "x", Kind: KindInference, Created: t0, Phase: "Running", DeletingAt: at(time.Minute), Disruption: "DeletionByTaintManager"},
 	}}
 	f.tick(t, 5*time.Hour)
 	want := map[string]string{"d": EndMaxRuntime, "o": EndOOM, "e": EndEvictedNode, "b": EndCompleted, "x": EndNodeFailure}
@@ -174,7 +174,7 @@ func TestFinishedPods(t *testing.T) {
 // After a restart the open rows come from the store; one gone meanwhile ends as gone, estimated. A failed listing ends nothing.
 func TestRestartAndFailedListing(t *testing.T) {
 	f := newFixture(t, "")
-	_ = f.st.Save(context.Background(), []Workload{{UID: "old", Kind: KindGPUKernel, Created: t0, LastSeenAt: t0.Add(time.Minute)}, {UID: "still", Kind: KindVLLM, Created: t0, LastSeenAt: t0.Add(time.Minute)}})
+	_ = f.st.Save(context.Background(), []Workload{{UID: "old", Kind: KindGPUKernel, Created: t0, LastSeenAt: t0.Add(time.Minute)}, {UID: "still", Kind: KindInference, Created: t0, LastSeenAt: t0.Add(time.Minute)}})
 	f.err = errors.New("api down")
 	f.now = t0.Add(10 * time.Minute)
 	if err := f.rec.Tick(context.Background()); err == nil {
@@ -184,7 +184,7 @@ func TestRestartAndFailedListing(t *testing.T) {
 		t.Fatalf("nothing ended on a failed listing: %+v", open)
 	}
 	f.err = nil
-	f.snap = Snapshot{Pods: []Pod{{UID: "still", Kind: KindVLLM, Created: t0, Phase: "Running"}}}
+	f.snap = Snapshot{Pods: []Pod{{UID: "still", Kind: KindInference, Created: t0, Phase: "Running"}}}
 	f.tick(t, 11*time.Minute)
 	if w := f.row(t, "old"); w.EndReason != EndGone || !w.EndEstimated || !w.EndedAt.Equal(*at(11 * time.Minute)) || !w.LastSeenAt.Equal(*at(time.Minute)) {
 		t.Fatalf("gone: %+v", w)
@@ -199,7 +199,7 @@ func TestMergeFirstWins(t *testing.T) {
 	st := NewMemoryStore()
 	ctx := context.Background()
 	_ = st.Save(ctx, []Workload{{UID: "u", Kind: KindGPUKernel, Created: t0, AdmittedAt: at(time.Minute), EndedAt: at(time.Hour), EndReason: EndPreempted, LastSeenAt: t0.Add(time.Hour)}})
-	_ = st.Save(ctx, []Workload{{UID: "u", Kind: KindVLLM, Created: t0.Add(time.Minute), AdmittedAt: at(2 * time.Minute), ScheduledAt: at(3 * time.Minute), EndedAt: at(2 * time.Hour), EndReason: EndGone, LastSeenAt: t0.Add(30 * time.Minute)}})
+	_ = st.Save(ctx, []Workload{{UID: "u", Kind: KindInference, Created: t0.Add(time.Minute), AdmittedAt: at(2 * time.Minute), ScheduledAt: at(3 * time.Minute), EndedAt: at(2 * time.Hour), EndReason: EndGone, LastSeenAt: t0.Add(30 * time.Minute)}})
 	rows, _ := st.Range(ctx, t0, t0.Add(time.Hour))
 	w := rows[0]
 	if w.Kind != KindGPUKernel || !w.Created.Equal(t0) || !w.AdmittedAt.Equal(*at(time.Minute)) || !w.ScheduledAt.Equal(*at(3 * time.Minute)) || w.EndReason != EndPreempted || !w.EndedAt.Equal(*at(time.Hour)) || !w.LastSeenAt.Equal(t0.Add(time.Hour)) {

@@ -15,6 +15,7 @@ type fakeFleetKube struct {
 	objects map[string]map[string]any
 	patched map[string]any
 	writes  int
+	deleted []string
 }
 
 func (f *fakeFleetKube) listPods(context.Context, string, string) ([]podInfo, error) { return nil, nil }
@@ -74,6 +75,7 @@ func (f *fakeFleetKube) do(_ context.Context, method, path string, body, out any
 			return ErrNotFound
 		}
 		delete(f.objects, path)
+		f.deleted = append(f.deleted, path)
 	}
 	return nil
 }

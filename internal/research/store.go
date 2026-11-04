@@ -72,6 +72,10 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 	if err := db.AutoMigrate(&Workload{}); err != nil {
 		return nil, err
 	}
+	// Replicas of the inference pool were kind "vllm" until Strata joined vLLM (11.2026).
+	if err := db.Model(&Workload{}).Where("kind = ?", "vllm").Update("kind", KindInference).Error; err != nil {
+		return nil, err
+	}
 	return &GormStore{db: db}, nil
 }
 

@@ -3,6 +3,8 @@ package gpu
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,8 +30,8 @@ func TestReconcileGapFillers(t *testing.T) {
 	if err := s.ReconcileGapFillers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dep := k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-1"]
-	if dep == nil || k.objects["/api/v1/namespaces/inference/services/vllm-gap-gpu-1"] == nil || k.objects["/apis/networking.k8s.io/v1/namespaces/inference/ingresses/vllm-gap-gpu-1"] == nil {
+	dep := k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-1"]
+	if dep == nil || k.objects["/api/v1/namespaces/inference/services/inference-gap-gpu-1"] == nil || k.objects["/apis/networking.k8s.io/v1/namespaces/inference/ingresses/inference-gap-gpu-1"] == nil {
 		t.Fatalf("gap filler of the assigned node: %v", keys(k.objects))
 	}
 	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/inference/localqueues/inference-general-small"] == nil {
@@ -53,10 +55,10 @@ func TestReconcileGapFillers(t *testing.T) {
 	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-1", Pool: "general", Tier: "small", GapModel: NoGapFiller})
 	_ = s.ReconcileFleet(ctx)
 	_ = s.ReconcileGapFillers(ctx)
-	if !strings.Contains(dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-2"]), `"Qwen/Qwen3-8B-AWQ"`) {
+	if !strings.Contains(dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"]), `"Qwen/Qwen3-8B-AWQ"`) {
 		t.Errorf("gpu-2 runs the tier's model")
 	}
-	if _, ok := k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-1"]; ok {
+	if _, ok := k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-1"]; ok {
 		t.Errorf("switched-off gap filler kept")
 	}
 	if got := cacheKeep(k); got["gpu-1"] != "" || got["gpu-2"] != "Qwen/Qwen3-8B-AWQ" {
@@ -140,5 +142,73 @@ func TestGapHeldBack(t *testing.T) {
 	s.fleetCfg.Inference.GapDelayMinutes = &zero
 	if s.gapHeldBack(r, busy, nil) {
 		t.Errorf("delay 0: never held back")
+	}
+}
+
+// A catalogue model with engine strata runs the Strata image with its settings as variables, the key from the shared secret and its own data volume; without a Strata image it gets no replica, and a node that changes engine gets a new Deployment.
+func TestStrataGapFiller(t *testing.T) {
+	ctx := context.Background()
+	s, k := gapTestService()
+	s.SetModels(NewMemoryModelStore())
+	_ = s.SeedFleet(ctx)
+	_ = s.SeedModels(ctx)
+
+	var refused *ErrFleet
+	for name, m := range map[string]CatalogModel{
+		"no quant":      {Key: "big", Engine: EngineStrata, Model: "qwen3.8-flash-next-iq3_s", Args: []string{"--family", "qwen"}},
+		"unknown":       {Key: "big", Engine: EngineStrata, Model: "qwen3.8-flash-next-iq3_s", Args: []string{"--family", "qwen", "--quant", "IQ3_S", "--save-session", "x"}},
+		"parallel":      {Key: "big", Engine: EngineStrata, Model: "qwen3.8-flash-next-iq3_s", Args: []string{"--family", "qwen", "--quant", "IQ3_S", "--parallel", "16"}},
+		"ple-io":        {Key: "big", Engine: EngineStrata, Model: "qwen3.8-flash-next-iq3_s", Args: []string{"--family", "qwen", "--quant", "IQ3_S", "--ple-io", "tmpfs"}},
+		"served name":   {Key: "big", Engine: EngineStrata, Model: "Qwen/Qwen3.8", Args: []string{"--family", "qwen", "--quant", "IQ3_S"}},
+		"engine":        {Key: "big", Engine: "sglang", Model: "a/b"},
+		"value with $x": {Key: "big", Engine: EngineStrata, Model: "qwen3.8-flash-next-iq3_s", Args: []string{"--family", "$(id)", "--quant", "IQ3_S"}},
+	} {
+		if err := s.SaveModel(ctx, m); !errors.As(err, &refused) {
+			t.Errorf("%s accepted: %v", name, err)
+		}
+	}
+	if err := s.SaveModel(ctx, CatalogModel{Key: "big", Engine: EngineStrata, Model: "qwen3.8-flash-next-iq3_s", Args: []string{"--quant=IQ3_S", "--family qwen", "--ple-io", "ssd", "--parallel", "4", "--context", "65536"}, CPU: "8", MemoryReq: "64Gi", MemoryLimit: "100Gi"}); err != nil {
+		t.Fatal(err)
+	}
+	cat, _ := s.ModelCatalog(ctx)
+	for _, m := range cat.Models {
+		if m.Key == "big" && strings.Join(m.Args, " ") != "--family qwen --quant IQ3_S --context 65536 --parallel 4 --ple-io ssd" {
+			t.Errorf("settings not normalised: %v", m.Args)
+		}
+	}
+
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium", GapModel: "big"})
+	_ = s.ReconcileFleet(ctx)
+	_ = s.ReconcileGapFillers(ctx)
+	if _, ok := k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"]; ok {
+		t.Errorf("Strata replica without a Strata image")
+	}
+
+	s.fleetCfg.Inference.StrataImage = "registry.example/platform/strata:1"
+	if err := s.ReconcileGapFillers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dep := dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"])
+	for _, want := range []string{`"image":"registry.example/platform/strata:1"`, `"name":"STRATA_QUANT","value":"IQ3_S"`, `"name":"STRATA_PLE_IO","value":"ssd"`, `"key":"VLLM_API_KEY"`, `"IPC_LOCK"`, `"path":"/var/lib/dhbw-gpu/strata"`, `"dhbw.cloud/inference-engine":"strata"`, `"dhbw.cloud/inference-served-model":"qwen3.8-flash-next-iq3_s"`, `"app":"inference"`, `"memory":"64Gi"`, `"terminationGracePeriodSeconds":120`} {
+		if !strings.Contains(dep, want) {
+			t.Errorf("Strata deployment lacks %s: %s", want, dep)
+		}
+	}
+	if strings.Contains(dep, `"args"`) || strings.Contains(dep, "huggingface") {
+		t.Errorf("Strata deployment has vLLM's arguments or cache: %s", dep)
+	}
+	if got := cacheKeep(k); got["gpu-2"] != "" {
+		t.Errorf("Strata model in the Hugging Face cache list: %v", got)
+	}
+
+	// Back to vLLM: the reconcile removes the Strata Deployment (engine label differs) and creates the vLLM one under the same name.
+	k.deleted = nil
+	_ = s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium"})
+	_ = s.ReconcileGapFillers(ctx)
+	if !slices.Contains(k.deleted, "/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2") {
+		t.Errorf("engine change did not recreate the Deployment: deleted %v", k.deleted)
+	}
+	if !strings.Contains(dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"]), `"dhbw.cloud/inference-engine":"vllm"`) {
+		t.Errorf("vLLM replica after the engine change missing")
 	}
 }

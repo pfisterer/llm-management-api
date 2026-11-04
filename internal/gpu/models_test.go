@@ -50,14 +50,14 @@ func TestModelCatalog(t *testing.T) {
 	if err := s.ReconcileGapFillers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dep := dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-2"])
+	dep := dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"])
 	if !strings.Contains(dep, `"8192"`) || !strings.Contains(dep, `"memory":"3Gi"`) || !strings.Contains(dep, `"dhbw.cloud/inference-model":"medium"`) {
 		t.Errorf("gap filler from the catalogue: %s", dep)
 	}
 	// Without a tier default and no choice at the node, no gap filler.
 	_ = s.SetTierModel(ctx, "medium", "")
 	_ = s.ReconcileGapFillers(ctx)
-	if _, ok := k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-2"]; ok {
+	if _, ok := k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"]; ok {
 		t.Errorf("gap filler without a model kept")
 	}
 	if err := s.DeleteModel(ctx, "medium"); err != nil {
@@ -99,7 +99,7 @@ func TestNoRequestLoggingArgs(t *testing.T) {
 	if err := s.ReconcileGapFillers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dep := dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/vllm-gap-gpu-2"])
+	dep := dump(k.objects["/apis/apps/v1/namespaces/inference/deployments/inference-gap-gpu-2"])
 	if !strings.Contains(dep, `"4096"`) || strings.Contains(dep, "enable-log") {
 		t.Errorf("gap filler args: %s", dep)
 	}

@@ -28,7 +28,8 @@ func modelCacheKeep(nodes []GPUNode, models map[string]CatalogModel, tiers map[s
 		if keep[n.Name] == nil {
 			keep[n.Name] = map[string]bool{}
 		}
-		if m, ok := gapModelFor(n, models, tiers); ok {
+		// Strata keeps its files elsewhere (/var/lib/dhbw-gpu/strata), not in the Hugging Face cache.
+		if m, ok := gapModelFor(n, models, tiers); ok && m.engine() == EngineVLLM {
 			add(n.Name, m.Model)
 		}
 	}

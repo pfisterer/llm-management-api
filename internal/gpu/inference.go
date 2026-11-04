@@ -10,7 +10,7 @@ import (
 // InferenceSitePrefix is put in front of a replica's name for its site in the discovery job and in LiteLLM (gpu-gap-<node>), so it cannot clash with a fleet machine.
 const InferenceSitePrefix = "gpu-"
 
-// InferenceReplica is one vLLM replica of the inference pool that is ready to serve. Ansible creates the replicas (one gap filler per GPU node, optionally a base load per GPU class); Kueue admits and evicts them. Only the running ones are listed, so an evicted gap filler drops out of LiteLLM at the next discovery run and comes back when it runs again.
+// InferenceReplica is one replica of the inference pool (vLLM or Strata) that is ready to serve. Ansible creates the replicas (one gap filler per GPU node, optionally a base load per GPU class); Kueue admits and evicts them. Only the running ones are listed, so an evicted gap filler drops out of LiteLLM at the next discovery run and comes back when it runs again.
 type InferenceReplica struct {
 	Name     string `json:"name"`      // label replica; also the path under InferenceURL
 	APIBase  string `json:"api_base"`  // <InferenceURL>/<name>/v1
@@ -35,7 +35,7 @@ func (s *Service) InferenceReplicas(ctx context.Context) ([]InferenceReplica, er
 	if ns == "" {
 		ns = "inference"
 	}
-	pods, err := s.pods.listPods(ctx, ns, "app=vllm")
+	pods, err := s.pods.listPods(ctx, ns, "app="+inferenceApp)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ type InferencePool struct {
 	Pods    []InferencePod `json:"pods"`
 }
 
-// InferencePool lists every vLLM pod with its state, sorted by replica.
+// InferencePool lists every replica's pod with its state, sorted by replica.
 func (s *Service) InferencePool(ctx context.Context) (InferencePool, error) {
 	out := InferencePool{Pods: []InferencePod{}}
 	if !s.InferenceEnabled() {
@@ -99,7 +99,7 @@ func (s *Service) InferencePool(ctx context.Context) (InferencePool, error) {
 	if ns == "" {
 		ns = "inference"
 	}
-	pods, err := s.pods.listPods(ctx, ns, "app=vllm")
+	pods, err := s.pods.listPods(ctx, ns, "app="+inferenceApp)
 	if err != nil {
 		return out, err
 	}
@@ -141,8 +141,11 @@ func (s *Service) InferencePool(ctx context.Context) (InferencePool, error) {
 	return out, nil
 }
 
-// servedModel reads the model name from vLLM's arguments (--served-model-name, else --model).
+// servedModel is the model name a replica serves: its annotation, else vLLM's arguments (--served-model-name, else --model; base load from Ansible).
 func servedModel(p podInfo) string {
+	if m := p.Metadata.Annotations[annotationServed]; m != "" {
+		return m
+	}
 	var model string
 	for _, c := range p.Spec.Containers {
 		for i := 0; i+1 < len(c.Args); i++ {

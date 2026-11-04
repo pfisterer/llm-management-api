@@ -59,7 +59,7 @@ type kubeEvent struct {
 // researchEventReasons are the events that tell why Kueue stopped a pod: "Stopped" on the pod, "Preempted" on its Workload.
 var researchEventReasons = []string{"Stopped", "Preempted"}
 
-// ResearchSnapshot lists for the research log the workspace pods (servers, GPU kernels), the vLLM replicas of the inference pool and the image builds, with their Kueue Workloads and Kueue's stop events. The pods must be readable, else nothing is ended; Workloads and events are best effort (without them admission times and Kueue's reasons are missing).
+// ResearchSnapshot lists for the research log the workspace pods (servers, GPU kernels), the replicas of the inference pool and the image builds, with their Kueue Workloads and Kueue's stop events. The pods must be readable, else nothing is ended; Workloads and events are best effort (without them admission times and Kueue's reasons are missing).
 func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, error) {
 	if s.pods == nil || s.k8s == nil {
 		return research.Snapshot{}, errors.New("no GPU cluster")
@@ -74,7 +74,7 @@ func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, erro
 		if ns == "" {
 			ns = "inference"
 		}
-		sources = append(sources, source{ns, "app=vllm", true})
+		sources = append(sources, source{ns, "app=" + inferenceApp, true})
 	}
 	sources = append(sources, source{s.cfg.BuildNamespace, "job-name", false})
 
@@ -180,8 +180,8 @@ func researchPod(p podInfo, w *kueueWorkload, personOf, productOf map[string]str
 		out.Kind, out.Person, out.Profile = research.KindJob, p.Metadata.Annotations["hub.jupyter.org/username"], "job"
 	case labels["component"] == "singleuser-server":
 		out.Kind, out.Person, out.Server = research.KindCPUServer, p.Metadata.Annotations["hub.jupyter.org/username"], labels["hub.jupyter.org/servername"]
-	case labels["app"] == "vllm":
-		out.Kind, out.Model, out.Profile = research.KindVLLM, servedModel(p), labels["dhbw.cloud/inference-role"]
+	case labels["app"] == inferenceApp:
+		out.Kind, out.Model, out.Profile = research.KindInference, servedModel(p), labels["dhbw.cloud/inference-role"]
 	default:
 		out.Kind = research.KindBuild
 	}

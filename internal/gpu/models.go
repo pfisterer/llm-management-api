@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,9 +18,13 @@ import (
 
 // CatalogModel is one model of the catalogue.
 type CatalogModel struct {
-	Key   string   `json:"key" gorm:"primaryKey" example:"qwen3-8b-awq"`
-	Model string   `json:"model" example:"Qwen/Qwen3-8B-AWQ"` // Hugging Face repository, also the served name
-	Args  []string `json:"args" gorm:"serializer:json"`       // vLLM arguments after --model and --port
+	Key string `json:"key" gorm:"primaryKey" example:"qwen3-8b-awq"`
+	// Engine runs the model: vllm, or strata for large MoE models on little GPU memory (the GB10); empty = vllm.
+	Engine string `json:"engine" enums:"vllm,strata" example:"vllm"`
+	// Model is the served name; for vLLM the Hugging Face repository, for Strata the name its /v1/models reports (e.g. qwen3.8-flash-next-iq3_s).
+	Model string `json:"model" example:"Qwen/Qwen3-8B-AWQ"`
+	// Args are vLLM's arguments after --model and --port, or Strata's settings: --family, --quant, --context, --parallel, --ple-io.
+	Args []string `json:"args" gorm:"serializer:json"`
 	// Resources of the replica's container; empty = 1 CPU, 3–5 GiB, 1 GPU.
 	CPU         string  `json:"cpu,omitempty" example:"2"`
 	MemoryReq   string  `json:"memory_request,omitempty" example:"8Gi"`
@@ -32,6 +37,20 @@ type CatalogModel struct {
 }
 
 func (CatalogModel) TableName() string { return "inference_models" }
+
+// Engines of the inference pool.
+const (
+	EngineVLLM   = "vllm"
+	EngineStrata = "strata"
+)
+
+// engine is the model's engine, vllm when none is set.
+func (m CatalogModel) engine() string {
+	if m.Engine == "" {
+		return EngineVLLM
+	}
+	return m.Engine
+}
 
 // TierModel is the default gap filler model of a tier.
 type TierModel struct {
@@ -143,7 +162,7 @@ func (s *Service) SeedModels(ctx context.Context) error {
 	sort.Strings(keys)
 	for _, k := range keys {
 		m := s.fleetCfg.Inference.Models[k]
-		c := CatalogModel{Key: k, Model: m.Model, Args: m.Args, MinGB: m.MinGB, UpdatedAt: time.Now(), UpdatedBy: "inventory"}
+		c := CatalogModel{Key: k, Engine: m.Engine, Model: m.Model, Args: m.Args, MinGB: m.MinGB, UpdatedAt: time.Now(), UpdatedBy: "inventory"}
 		if req, ok := m.Resources["requests"].(map[string]any); ok {
 			c.CPU, c.MemoryReq = fmt.Sprint(req["cpu"]), fmt.Sprint(req["memory"])
 		}
@@ -172,7 +191,7 @@ func (s *Service) catalogue(ctx context.Context) (map[string]CatalogModel, map[s
 	models, tiers := map[string]CatalogModel{}, map[string]string{}
 	if s.models == nil {
 		for k, m := range s.fleetCfg.Inference.Models {
-			models[k] = CatalogModel{Key: k, Model: m.Model, Args: m.Args}
+			models[k] = CatalogModel{Key: k, Engine: m.Engine, Model: m.Model, Args: m.Args}
 		}
 		for t, k := range s.fleetCfg.Inference.TierModels {
 			tiers[t] = k
@@ -222,11 +241,16 @@ func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 		return &ErrFleet{"Modellkatalog ist aus."}
 	}
 	m.Model = strings.TrimSpace(m.Model)
+	m.Engine = m.engine()
 	switch {
 	case !modelKeyPattern.MatchString(m.Key):
 		return &ErrFleet{"Kürzel: Kleinbuchstaben, Ziffern, Punkt und Bindestrich, höchstens 40 Zeichen."}
-	case !modelRepoPattern.MatchString(m.Model):
+	case m.Engine != EngineVLLM && m.Engine != EngineStrata:
+		return &ErrFleet{"Engine: vllm oder strata."}
+	case m.Engine == EngineVLLM && !modelRepoPattern.MatchString(m.Model):
 		return &ErrFleet{"Modell: ein Hugging-Face-Repository wie Qwen/Qwen3-8B-AWQ."}
+	case m.Engine == EngineStrata && !strataNamePattern.MatchString(m.Model):
+		return &ErrFleet{"Modell: der Name, den Strata in /v1/models meldet, z. B. qwen3.8-flash-next-iq3_s."}
 	case m.MinGB < 0:
 		return &ErrFleet{"GPU-Speicher darf nicht negativ sein."}
 	case m.Category != "" && m.Category != "chat" && m.Category != "code" && m.Category != "fast" && m.Category != "general":
@@ -236,6 +260,15 @@ func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 		if q != "" && !quantityPattern.MatchString(q) {
 			return &ErrFleet{fmt.Sprintf("Menge %q ungültig (z. B. 2, 500m, 8Gi).", q)}
 		}
+	}
+	if m.Engine == EngineStrata {
+		settings, err := strataSettings(m.Args)
+		if err != nil {
+			return err
+		}
+		m.Args = strataArgs(settings)
+		m.UpdatedAt = time.Now()
+		return s.models.SaveModel(ctx, m)
 	}
 	args := m.Args[:0:0]
 	for _, a := range m.Args {
@@ -257,6 +290,70 @@ func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 }
 
 var requestLoggingPattern = regexp.MustCompile(`(^|\s)--enable[-_]log`)
+
+var (
+	strataNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,99}$`)
+	strataValuePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,40}$`)
+)
+
+// strataOptions are the settings a Strata model takes, by option, as the variables of images/strata/entrypoint.sh. Nothing else reaches Strata: no option of its own can switch on saved sessions or other files with prompts.
+var strataOptions = map[string]string{"--family": "STRATA_FAMILY", "--quant": "STRATA_QUANT", "--context": "STRATA_CONTEXT", "--parallel": "STRATA_PARALLEL", "--ple-io": "STRATA_PLE_IO"}
+
+// strataSettings reads a Strata model's arguments (--option value or --option=value) into the container's variables; --family and --quant are required.
+func strataSettings(args []string) (map[string]string, error) {
+	out := map[string]string{}
+	var fields []string
+	for _, a := range args {
+		fields = append(fields, strings.Fields(a)...)
+	}
+	for i := 0; i < len(fields); i++ {
+		opt, val, ok := strings.Cut(fields[i], "=")
+		if !ok {
+			if i+1 >= len(fields) {
+				return nil, &ErrFleet{fmt.Sprintf("%s braucht einen Wert.", opt)}
+			}
+			i++
+			val = fields[i]
+		}
+		env, known := strataOptions[opt]
+		if !known {
+			return nil, &ErrFleet{fmt.Sprintf("%s kennt der Strata-Dienst nicht; erlaubt sind --family, --quant, --context, --parallel und --ple-io.", opt)}
+		}
+		if !strataValuePattern.MatchString(val) {
+			return nil, &ErrFleet{fmt.Sprintf("%s: Wert %q ungültig.", opt, val)}
+		}
+		switch opt {
+		case "--context":
+			if n, err := strconv.Atoi(val); err != nil || n < 4096 || n > 1048576 {
+				return nil, &ErrFleet{"--context: Tokens zwischen 4096 und 1048576."}
+			}
+		case "--parallel":
+			if n, err := strconv.Atoi(val); err != nil || n < 1 || n > 8 {
+				return nil, &ErrFleet{"--parallel: 1 bis 8 gleichzeitige Anfragen."}
+			}
+		case "--ple-io":
+			if val != "ssd" && val != "ram" {
+				return nil, &ErrFleet{"--ple-io: ssd oder ram."}
+			}
+		}
+		out[env] = val
+	}
+	if out["STRATA_FAMILY"] == "" || out["STRATA_QUANT"] == "" {
+		return nil, &ErrFleet{"Strata braucht --family und --quant, z. B. --family qwen --quant IQ3_S."}
+	}
+	return out, nil
+}
+
+// strataArgs writes Strata settings back as arguments, in a fixed order.
+func strataArgs(settings map[string]string) []string {
+	var out []string
+	for _, opt := range []string{"--family", "--quant", "--context", "--parallel", "--ple-io"} {
+		if v, ok := settings[strataOptions[opt]]; ok {
+			out = append(out, opt, v)
+		}
+	}
+	return out
+}
 
 // requestLoggingArg says whether a vLLM argument would switch on logging of prompts or answers: --enable-log-requests, --enable-log-outputs and every other --enable-log-*, also with underscores, with =value, inside an element holding several words, or abbreviated (vLLM's argparse accepts unique prefixes). Such arguments never reach vLLM: SaveModel refuses them and gapDeployment drops them, so neither the catalogue nor the inventory seed can turn request logging on (docs/architektur.md, component table, row "vLLM in inference"; Ansible checks the inventory in tasks/vllm-args-check.yaml).
 func requestLoggingArg(a string) bool {

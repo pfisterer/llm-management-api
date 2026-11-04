@@ -22,7 +22,7 @@ const (
 	KindGPUKernel = "gpu-kernel" // GPU kernel pod of "CPU + GPU-Kernel"
 	KindGPUServer = "gpu-server" // workspace server with a GPU
 	KindCPUServer = "cpu-server" // workspace server without a GPU
-	KindVLLM      = "vllm"       // vLLM replica of the inference pool (gap filler or base load)
+	KindInference = "inference"  // replica of the inference pool (vLLM or Strata, gap filler or base load); "vllm" before 11.2026
 	KindBuild     = "build"      // build of a project image
 	KindJob       = "job"        // batch job (one attempt: an evicted job's next attempt is a new pod)
 )

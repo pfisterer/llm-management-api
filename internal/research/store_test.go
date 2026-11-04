@@ -28,7 +28,7 @@ func TestGormStoreMerges(t *testing.T) {
 	}
 	ctx := context.Background()
 	prio := int32(-1)
-	if err := s.Save(ctx, []Workload{{UID: "u", Kind: KindVLLM, Created: t0, AdmittedAt: at(time.Minute), Priority: &prio, LastSeenAt: t0.Add(time.Hour)}}); err != nil {
+	if err := s.Save(ctx, []Workload{{UID: "u", Kind: KindInference, Created: t0, AdmittedAt: at(time.Minute), Priority: &prio, LastSeenAt: t0.Add(time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
 	if open, err := s.Open(ctx); err != nil || len(open) != 1 {
@@ -47,7 +47,7 @@ func TestGormStoreMerges(t *testing.T) {
 		t.Fatalf("range: %+v %v", rows, err)
 	}
 	w := rows[0]
-	if w.Kind != KindVLLM || w.Model != "m" || !w.AdmittedAt.Equal(*at(time.Minute)) || !w.ScheduledAt.Equal(*at(3 * time.Minute)) || w.Priority == nil || *w.Priority != -1 {
+	if w.Kind != KindInference || w.Model != "m" || !w.AdmittedAt.Equal(*at(time.Minute)) || !w.ScheduledAt.Equal(*at(3 * time.Minute)) || w.Priority == nil || *w.Priority != -1 {
 		t.Fatalf("first values: %+v", w)
 	}
 	if w.EndReason != EndPreempted || w.PreemptedBy != "p" || !w.EndedAt.Equal(*at(time.Hour)) || w.QueuePosition != 3 || !w.LastSeenAt.Equal(t0.Add(time.Hour)) {

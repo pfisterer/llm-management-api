@@ -40,6 +40,8 @@ func fakeModelList(t *testing.T, calls *atomic.Int32, healthDown *atomic.Bool) s
 		data = append(data, dep(site, "chat-fast", "Qwen/Qwen3.6-35B-A3B-FP8", "https://inference/"+site+"/v1"))
 	}
 	data = append(data, dep("gap-c", "code", "Qwen/Qwen3.5-4B-AWQ", "https://inference/gap-c/v1"), dep("gap-d", "Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-0.5B-Instruct", "https://inference/gap-d/v1"))
+	// A group only some projects are granted (the tree's llm-model-chat-large).
+	data = append(data, dep("gap-e", "chat-large", "qwen3.8-flash-next-iq3_s", "https://inference/gap-e/v1"))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -74,6 +76,9 @@ func aliasesServer(t *testing.T, src AliasSource) (*ModelAliases, http.Handler) 
 	acc := accessFor(t, &roleprovider.Mock{}, nil, nil)
 	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
 	if _, err := ws.UpsertFromTree(context.Background(), "p_llm", workspace.TreeProject{Name: "Nur LLM", Members: []workspace.Member{{Token: "user:member@dhbw.de"}}, LLMMTokens: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.UpsertFromTree(context.Background(), "p_large", workspace.TreeProject{Name: "Groß", Members: []workspace.Member{{Token: "user:large@dhbw.de"}}, LLMMTokens: 10, LLMModels: []string{"chat-large", "all-proxy-models"}}); err != nil {
 		t.Fatal(err)
 	}
 	quota := testQuota
@@ -201,4 +206,33 @@ func (f *flakySource) ModelInfo(context.Context) ([]litellm.Deployment, error) {
 
 func (f *flakySource) Health(context.Context) ([]litellm.HealthEndpoint, []litellm.HealthEndpoint, error) {
 	return nil, nil, nil
+}
+
+// chat-large shows only for people whose project was granted it; all-proxy-models is no alias and never shows.
+func TestModelAliasesGranted(t *testing.T) {
+	var calls atomic.Int32
+	var healthDown atomic.Bool
+	_, h := aliasesServer(t, litellm.New(fakeModelList(t, &calls, &healthDown), "master", 5*time.Second))
+	aliases := func(user string) string {
+		code, body := do(t, h, "GET", "/v1/models/aliases", user, nil)
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %s", user, code, body)
+		}
+		var v ModelAliasesResponse
+		_ = json.Unmarshal(body, &v)
+		var out []string
+		for _, a := range v.Aliases {
+			out = append(out, a.Alias+"="+strconv.Itoa(len(a.Models)))
+		}
+		return strings.Join(out, ",")
+	}
+	if got := aliases("member@dhbw.de"); strings.Contains(got, "chat-large") {
+		t.Errorf("member without the grant sees %s", got)
+	}
+	if got := aliases(""); strings.Contains(got, "chat-large") {
+		t.Errorf("admin without a project sees %s", got)
+	}
+	if got := aliases("large@dhbw.de"); got != "chat-default=1,chat-fast=1,code=2,embedding=0,chat-large=1" {
+		t.Errorf("granted member sees %s", got)
+	}
 }
