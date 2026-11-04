@@ -9,10 +9,13 @@ import (
 	"strings"
 )
 
-// Model weights stay in a node's cache (/var/lib/dhbw-gpu/cache) after its gap filler moved on to another model, 30–40 GB each on the large tier. The janitor (DaemonSet model-cache-janitor, Ansible tasks/inference.yaml) removes from every GPU node's cache what this ConfigMap does not keep for the node and nobody read for a while; the list says what the node needs now.
+// Model weights stay in a node's cache (/var/lib/dhbw-gpu/cache) after its gap filler moved on to another model, 30–40 GB each on the large tier; Strata's files (/var/lib/dhbw-gpu/strata) about 80 GB per quantisation. The janitor (DaemonSet model-cache-janitor, Ansible tasks/inference.yaml) removes from every GPU node what this ConfigMap does not keep for the node and nobody read (Strata: nobody planned) for a while; the list says what the node needs now.
 const modelCacheKeepName = "model-cache-keep"
 
-// modelCacheKeep is per GPU node the Hugging Face repositories its cache keeps, one per line: the model of its gap filler and what any vLLM pod on it runs (the base load, a gap filler still on its old model). Every GPU node has an entry, an empty one too: the janitor leaves a node without an entry alone.
+// strataKeepPrefix marks a Strata model in the keep list: Strata names its files on the node after the quantisation (models/models/IQ3_S, models/packs/iq3_s, install/strata-iq3_s.json), so the entry is "strata:IQ3_S", not a repository.
+const strataKeepPrefix = "strata:"
+
+// modelCacheKeep is per GPU node what its cache keeps, one per line: the Hugging Face repositories of its gap filler and of any vLLM pod on it (the base load, a gap filler still on its old model), and "strata:<quantisation>" for a Strata gap filler or a Strata pod still running there. Every GPU node has an entry, an empty one too: the janitor leaves a node without an entry alone.
 func modelCacheKeep(nodes []GPUNode, models map[string]CatalogModel, tiers map[string]string, pods []podInfo) map[string]string {
 	keep := map[string]map[string]bool{}
 	add := func(node, repo string) {
@@ -28,13 +31,18 @@ func modelCacheKeep(nodes []GPUNode, models map[string]CatalogModel, tiers map[s
 		if keep[n.Name] == nil {
 			keep[n.Name] = map[string]bool{}
 		}
-		// Strata keeps its files elsewhere (/var/lib/dhbw-gpu/strata), not in the Hugging Face cache.
-		if m, ok := gapModelFor(n, models, tiers); ok && m.engine() == EngineVLLM {
-			add(n.Name, m.Model)
+		if m, ok := gapModelFor(n, models, tiers); ok {
+			if m.engine() == EngineStrata {
+				settings, _ := strataSettings(m.Args) // checked by SaveModel
+				add(n.Name, strataKeep(settings["STRATA_QUANT"]))
+			} else {
+				add(n.Name, m.Model)
+			}
 		}
 	}
 	for _, p := range pods {
 		add(p.Spec.NodeName, modelRepo(p))
+		add(p.Spec.NodeName, strataKeep(podEnv(p, "STRATA_QUANT")))
 	}
 	out := make(map[string]string, len(keep))
 	for node, repos := range keep {
@@ -46,6 +54,26 @@ func modelCacheKeep(nodes []GPUNode, models map[string]CatalogModel, tiers map[s
 		out[node] = strings.Join(list, "\n")
 	}
 	return out
+}
+
+// strataKeep is the keep entry of a Strata quantisation; none without one.
+func strataKeep(quant string) string {
+	if quant == "" {
+		return ""
+	}
+	return strataKeepPrefix + quant
+}
+
+// podEnv is the value of a container variable of the pod, "" when none sets it.
+func podEnv(p podInfo, name string) string {
+	for _, c := range p.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == name {
+				return e.Value
+			}
+		}
+	}
+	return ""
 }
 
 // modelRepo is the repository a vLLM pod serves (--model), not the name it serves it under.

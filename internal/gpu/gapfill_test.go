@@ -82,19 +82,25 @@ func cacheKeep(k *fakeFleetKube) map[string]any {
 
 // A node keeps the model of its gap filler and whatever a vLLM pod on it runs: the base load, or a gap filler not yet on its new model.
 func TestModelCacheKeep(t *testing.T) {
-	models := map[string]CatalogModel{"small": {Key: "small", Model: "Qwen/S"}, "large": {Key: "large", Model: "Qwen/L"}}
+	models := map[string]CatalogModel{
+		"small": {Key: "small", Model: "Qwen/S"}, "large": {Key: "large", Model: "Qwen/L"},
+		"big": {Key: "big", Engine: EngineStrata, Model: "qwen3.8", Args: []string{"--family", "qwen", "--quant", "IQ3_S"}},
+	}
 	nodes := []GPUNode{
 		{Name: "a", Class: "general-small", Assignment: &NodeAssignment{Tier: "small"}},
 		{Name: "b", Class: "general-large", Assignment: &NodeAssignment{Tier: "large", GapModel: NoGapFiller}},
 		{Name: "c"},
+		// A Strata gap filler keeps its quantisation, and a Strata pod still on the old one keeps that one too; a Strata model is no repository of the Hugging Face cache.
+		{Name: "d", Class: "gb10", Assignment: &NodeAssignment{GapModel: "big"}},
 	}
 	var pods []podInfo
 	_ = json.Unmarshal([]byte(`[
 		{"spec":{"nodeName":"b","containers":[{"args":["--model=Qwen/Base","--port","8000"]}]}},
-		{"spec":{"nodeName":"a","containers":[{"args":["--model","Qwen/Old","--served-model-name","old"]}]}}
+		{"spec":{"nodeName":"a","containers":[{"args":["--model","Qwen/Old","--served-model-name","old"]}]}},
+		{"spec":{"nodeName":"d","containers":[{"env":[{"name":"STRATA_PORT","value":"8000"},{"name":"STRATA_QUANT","value":"Q4_K_M"}]}]}}
 	]`), &pods)
 	got := modelCacheKeep(nodes, models, map[string]string{"small": "small", "large": "large"}, pods)
-	want := map[string]string{"a": "Qwen/Old\nQwen/S", "b": "Qwen/Base", "c": ""}
+	want := map[string]string{"a": "Qwen/Old\nQwen/S", "b": "Qwen/Base", "c": "", "d": "strata:IQ3_S\nstrata:Q4_K_M"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v", got)
 	}
@@ -197,8 +203,9 @@ func TestStrataGapFiller(t *testing.T) {
 	if strings.Contains(dep, `"args"`) || strings.Contains(dep, "huggingface") {
 		t.Errorf("Strata deployment has vLLM's arguments or cache: %s", dep)
 	}
-	if got := cacheKeep(k); got["gpu-2"] != "" {
-		t.Errorf("Strata model in the Hugging Face cache list: %v", got)
+	// The keep list names Strata's quantisation, not the model as a Hugging Face repository.
+	if got := cacheKeep(k); got["gpu-2"] != "strata:IQ3_S" {
+		t.Errorf("Strata model in the keep list: %v", got)
 	}
 
 	// Back to vLLM: the reconcile removes the Strata Deployment (engine label differs) and creates the vLLM one under the same name.

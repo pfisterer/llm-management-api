@@ -142,8 +142,12 @@ type podInfo struct {
 			Name string `json:"name"`
 		} `json:"schedulingGates"`
 		Containers []struct {
-			Name      string   `json:"name"`
-			Args      []string `json:"args"`
+			Name string   `json:"name"`
+			Args []string `json:"args"`
+			Env  []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"env"`
 			Resources struct {
 				Requests map[string]string `json:"requests"`
 				Limits   map[string]string `json:"limits"`
