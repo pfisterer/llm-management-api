@@ -176,7 +176,7 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 //
 //	@ID				updateWorkspaceProject
 //	@Summary		Change a workspace project
-//	@Description	Admins change everything; the project's managers only the description, the members, the project image (project_image, or image_git_url and image_git_ref to build it from Git), the material and the project's release times (release, within release_max: the budget's, which admins set while the budget tree sends none).
+//	@Description	Admins change everything; the project's managers only the description, the members, the project image (project_image, or image_git_url and image_git_ref to build it from Git), the material, the project's release times (release, within release_max: the budget's, which admins set while the budget tree sends none) and the LLM project of its workspaces (default_llm_project: empty = automatic, "none", or a project with LLM tokens; 400 otherwise).
 //	@Tags			workspaces
 //	@Accept			json
 //	@Produce		json

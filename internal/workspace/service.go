@@ -312,6 +312,9 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 	return out, nil
 }
 
+// NoLLM is the value of DefaultLLMProject (and of a start's llm_project, gpu.NoLLM) for workspaces without LLM key.
+const NoLLM = "none"
+
 var slugRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
 func (s *Service) validate(p *Project) error {
@@ -319,6 +322,10 @@ func (s *Service) validate(p *Project) error {
 	p.Name = strings.TrimSpace(p.Name)
 	if !slugRE.MatchString(p.Slug) {
 		return refuse("Kurzname ungültig: Kleinbuchstaben, Ziffern und Bindestriche, höchstens 40 Zeichen.")
+	}
+	// "none" is the start without LLM (llm_project, gpu.NoLLM; DefaultLLMProject), never a project.
+	if p.Slug == NoLLM {
+		return refuse("Kurzname „none“ ist reserviert.")
 	}
 	if p.Name == "" {
 		p.Name = p.Slug
@@ -395,16 +402,16 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates), the material and the project's release times (within the budget's), in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
 	if !asAdmin {
-		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release
+		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject
 		p = cur
-		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release
+		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)
@@ -427,6 +434,13 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	if err := s.applyRelease(&p, cur); err != nil {
 		return Project{}, err
 	}
+	// Only a changed value is checked: a project whose LLM project lost its tokens stays editable (the start then gives no key).
+	p.DefaultLLMProject = strings.TrimSpace(p.DefaultLLMProject)
+	if p.DefaultLLMProject != cur.DefaultLLMProject {
+		if err := s.checkDefaultLLM(ctx, p); err != nil {
+			return Project{}, err
+		}
+	}
 	// Like the release times, only a changed value is checked: a project above a lowered upper bound stays editable (ScratchGB caps it where it is used).
 	if p.ScratchGB != cur.ScratchGB {
 		if err := s.checkScratch(p); err != nil {
@@ -435,6 +449,18 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	}
 	p.UpdatedBy = by
 	return p, s.store.Update(ctx, &p)
+}
+
+// checkDefaultLLM: the LLM project of the workspaces is empty, NoLLM or a project with LLM tokens. Whether each member may draw from it is decided at every start.
+func (s *Service) checkDefaultLLM(ctx context.Context, p Project) error {
+	if p.DefaultLLMProject == "" || p.DefaultLLMProject == NoLLM {
+		return nil
+	}
+	llm, err := s.store.Get(ctx, p.DefaultLLMProject)
+	if errors.Is(err, ErrNotFound) || (err == nil && llm.LLMMTokens <= 0) {
+		return refuse("„%s“ ist kein Projekt mit LLM-Tokens.", p.DefaultLLMProject)
+	}
+	return err
 }
 
 func (s *Service) Delete(ctx context.Context, slug string) error {

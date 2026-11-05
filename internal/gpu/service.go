@@ -392,9 +392,12 @@ type StartOptions struct {
 	Project  string
 	Profile  string
 	GPUClass string
-	// LLMProject is the project whose LLM tokens the server's key draws from (the hub's option llm_project); empty = the project itself, else the person's first LLM project.
+	// LLMProject is the project whose LLM tokens the server's key draws from (the hub's option llm_project): a slug, NoLLM, or empty = as the project sets it (default_llm_project), else the project itself when it has LLM tokens, else the person's first LLM project.
 	LLMProject string
 }
+
+// NoLLM is the choice llm_project that starts a server without an LLM key (no OPENAI_API_KEY, no provider "DHBW" in VS Code, none in the agents). Never a project's slug (workspace.validate reserves it); the same value as workspace.NoLLM.
+const NoLLM = "none"
 
 // StartServer starts a new named server for the person through the hub API: named <project>-<profile>, with -2, -3 … while that name runs. A stopped server of that name is started again with the new options. The person is created in the hub if they never logged in there.
 func (s *Service) StartServer(ctx context.Context, user string, o StartOptions) (Server, error) {

@@ -170,3 +170,58 @@ func TestTreeJobs(t *testing.T) {
 		t.Errorf("no queue without jobs: %+v", qs)
 	}
 }
+
+// "none" is the start without LLM (llm_project), so no project may be called that.
+func TestSlugNoneReserved(t *testing.T) {
+	p := Project{Slug: "None", Name: "x"}
+	if err := service().validate(&p); err == nil {
+		t.Errorf("slug %q accepted", p.Slug)
+	}
+}
+
+// The LLM project of the workspaces: managers set it, only to none or a project with LLM tokens; a value set before stays editable when that project lost its tokens.
+func TestDefaultLLMProject(t *testing.T) {
+	ctx := context.Background()
+	s := service()
+	for _, p := range []Project{
+		{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "user:m@dhbw.de", Role: RoleManager}}},
+		{Slug: "llm", Name: "LLM", Members: []Member{{Token: "user:m@dhbw.de"}}, LLMMTokens: 10},
+		{Slug: "leer", Name: "Leer", Members: []Member{{Token: "user:m@dhbw.de"}}},
+	} {
+		if _, err := s.create(ctx, p, "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := func(v string) error {
+		p, _ := s.Get(ctx, "kurs")
+		p.DefaultLLMProject = v
+		_, err := s.Update(ctx, p, "m@dhbw.de", false)
+		return err
+	}
+	for _, v := range []string{"leer", "fehlt"} {
+		if err := set(v); err == nil {
+			t.Errorf("%q accepted", v)
+		}
+	}
+	for _, v := range []string{"llm", "none", ""} {
+		if err := set(v); err != nil {
+			t.Errorf("%q: %v", v, err)
+		}
+	}
+	if err := set("llm"); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := s.Get(ctx, "llm")
+	l.LLMMTokens = 0
+	if _, err := s.Update(ctx, l, "admin", true); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.Get(ctx, "kurs")
+	p.Description = "neu"
+	if _, err := s.Update(ctx, p, "m@dhbw.de", false); err != nil {
+		t.Errorf("unchanged setting blocks an edit: %v", err)
+	}
+	if p, _ := s.Get(ctx, "kurs"); p.DefaultLLMProject != "llm" {
+		t.Errorf("setting %q", p.DefaultLLMProject)
+	}
+}

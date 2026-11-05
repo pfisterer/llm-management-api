@@ -101,6 +101,8 @@ type Project struct {
 	// DeleteAt is the day the budget tree deletes the project with its workspace storage (its end plus a grace period); nil = not planned.
 	DeleteAt *time.Time `json:"delete_at,omitempty" gorm:"column:delete_at"`
 	EndsAt   *time.Time `json:"ends_at,omitempty"` // after this day nobody can start in the project
+	// DefaultLLMProject is whose LLM tokens the project's workspaces use when the start chooses none (the managers' setting): empty = automatic (the project itself when it has LLM tokens, else the person's first LLM project), NoLLM = without LLM, else the slug of a project with LLM tokens. A person who is no member there starts without LLM, never with another project's tokens.
+	DefaultLLMProject string `json:"default_llm_project,omitempty" gorm:"column:default_llm_project" example:"none"`
 	// NoWorkspaces: the tree gives the project no workspace resources (LLM tokens only, docs/bauplan.md 8.14); it is then not offered for servers.
 	NoWorkspaces bool `json:"no_workspaces,omitempty" gorm:"column:no_workspaces"`
 	// TreeProfiles: the budget tree grants the server types (Profiles); they are then the tree's like its other fields.

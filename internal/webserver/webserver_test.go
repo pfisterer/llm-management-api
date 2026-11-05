@@ -225,7 +225,7 @@ func TestRequireWorkspace(t *testing.T) {
 
 // Starting from the self-service UI: only the caller's projects, profiles and GPU classes; the hub checks the rest.
 func TestStartServer(t *testing.T) {
-	_, _, h := llmServer(t)
+	_, ws, h := llmServer(t)
 	code, body := do(t, h, "GET", "/v1/gpu/start-options", "member@dhbw.de", nil)
 	// The LLM-only project is no workspace project, but it is one to draw the workspaces' LLM tokens from.
 	if code != 200 || !strings.Contains(string(body), `"slug":"t-1"`) || strings.Contains(string(body), `"projects":[{"slug":"t-1","name":"Kurs"},{"slug":"t-llm"`) || !strings.Contains(string(body), `"profiles":[{"slug":"cpu"`) || !strings.Contains(string(body), `"llm_projects":[{"slug":"t-1","name":"Kurs"},{"slug":"t-llm","name":"Nur LLM"}]`) {
@@ -239,10 +239,30 @@ func TestStartServer(t *testing.T) {
 		{StartServerRequest{Project: "t-1", Profile: "nope"}, 400},
 		{StartServerRequest{Project: "t-1", Profile: "gpu", GPUClass: "other"}, 400},
 		{StartServerRequest{Project: "t-1", Profile: "gpu"}, 202},
+		// Whose LLM tokens: one of llm_projects, or none; another project is refused.
+		{StartServerRequest{Project: "t-1", Profile: "cpu", LLMProject: "t-llm"}, 202},
+		{StartServerRequest{Project: "t-1", Profile: "cpu", LLMProject: "none"}, 202},
+		{StartServerRequest{Project: "t-1", Profile: "cpu", LLMProject: "t-2"}, 400},
 	} {
 		if code, body := do(t, h, "POST", "/v1/gpu/servers", "member@dhbw.de", tc.req); code != tc.want {
 			t.Errorf("%+v: %d %s, want %d", tc.req, code, body, tc.want)
 		}
+	}
+	// What a start without a choice gets: the project's own tokens; with the setting the set LLM project.
+	if !strings.Contains(string(body), `"llm_default":"t-1","llm_default_source":"project"`) {
+		t.Errorf("start options without a setting: %s", body)
+	}
+	// Set by the project's managers (PUT /v1/workspaces/projects/{slug}, workspace.Update; checked in the workspace package).
+	p, err := ws.Get(context.Background(), "t-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.DefaultLLMProject = "t-llm"
+	if _, err := ws.Update(context.Background(), p, "root@dhbw.de", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := do(t, h, "GET", "/v1/gpu/start-options", "member@dhbw.de", nil); !strings.Contains(string(body), `"default_llm_project":"t-llm","llm_default":"t-llm","llm_default_source":"preset"`) {
+		t.Errorf("start options with the setting: %s", body)
 	}
 	if code, _ := do(t, h, "POST", "/v1/gpu/servers", "nobody@dhbw.de", StartServerRequest{Project: "t-1", Profile: "cpu"}); code != http.StatusForbidden {
 		t.Errorf("nobody: %d", code)
@@ -455,12 +475,44 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 			t.Errorf("%s: %d %+v, want 403 without a key", project, code, out)
 		}
 	}
-	// A project without tokens draws from the person's LLM project (chosen at the start, else the first); its own key never exists.
+	// A project without tokens and without a setting draws from the person's first LLM project; its own key never exists.
 	if code, out := post("t-ws"); code != 200 || out.LLMProject != "t-1" || out.Key != keys.WorkspaceKey("master", "kc-sub-m", "t-1") || f.keyBy(out.Key)["team_id"] != "t-1" {
 		t.Errorf("project without tokens: %d %+v, want the key of t-1", code, out)
 	}
 	if code, out := post("t-ws", "t-1"); code != 200 || out.LLMProject != "t-1" {
 		t.Errorf("chosen LLM project: %d %+v", code, out)
+	}
+	// The project's setting: without LLM, or an LLM project the person may not draw from (no key, not the first one instead); a choice at the start still wins.
+	setLLM := func(v string) {
+		p, err := ws.Get(ctx, "t-ws")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.DefaultLLMProject = v
+		if _, err := ws.Update(ctx, p, "admin", true); err != nil {
+			t.Fatalf("set %q: %v", v, err)
+		}
+	}
+	setLLM("none")
+	if code, out := post("t-ws"); code != 200 || out.Key != "" || out.Reason != "the project's workspaces run without LLM" {
+		t.Errorf("project without LLM: %d %+v", code, out)
+	}
+	if code, out := post("t-ws", "t-1"); code != 200 || out.LLMProject != "t-1" {
+		t.Errorf("chosen over the setting: %d %+v", code, out)
+	}
+	setLLM("t-other")
+	if code, out := post("t-ws"); code != 200 || out.Key != "" || !strings.Contains(out.Reason, "t-other") {
+		t.Errorf("set LLM project of somebody else: %d %+v, want no key", code, out)
+	}
+	setLLM("")
+	// Without LLM, chosen at the start: no key even where the project has tokens, and LiteLLM is not asked.
+	before := len(f.keys)
+	if code, out := post("t-1", "none"); code != 200 || out.Key != "" || out.Reason != "started without LLM" || len(f.keys) != before {
+		t.Errorf("without LLM: %d %+v, want no key", code, out)
+	}
+	// Not for strangers either: membership comes first.
+	if code, _ := post("t-other", "none"); code != http.StatusForbidden {
+		t.Errorf("without LLM in a project of somebody else: %d, want 403", code)
 	}
 	if code, out := post("t-ws", "t-other"); code != 200 || out.Key != "" || out.Reason == "" {
 		t.Errorf("LLM project of somebody else: %d %+v, want no key", code, out)
@@ -484,6 +536,32 @@ func TestGPUHubWorkspaceKey(t *testing.T) {
 	r = GPUHubRouter(GPUHubOptions{Access: acc, Workspaces: ws, Token: "secret", Keys: testKeys(srv.URL), Quota: broken, MasterKey: "master", Log: zap.NewNop().Sugar()}, true)
 	if code, out := post("t-1"); code != http.StatusServiceUnavailable || out.Key != "" || out.Reason != "" {
 		t.Errorf("projects not readable: %d %+v, want 503 without a reason", code, out)
+	}
+}
+
+// The LLM project of a workspace key: the choice at the start, else the project's setting (never another project when the person may not draw from the set one), else the project itself, else the person's first LLM project.
+func TestLLMProjectFor(t *testing.T) {
+	llm := []HubLLMProject{{Slug: "a"}, {Slug: "b"}}
+	for _, tc := range []struct {
+		chosen, project, preset string
+		want                    LLMPick
+		ok                      bool
+	}{
+		{"", "b", "", LLMPick{Project: "b", Source: LLMOwn}, true},
+		{"", "ws", "", LLMPick{Project: "a", Source: LLMFallback}, true},
+		{"", "ws", "b", LLMPick{Project: "b", Source: LLMPreset}, true},
+		{"", "a", "none", LLMPick{Source: LLMPreset}, true},
+		{"", "a", "fremd", LLMPick{Source: LLMPreset, Unavailable: true}, true},
+		{"b", "a", "none", LLMPick{Project: "b", Source: LLMChosen}, true},
+		{"none", "a", "b", LLMPick{Source: LLMChosen}, true},
+		{"x", "a", "", LLMPick{Project: "x", Source: LLMChosen}, false},
+	} {
+		if got, ok := llmProjectFor(llm, tc.chosen, tc.project, tc.preset); got != tc.want || ok != tc.ok {
+			t.Errorf("chosen %q in %q set %q: %+v %v, want %+v %v", tc.chosen, tc.project, tc.preset, got, ok, tc.want, tc.ok)
+		}
+	}
+	if got, ok := llmProjectFor(nil, "", "ws", ""); got != (LLMPick{Source: LLMNone}) || !ok {
+		t.Errorf("no LLM project at all: %+v %v", got, ok)
 	}
 }
 

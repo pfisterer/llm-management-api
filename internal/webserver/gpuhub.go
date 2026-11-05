@@ -57,6 +57,11 @@ type HubProject struct {
 	ImageLabel   string `json:"image_label,omitempty"`
 	// SplitNeedsBase: the project allows "CPU + GPU-Kernel", but its environment is not built on one of our bases, so the start does not offer it and says how to get it.
 	SplitNeedsBase bool `json:"split_needs_base,omitempty"`
+	// DefaultLLMProject is the project's setting for its workspaces' LLM (default_llm_project: empty = automatic, "none", or a slug). LLMDefault is what a start of the caller without a choice gets: a slug or "none"; LLMDefaultSource why (preset, project, fallback, none), LLMDefaultUnavailable: the set LLM project is none of the caller's, so the start has no LLM. Only in the start options.
+	DefaultLLMProject     string `json:"default_llm_project,omitempty"`
+	LLMDefault            string `json:"llm_default,omitempty" example:"none"`
+	LLMDefaultSource      string `json:"llm_default_source,omitempty" enums:"preset,project,fallback,none"`
+	LLMDefaultUnavailable bool   `json:"llm_default_unavailable,omitempty"`
 	// StorageGB is the size of the project's volume (PVC ws-<slug>) the hub creates and grows; 0 = no volume.
 	StorageGB int `json:"storage_gb"`
 	// GPUClasses the project may use, for the choice at the start (only offered with more than one).
@@ -104,20 +109,45 @@ func llmProjects(ctx context.Context, q LLMQuota, tokens []string) []HubLLMProje
 	return out
 }
 
-// llmProjectFor is the project whose tokens a workspace key draws from: the chosen one, else the workspace project itself, else the first LLM project; "" when the person has none. A chosen project that is no LLM project of theirs gives "" and false.
-func llmProjectFor(llm []HubLLMProject, chosen, project string) (string, bool) {
+// LLM sources: why a workspace key draws from where it does.
+const (
+	LLMChosen   = "chosen"   // chosen at the start
+	LLMPreset   = "preset"   // the project's setting default_llm_project
+	LLMOwn      = "project"  // the project's own LLM tokens
+	LLMFallback = "fallback" // nothing set, the project has no tokens: the person's first LLM project
+	LLMNone     = "none"     // the person has no LLM project at all
+)
+
+// LLMPick is whose tokens a workspace key draws from: Project "" = no key; Source says why (LLMChosen …); Unavailable: the project's setting names an LLM project the person may not draw from, so there is no key (never another project instead).
+type LLMPick struct {
+	Project     string
+	Source      string
+	Unavailable bool
+}
+
+// llmProjectFor is the project whose tokens a workspace key draws from, in this order: the choice at the start (a slug, or gpu.NoLLM), the project's setting (preset: a slug, or workspace.NoLLM), the workspace project itself when it has LLM tokens, the person's first LLM project. A chosen project that is no LLM project of theirs gives false.
+func llmProjectFor(llm []HubLLMProject, chosen, project, preset string) (LLMPick, bool) {
 	has := func(slug string) bool {
 		return slices.ContainsFunc(llm, func(p HubLLMProject) bool { return p.Slug == slug })
 	}
 	switch {
+	case chosen == gpu.NoLLM:
+		return LLMPick{Source: LLMChosen}, true
 	case chosen != "":
-		return chosen, has(chosen)
+		return LLMPick{Project: chosen, Source: LLMChosen}, has(chosen)
+	case preset == workspace.NoLLM:
+		return LLMPick{Source: LLMPreset}, true
+	case preset != "":
+		if has(preset) {
+			return LLMPick{Project: preset, Source: LLMPreset}, true
+		}
+		return LLMPick{Source: LLMPreset, Unavailable: true}, true
 	case has(project):
-		return project, true
+		return LLMPick{Project: project, Source: LLMOwn}, true
 	case len(llm) > 0:
-		return llm[0].Slug, true
+		return LLMPick{Project: llm[0].Slug, Source: LLMFallback}, true
 	}
-	return "", true
+	return LLMPick{Source: LLMNone}, true
 }
 
 // HubGPUClass is a GPU class in the start form: its name, and whether it has GPUs right now.
@@ -135,7 +165,7 @@ type GPUHubAccessResponse struct {
 	MaxGPUs  int          `json:"max_gpus"`
 	Admin    bool         `json:"admin"`
 	Projects []HubProject `json:"projects"`
-	// LLMProjects are the person's projects with LLM tokens: the choice at the start of whose tokens the server's key draws from (VS Code's chat, the agents, OPENAI_API_KEY); empty = no LLM in the workspaces, the choice is not offered.
+	// LLMProjects are the person's projects with LLM tokens: the choice at the start of whose tokens the server's key draws from (VS Code's chat, the agents, OPENAI_API_KEY), next to gpu.NoLLM; empty = no LLM in the workspaces, the choice is not offered.
 	LLMProjects []HubLLMProject `json:"llm_projects"`
 	// GetProjectURL is where somebody without a project gets one (self-service start page); set when not allowed.
 	GetProjectURL string `json:"get_project_url,omitempty"`
@@ -291,7 +321,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		})
 	}
 	if o.Keys != nil {
-		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws only from the project's own LLM tokens and only for its members. A person who is no member gets 403; a project without LLM tokens (or a person the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without, and the hub removes a provider "DHBW" left in VS Code's settings. Only that answer means "definitely no key": anything that could not be found out (LiteLLM, projects not readable) is an error status, on which the hub keeps the settings as they are.
+		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws from the LLM project chosen at the start, else from the project's setting default_llm_project, else from the workspace project's own LLM tokens, else from the person's first LLM project (llmProjectFor), and only for members. A person who is no member gets 403; a start without LLM (chosen or set for the project), a set LLM project the person may not draw from (or a person the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without, and the hub removes a provider "DHBW" left in VS Code's settings. Only that answer means "definitely no key": anything that could not be found out (LiteLLM, projects not readable) is an error status, on which the hub keeps the settings as they are.
 		r.POST("/gpu/hub/workspace-key", func(c *gin.Context) {
 			if !hubToken(c, o.Token) {
 				return
@@ -316,6 +346,16 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			if err != nil || proj.RoleOf(tokens) == "" {
 				abort(c, http.StatusForbidden, "forbidden", "Kein Mitglied des Projekts.")
+				return
+			}
+			// Without LLM, chosen at the start or set for the project: definitely no key, without asking LiteLLM.
+			chosen := strings.TrimSpace(req.LLMProject)
+			if chosen == gpu.NoLLM || (chosen == "" && proj.DefaultLLMProject == workspace.NoLLM) {
+				reason := "started without LLM"
+				if chosen == "" {
+					reason = "the project's workspaces run without LLM"
+				}
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: reason})
 				return
 			}
 			sub := strings.TrimSpace(req.Subject)
@@ -348,10 +388,17 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 					llm = append(llm, HubLLMProject{Slug: p.Slug, Name: p.Name})
 				}
 			}
-			target, ok := llmProjectFor(llm, strings.TrimSpace(req.LLMProject), req.Project)
+			pick, ok := llmProjectFor(llm, chosen, req.Project, proj.DefaultLLMProject)
+			target := pick.Project
 			switch {
 			case !ok:
 				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the chosen LLM project is none of the person's projects with LLM tokens"})
+				return
+			case pick.Unavailable:
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the project's LLM project for workspaces (" + proj.DefaultLLMProject + ") is none of the person's projects with LLM tokens"})
+				return
+			case pick.Source == LLMPreset && target == "":
+				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the project's workspaces run without LLM"})
 				return
 			case target == "":
 				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "no project with LLM tokens"})
@@ -425,7 +472,7 @@ type WorkspaceKeyRequest struct {
 	User    string `json:"user"`
 	Subject string `json:"sub"`
 	Project string `json:"project"`
-	// LLMProject is the project whose LLM tokens the key draws from, as chosen at the start; empty = the project itself, else the person's first LLM project.
+	// LLMProject is the project whose LLM tokens the key draws from, as chosen at the start: a slug, "none" (gpu.NoLLM: no key), or empty = as the project sets it (default_llm_project), else the project itself when it has LLM tokens, else the person's first LLM project.
 	LLMProject string `json:"llm_project"`
 }
 
