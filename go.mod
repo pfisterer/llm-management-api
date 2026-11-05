@@ -2,6 +2,8 @@ module github.com/pfisterer/llm-management-api
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/joho/godotenv v1.5.1
