@@ -120,6 +120,7 @@ func TestSubmitAndSyncJob(t *testing.T) {
 		`"subPath":"homes/dennis-pfisterer-dhbw-de---c771a8ee"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"claimName":"ws-t-a"`,
 		`"nvidia.com/gpu":"1"`, `"ephemeral-storage":"5Gi"`, `"kubernetes.io/arch":"amd64"`, `"component":"job"`, `"dhbw.cloud/profile":"job"`, `"hub.jupyter.org/username":"dennis.pfisterer@dhbw.de"`,
 		`"name":"DHBW_JOB_WORKDIR","value":"projects/kurs"`, `"image":"reg/platform/base-python:v2.7.2@sha256:abc"`, `"terminationGracePeriodSeconds":120`,
+		`"emptyDir":{"medium":"Memory","sizeLimit":"5616Mi"},"name":"dshm"`, `"mountPath":"/dev/shm","name":"dshm"`,
 	} {
 		if !strings.Contains(obj, want) {
 			t.Errorf("job object lacks %s:\n%s", want, obj)

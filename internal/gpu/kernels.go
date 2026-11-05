@@ -140,6 +140,19 @@ func kernelScratchResources(gb int, requests, limits map[string]any) {
 	requests["ephemeral-storage"] = fmt.Sprintf("%dGi", min(gb, KernelScratchRequestGB))
 }
 
+// shmMaxMi caps /dev/shm (shmVolume): enough for PyTorch's DataLoader with several workers and prefetched batches, NCCL and the like; more than that is a sign of a mistake rather than of need.
+const shmMaxMi = 8 * 1024
+
+// shmVolume is /dev/shm for a workspace container (GPU kernel, batch job; the hub does the same for the servers, 15-dhbw-gpu-quota): an emptyDir in memory instead of the runtime's 64 MB, which PyTorch's DataLoader with num_workers > 0 overruns ("unable to allocate shared memory"). Its size is a quarter of the container's memory limit (memLimit, a Kubernetes quantity), at most shmMaxMi: what is written there is memory of the pod and counts against that limit, so three quarters stay for the processes, and an overrun shows as a full /dev/shm rather than as an OOM kill. tmpfs is no ephemeral-storage, the local storage's limit (kernelScratchResources) does not count it.
+func shmVolume(memLimit string) (volume, mount map[string]any) {
+	mi := int(parseGiB(memLimit) * 1024 / 4)
+	if mi <= 0 || mi > shmMaxMi {
+		mi = shmMaxMi
+	}
+	return map[string]any{"name": "dshm", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": fmt.Sprintf("%dMi", mi)}},
+		map[string]any{"name": "dshm", "mountPath": "/dev/shm"}
+}
+
 func (s *Service) kernelNamespace() string {
 	if s.cfg.WorkspaceNamespace != "" {
 		return s.cfg.WorkspaceNamespace
@@ -368,12 +381,14 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 		// The limit for the base's warning in JupyterLab from 80 % (dhbw_scratch), as the hub sets it for the server.
 		env = append(env, envVar("DHBW_SCRATCH_GB", strconv.Itoa(scratchGB)))
 	}
+	shm, shmMount := shmVolume(limits["memory"].(string))
+	mounts = append(mounts, shmMount)
 	spec := map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
 		"enableServiceLinks":           false,
 		"securityContext":              map[string]any{"runAsUser": 1000, "runAsGroup": 100, "fsGroup": 100},
-		"volumes":                      []any{volume},
+		"volumes":                      []any{volume, shm},
 	}
 	if deadline > 0 {
 		spec["activeDeadlineSeconds"] = int64(deadline / time.Second)

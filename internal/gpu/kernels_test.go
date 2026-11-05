@@ -90,7 +90,8 @@ func TestStartKernel(t *testing.T) {
 	}
 	b, _ := json.Marshal(k.created[0])
 	pod := string(b)
-	for _, want := range []string{`"image":"reg/envs/ml:1"`, `"claimName":"ws-ml"`, `"subPath":"homes/a"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"OPENAI_API_KEY"`, `"workingDir":"/home/jovyan/kurs"`, `"kueue.x-k8s.io/queue-name":"gpu-general-small"`, `"nvidia.com/gpu":"1"`, `"dhbw.cloud/kernel-owner":"jupyter-a-40dhbw-2ede"`, `"uid":"u1"`, `"automountServiceAccountToken":false`, `"activeDeadlineSeconds":14400`} {
+	for _, want := range []string{`"image":"reg/envs/ml:1"`, `"claimName":"ws-ml"`, `"subPath":"homes/a"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"OPENAI_API_KEY"`, `"workingDir":"/home/jovyan/kurs"`, `"kueue.x-k8s.io/queue-name":"gpu-general-small"`, `"nvidia.com/gpu":"1"`, `"dhbw.cloud/kernel-owner":"jupyter-a-40dhbw-2ede"`, `"uid":"u1"`, `"automountServiceAccountToken":false`, `"activeDeadlineSeconds":14400`,
+		`"emptyDir":{"medium":"Memory","sizeLimit":"1192Mi"},"name":"dshm"`, `"mountPath":"/dev/shm","name":"dshm"`} {
 		if !strings.Contains(pod, want) {
 			t.Errorf("kernel pod lacks %s: %s", want, pod)
 		}
@@ -243,5 +244,15 @@ func TestBuildJobKeepsItsEphemeralStorage(t *testing.T) {
 	b, _ := json.Marshal(buildJob(Config{}, "b", "builder", Environment{}, "ml", "amd64", "reg/envs/ml:1", "", false))
 	if !strings.Contains(string(b), `"ephemeral-storage":"40Gi"`) {
 		t.Errorf("build job: %s", b)
+	}
+}
+
+// /dev/shm is a quarter of the memory limit in memory, at most 8 GiB; an unreadable limit gets the cap.
+func TestShmVolume(t *testing.T) {
+	for limit, want := range map[string]string{"5G": "1192Mi", "8G": "1907Mi", "22175Mi": "5543Mi", "64Gi": "8192Mi", "": "8192Mi", "x": "8192Mi"} {
+		v, m := shmVolume(limit)
+		if got := v["emptyDir"].(map[string]any)["sizeLimit"]; got != want || v["emptyDir"].(map[string]any)["medium"] != "Memory" || m["mountPath"] != "/dev/shm" || m["name"] != v["name"] {
+			t.Errorf("%q: %v %v, want %s", limit, v, m, want)
+		}
 	}
 }

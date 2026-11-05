@@ -680,13 +680,14 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		jobLabelUser: hubLabel(r.Person), "dhbw.cloud/job-id": r.ID}
 	requests, limits := sp.requests, sp.limits
 	kernelScratchResources(sp.ScratchGB, requests, limits)
+	shm, shmMount := shmVolume(fmt.Sprint(limits["memory"]))
 	spec := map[string]any{
 		"restartPolicy":                 "Never",
 		"terminationGracePeriodSeconds": s.jobGraceSeconds(),
 		"automountServiceAccountToken":  false,
 		"enableServiceLinks":            false,
 		"securityContext":               map[string]any{"runAsUser": 1000, "runAsGroup": 100, "fsGroup": 100},
-		"volumes":                       []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]any{"claimName": "ws-" + r.Project}}},
+		"volumes":                       []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]any{"claimName": "ws-" + r.Project}}, shm},
 	}
 	if !s.cfg.Kernels.NoGPU {
 		requests["nvidia.com/gpu"], limits["nvidia.com/gpu"] = fmt.Sprint(r.GPUs), fmt.Sprint(r.GPUs)
@@ -722,7 +723,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		"workingDir":      "/home/jovyan",
 		"securityContext": sec,
 		"resources":       map[string]any{"requests": requests, "limits": limits},
-		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/home/jovyan", "subPath": home}, shared},
+		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/home/jovyan", "subPath": home}, shared, shmMount},
 	}}
 	if sp.LLMKey != "" {
 		// The key from its Secret, so that it is in neither the Job nor the pod spec; the address as it is, like OPENAI_BASE_URL in a workspace.
