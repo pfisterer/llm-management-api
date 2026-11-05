@@ -10,13 +10,15 @@ In den Workspaces der DHBW Cloud ist das Paket schon installiert.
 
 ## Anmelden
 
-Das Werkzeug meldet sich mit einem persönlichen API-Token an. Es wird im Self-Service-Portal angelegt und beginnt mit `aiaas_`.
+In einem Workspace der DHBW Cloud ist keine Anmeldung nötig: das Werkzeug nimmt das Token des Workspaces (`JUPYTERHUB_API_TOKEN`) und spricht den Dienst über die Adresse für Workspaces an (`DHBW_CLOUD_WORKSPACE_URL`, setzt die Plattform). Damit sind die Batch-Jobs und die Projektliste mit den Rechten der Person in ihren Projekten erreichbar, Verwaltungsrechte der Plattform nicht.
+
+Außerhalb eines Workspaces meldet sich das Werkzeug mit einem persönlichen API-Token an. Es wird im Self-Service-Portal angelegt und beginnt mit `aiaas_`.
 
 ```
 dhbw-cloud login                 # fragt das Token verdeckt ab und speichert es in ~/.config/dhbw-cloud/token
 ```
 
-Statt der Datei geht auch die Umgebungsvariable `DHBW_CLOUD_TOKEN`. Die Adresse des Dienstes ist `DHBW_CLOUD_URL`, ohne Angabe die des Produktivbetriebs. In einem Workspace setzt die Plattform `DHBW_CLOUD_URL` und `DHBW_PROJECT` selbst.
+Statt der Datei geht auch die Umgebungsvariable `DHBW_CLOUD_TOKEN`. Die Adresse des Dienstes ist `DHBW_CLOUD_URL`, ohne Angabe die des Produktivbetriebs. In einem Workspace setzt die Plattform `DHBW_CLOUD_URL` und `DHBW_PROJECT` selbst. Reihenfolge: ein in `DHBW_CLOUD_TOKEN` gesetztes API-Token, dann im Workspace dessen Token, dann die Token-Datei. Im Workspace stört eine alte Token-Datei im Home also nicht; wer dort ausdrücklich mit einem API-Token arbeiten will (etwa für Rechte als Admin), setzt `DHBW_CLOUD_TOKEN`. `dhbw-cloud logout` löscht die Datei.
 
 ## Projekt finden
 
@@ -65,13 +67,14 @@ dhbw-cloud job submit --gpu-class general-large -- python train.py
 | `--max-hours` | Höchstlaufzeit in Stunden; Standard die des Projekts |
 | `--workdir` | Arbeitsverzeichnis im Home; Standard das aktuelle Verzeichnis |
 | `--notebook` | Notebook statt Befehl |
+| `--llm-project` | LLM-Projekt für `OPENAI_API_KEY` im Job: ein eigenes Projekt mit LLM-Tokens oder `none`; Standard wie im Workspace des Projekts |
 | `-f`, `--follow` | danach die Ausgabe verfolgen, bis der Job endet; Fehlercode, wenn er scheitert |
 
 Ein Job läuft ohne geöffneten Workspace weiter. Ist er verdrängbar und braucht ein Workspace die GPU, wird er angehalten, wartet erneut und beginnt dann von vorn. Wer lange rechnet, speichert deshalb Zwischenstände (Checkpoints) im Ordner `DHBW_JOB_DIR` (`~/jobs/<name>`) und setzt dort beim nächsten Versuch fort.
 
 ### Verdrängung und Checkpoints
 
-Wird ein Job verdrängt, abgebrochen oder erreicht er seine Höchstlaufzeit, bekommt der Befehl das Signal `SIGTERM`, und zwar alle seine Prozesse (auch die Programme, die ein Skript startet). Danach bleiben ihm 120 Sekunden, um seinen Zwischenstand zu speichern; dann wird er hart beendet. Die letzten Ausgaben landen noch im Protokoll. Endet der Befehl nach dem Signal mit 0, zählt der Lauf trotzdem nicht als erfolgreich (Exit-Code 143), denn der Job ist nicht fertig.
+Wird ein Job verdrängt, abgebrochen oder erreicht er seine Höchstlaufzeit, bekommt der Befehl das Signal `SIGTERM`, und zwar alle seine Prozesse (auch die Programme, die ein Skript startet). Danach bleiben ihm `DHBW_JOB_GRACE_SECONDS` Sekunden (Standard 120), um seinen Zwischenstand zu speichern; dann wird er hart beendet. So lange wartet bei einer Verdrängung auch der Workspace auf die GPU. Die letzten Ausgaben landen noch im Protokoll. Endet der Befehl nach dem Signal mit 0, zählt der Lauf trotzdem nicht als erfolgreich (Exit-Code 143), denn der Job ist nicht fertig.
 
 `DHBW_JOB_ATTEMPT` sagt, der wievielte Start des Jobs das ist: 1 beim ersten, nach jeder Verdrängung einer mehr. Gezählt wird im Ordner des Jobs, je Job-ID; ein neuer Job mit demselben Namen beginnt wieder bei 1, sieht aber die Dateien im Ordner (so kann er an Checkpoints eines früheren Jobs anknüpfen).
 
@@ -113,7 +116,7 @@ for epoche in range(start, 100):
     speichern(epoche)
 ```
 
-Hinweise: Ein Schritt muss deutlich kürzer als 120 Sekunden sein, sonst reicht die Zeit nicht; dauert er länger, auf das Speichern beim Signal verzichten und nur regelmäßig speichern. Notebooks (papermill) bekommen das Signal nicht in ihre Zellen; dort helfen nur regelmäßige Checkpoints. Bibliotheken wie PyTorch Lightning oder Hugging Face `Trainer` speichern selbst regelmäßig (`ModelCheckpoint`, `save_steps`) und setzen mit `ckpt_path` bzw. `resume_from_checkpoint` fort; als Ordner `DHBW_JOB_DIR` angeben.
+Hinweise: Ein Schritt muss deutlich kürzer als `DHBW_JOB_GRACE_SECONDS` sein, sonst reicht die Zeit nicht; dauert er länger, auf das Speichern beim Signal verzichten und nur regelmäßig speichern. Notebooks (papermill) bekommen das Signal nicht in ihre Zellen; dort helfen nur regelmäßige Checkpoints. Bibliotheken wie PyTorch Lightning oder Hugging Face `Trainer` speichern selbst regelmäßig (`ModelCheckpoint`, `save_steps`) und setzen mit `ckpt_path` bzw. `resume_from_checkpoint` fort; als Ordner `DHBW_JOB_DIR` angeben.
 
 ### Verfolgen und abbrechen
 
@@ -129,6 +132,17 @@ dhbw-cloud job cancel j-4f3a9c0d2e       # abbrechen
 
 Ein wartender Job zeigt seinen Platz in der Warteschlange. Nach dem Ende bleiben Zustand, Exit-Code, Zeiten, GPU-Stunden und das Ende der Ausgabe erhalten; die vollständige Ausgabe jedes Versuchs liegt in `~/jobs/<name>/`.
 
+### Ergebnisse holen
+
+Die Dateien eines Jobs lassen sich auch ohne Workspace holen, während er läuft und nach seinem Ende. Pfade sind relativ zum Home, wie `dhbw-cloud job files` sie zeigt. Die Person, die den Job abgeschickt hat, sieht ihr ganzes Home im Projekt; Verwaltende des Projekts sehen nur den Ordner des Jobs `~/jobs/<name>`. Die erste Anfrage dauert einige Sekunden. Eine Datei darf höchstens 5 GB groß sein; größere Ergebnisse über S3 oder einen Workspace holen.
+
+```
+dhbw-cloud job files j-4f3a9c0d2e                         # Ordner des Jobs, ~/jobs/<name>
+dhbw-cloud job files j-4f3a9c0d2e projekte/kurs/out       # ein anderer Ordner im Home
+dhbw-cloud job get j-4f3a9c0d2e jobs/training-1/model.pt  # in den aktuellen Ordner
+dhbw-cloud job get j-4f3a9c0d2e jobs/training-1/log.csv -o - | head
+```
+
 ### Umgebung im Job
 
 | Variable | Inhalt |
@@ -137,11 +151,13 @@ Ein wartender Job zeigt seinen Platz in der Warteschlange. Nach dem Ende bleiben
 | `DHBW_JOB_NAME` | Name des Jobs |
 | `DHBW_JOB_DIR` | `~/jobs/<name>`, für Ausgaben und Zwischenstände |
 | `DHBW_JOB_ATTEMPT` | der wievielte Start dieses Jobs (1, nach jeder Verdrängung einer mehr) |
+| `DHBW_JOB_GRACE_SECONDS` | Sekunden zwischen `SIGTERM` und dem harten Ende |
 | `DHBW_PROJECT` | Projekt |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | LLM-Schlüssel und Adresse der LLM-API wie im Workspace des Projekts (fehlen bei `--llm-project none` oder ohne LLM-Projekt) |
 
 ## Von Python aus
 
-`dhbw_cloud.client()` gibt den Client mit Adresse und Token aus Umgebung oder Token-Datei zurück. Die Operationen liegen unter `dhbw_cloud.api.api.<bereich>`; jede hat `sync`, `sync_detailed`, `asyncio` und `asyncio_detailed`.
+`dhbw_cloud.client()` gibt den Client mit Adresse und Token aus Umgebung, Token-Datei oder Workspace zurück. Die Operationen liegen unter `dhbw_cloud.api.api.<bereich>`; jede hat `sync`, `sync_detailed`, `asyncio` und `asyncio_detailed`.
 
 ```python
 import dhbw_cloud

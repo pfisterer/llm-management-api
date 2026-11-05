@@ -52,7 +52,7 @@ RP_SWAGGER_URL    ?= https://github.com/pfisterer/role-provider-service/releases
 
 .DEFAULT_GOAL := all
 
-.PHONY: publish all image build clean doc convert client bundle npm-package npm-pack npm-publish py-package py-publish check swag run help install-npm docker docker-login docker-build multi-arch-build dev helm-update test generate-role-provider-client print-rp-swagger-url bump version-check
+.PHONY: publish all image build clean doc convert client bundle npm-package npm-pack npm-publish py-package py-test py-publish check swag run help install-npm docker docker-login docker-build multi-arch-build dev helm-update test generate-role-provider-client print-rp-swagger-url bump version-check
 
 all: test bundle build
 
@@ -235,6 +235,11 @@ py-package: convert-to-openapi3
 	@V=$$(tr -d '\n' < VERSION | sed -E 's/-test\.([0-9]+)$$/.dev\1/'); sed "s/@VERSION@/$$V/" clients/python/pyproject.toml > $(PY_PKG_DIR)/pyproject.toml
 	@cd $(PY_PKG_DIR) && uv build --quiet && ls dist
 	@echo "✅ Package built in $(PY_PKG_DIR)/dist"
+
+# Tests of the package's hand-written parts (clients/python/tests), on the assembled package with its dependencies.
+py-test: py-package
+	@cd $(PY_PKG_DIR) && uv run --quiet --isolated --no-project --with httpx --with attrs --with python-dateutil --with-editable . python -m unittest discover -s tests
+	@echo "✅ Python tests complete"
 
 # Publish the package to PyPI with the token in the macOS keychain (service pypi-dhbw-cloud, account __token__), never in a file. Deliberately not a CI step, like npm-publish.
 py-publish: py-package

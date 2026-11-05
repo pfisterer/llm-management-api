@@ -1,22 +1,35 @@
-"""dhbw-cloud: the DHBW Cloud from the command line. `dhbw-cloud login` stores the API token for every command; `dhbw-cloud project list` shows the caller's projects with the project id that --project takes (a name or a unique part of it works too); `dhbw-cloud job …` are the batch jobs (docs/architektur.md "Batch-Jobs" in aiaas-deployment). Further areas of the API come as further subcommands.
+"""dhbw-cloud: the DHBW Cloud from the command line. `dhbw-cloud login` stores the API token for every command (inside a workspace of the DHBW Cloud it is not needed: the workspace's own hub token is used, with the person's rights in their projects); `dhbw-cloud project list` shows the caller's projects with the project id that --project takes (a name or a unique part of it works too); `dhbw-cloud job …` are the batch jobs (docs/architektur.md "Batch-Jobs" in aiaas-deployment). Further areas of the API come as further subcommands.
 
-A job runs in the project's environment with the person's home and ~/project-shared on one GPU of a class the project has, through the project's queue; its output also lands in ~/jobs/<name>/output-<attempt>.log. Paths are relative to the home: inside a workspace the current directory is the default working directory, and the project is DHBW_PROJECT when the workspace sets it.
-"""
+A job runs in the project's environment with the person's home and ~/project-shared on one GPU of a class the project has, through the project's queue; its output also lands in ~/jobs/<name>/output-<attempt>.log, and `dhbw-cloud job files|get` fetch its files without a workspace. Paths are relative to the home: inside a workspace the current directory is the default working directory, and the project is DHBW_PROJECT when the workspace sets it."""
 
 import argparse
 import json
 import os
 import shlex
 import sys
+import tempfile
 import time
 
 from . import _config
-from .api.api.gpu import cancel_gpu_job, get_gpu_job, get_gpu_job_log, get_gpu_start_options, list_gpu_jobs, submit_gpu_job
+from .api.api.gpu import cancel_gpu_job, download_gpu_job_file, get_gpu_job, get_gpu_job_log, get_gpu_start_options, list_gpu_job_files, list_gpu_jobs, submit_gpu_job
 from .api.api.workspaces import list_workspace_projects
 from .api.models import WebserverSubmitJobRequest
 from .api.types import UNSET
 
 HOME = "/home/jovyan"
+
+# What a job's command should know about the end of a run, shown with `dhbw-cloud job submit --help`.
+SIGNALS = """Signale und Checkpoints: Bei Verdrängung durch einen Workspace (verdrängbare Jobs), bei Erreichen der Höchstlaufzeit und beim Abbrechen bekommt der Befehl samt seinen Kindprozessen SIGTERM und hat DHBW_JOB_GRACE_SECONDS Sekunden (Standard 120), um einen Checkpoint zu schreiben; danach wird er beendet. Ein verdrängter Job wartet wieder in der Warteschlange und beginnt von vorn, also beim Start einen vorhandenen Checkpoint laden. DHBW_JOB_ATTEMPT zählt die Starts (1 beim ersten), DHBW_JOB_DIR (~/jobs/<name>) ist der Ordner für Checkpoints und Ergebnisse. Beispiel in Python:
+
+    import os, signal, sys
+    def save_and_exit(*_):
+        save_checkpoint(os.environ["DHBW_JOB_DIR"] + "/checkpoint.pt")
+        sys.exit(143)
+    signal.signal(signal.SIGTERM, save_and_exit)
+
+LLM im Job: OPENAI_API_KEY und OPENAI_BASE_URL wie im Workspace des Projekts; --llm-project wählt ein anderes eigenes Projekt mit LLM-Tokens oder none.
+
+Ergebnisse ohne Workspace: dhbw-cloud job files <id>, dhbw-cloud job get <id> <pfad>."""
 
 STATES = {"queued": "wartet", "running": "läuft", "succeeded": "fertig", "failed": "gescheitert", "cancelled": "abgebrochen"}
 
@@ -126,6 +139,14 @@ def cmd_projects(args):
         print(f"{p.get('name', '')[:32]:32} {p.get('slug', ''):40}  GPU: {classes}" + (f"; Jobs: {jobs}" if jobs else ""))
 
 
+def cmd_logout(args):
+    if _config.TOKEN_FILE.is_file():
+        _config.TOKEN_FILE.unlink()
+        print(f"Gelöscht: {_config.TOKEN_FILE}.")
+    else:
+        print("Kein gespeichertes Token.")
+
+
 def cmd_login(args):
     token = args.token or os.environ.get("DHBW_CLOUD_TOKEN")
     if not token:
@@ -148,12 +169,17 @@ def cmd_submit(args):
     if bool(command) == bool(args.notebook):
         raise Failed("Entweder einen Befehl (nach --) oder --notebook angeben.")
     workdir = args.workdir if args.workdir is not None else (os.getcwd() if os.getcwd().startswith(HOME) and not args.notebook else "")
+    llm = args.llm_project
+    if llm and llm != "none":
+        llm = resolve_project(llm, _projects(c), unknown_ok=True)
     body = WebserverSubmitJobRequest(project=project, name=args.name or UNSET, gpu_class=args.gpu_class or UNSET, max_hours=args.max_hours or UNSET,
-                                     command=command or UNSET, notebook=_home_relative(args.notebook) if args.notebook else UNSET, working_dir=_home_relative(workdir) if workdir else UNSET)
+                                     command=command or UNSET, notebook=_home_relative(args.notebook) if args.notebook else UNSET, working_dir=_home_relative(workdir) if workdir else UNSET,
+                                     llm_project=llm or UNSET)
     job = _check(submit_gpu_job.sync_detailed(client=c, body=body))
     d = job.to_dict()
     print(f"Job {d['id']} ({d['name']}) wartet auf eine GPU der Klasse {d.get('gpu_class')}, höchstens {d.get('max_hours')} h.")
-    print(f"Ausgabe: ~/jobs/{d['name']}/, Status: dhbw-cloud job status {d['id']}, Protokoll: dhbw-cloud job log -f {d['id']}")
+    print("LLM: " + (f"OPENAI_API_KEY aus dem Projekt {d['llm_project']}" if d.get("llm_project") else "kein Schlüssel"))
+    print(f"Ausgabe: ~/jobs/{d['name']}/, Status: dhbw-cloud job status {d['id']}, Protokoll: dhbw-cloud job log -f {d['id']}, Dateien: dhbw-cloud job files {d['id']}")
     if args.follow:
         return _follow(d["id"])
 
@@ -215,24 +241,85 @@ def cmd_cancel(args):
     print(_row(job))
 
 
+def _size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def cmd_files(args):
+    c = _config.client(timeout=150.0)
+    listing = _check(list_gpu_job_files.sync_detailed(args.id, client=c, path=_home_relative(args.path) if args.path else UNSET)).to_dict()
+    if args.json:
+        print(json.dumps(listing, indent=2, ensure_ascii=False))
+        return
+    files = listing.get("files") or []
+    if not files:
+        print(f"~/{listing.get('path', '')}: leer.")
+    for f in files:
+        kind = {"dir": "Ordner", "link": "Link", "other": "anderes"}.get(f.get("type"), "")
+        size = _size(f.get("size", 0)) if f.get("type") == "file" else kind
+        print(f"{size:>10}  {f.get('modified', '')[:16].replace('T', ' ')}  {f.get('path', '')}{'/' if f.get('type') == 'dir' else ''}")
+    if listing.get("truncated"):
+        print("… (gekürzt)", file=sys.stderr)
+
+
+def cmd_get(args):
+    """Streams the file into the output (a temporary file next to it until complete), or to stdout with -o -."""
+    c = _config.client(timeout=150.0)
+    path = _home_relative(args.path)
+    out = args.output or os.path.basename(path.rstrip("/"))
+    if not out:
+        raise Failed("Pfad einer Datei angeben.")
+    kwargs = download_gpu_job_file._get_kwargs(args.id, path=path)
+    with c.get_httpx_client().stream(kwargs["method"], kwargs["url"], params=kwargs["params"]) as resp:
+        if resp.status_code != 200:
+            resp.read()
+            try:
+                msg = resp.json().get("error")
+            except ValueError:
+                msg = None
+            raise Failed(f"{msg or resp.text[:300]} (HTTP {resp.status_code})")
+        if out == "-":
+            for chunk in resp.iter_bytes(1 << 20):
+                sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            return
+        d = os.path.dirname(os.path.abspath(out))
+        fd, tmp = tempfile.mkstemp(prefix=".dhbw-cloud-", dir=d)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                for chunk in resp.iter_bytes(1 << 20):
+                    f.write(chunk)
+            os.replace(tmp, out)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    print(f"{out} ({_size(os.path.getsize(out))})")
+
+
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="dhbw-cloud", description="Die DHBW Cloud von der Kommandozeile. Adresse: DHBW_CLOUD_URL, Token: DHBW_CLOUD_TOKEN oder `dhbw-cloud login`.")
+    p = argparse.ArgumentParser(prog="dhbw-cloud", description="Die DHBW Cloud von der Kommandozeile. Adresse: DHBW_CLOUD_URL. Anmeldung: DHBW_CLOUD_TOKEN, sonst im Workspace dessen Token, sonst `dhbw-cloud login`.")
     top = p.add_subparsers(dest="area", required=True)
-    s = top.add_parser("login", help="API-Token speichern")
+    s = top.add_parser("login", help="API-Token speichern (im Workspace nicht nötig)")
     s.add_argument("--token")
     s.set_defaults(func=cmd_login)
+    s = top.add_parser("logout", help="gespeichertes API-Token löschen")
+    s.set_defaults(func=cmd_logout)
     projects = top.add_parser("project", help="eigene Projekte").add_subparsers(dest="cmd", required=True)
     s = projects.add_parser("list", help="aktive Projekte mit Projekt-ID (für --project), GPU-Klassen und Jobs")
     s.add_argument("--json", action="store_true", help="als JSON")
     s.set_defaults(func=cmd_projects)
     jobs = top.add_parser("job", help="Batch-Jobs auf den GPUs").add_subparsers(dest="cmd", required=True)
-    s = jobs.add_parser("submit", help="Job abschicken: dhbw-cloud job submit --project P -- python train.py")
+    s = jobs.add_parser("submit", help="Job abschicken: dhbw-cloud job submit --project P -- python train.py", epilog=SIGNALS, formatter_class=argparse.RawDescriptionHelpFormatter)
     s.add_argument("--project", help="Projekt: Projekt-ID (t-…), Name oder eindeutiger Teil des Namens (dhbw-cloud project list); Standard DHBW_PROJECT")
     s.add_argument("--name", help="Name und Ausgabeordner ~/jobs/<name>")
     s.add_argument("--gpu-class", help="GPU-Klasse; nötig, wenn das Projekt mehrere hat")
     s.add_argument("--max-hours", type=float, help="Höchstlaufzeit in Stunden; Standard die des Projekts")
     s.add_argument("--workdir", help="Arbeitsverzeichnis im Home; Standard das aktuelle")
     s.add_argument("--notebook", help="Notebook statt Befehl, mit papermill ausgeführt")
+    s.add_argument("--llm-project", help="LLM-Projekt für OPENAI_API_KEY: eigenes Projekt mit LLM-Tokens oder none; Standard wie im Workspace des Projekts")
     s.add_argument("-f", "--follow", action="store_true", help="danach die Ausgabe verfolgen")
     s.add_argument("command", nargs=argparse.REMAINDER, help="Befehl nach --")
     s.set_defaults(func=cmd_submit)
@@ -249,6 +336,16 @@ def main(argv=None):
     s.add_argument("-n", "--lines", type=int, default=200)
     s.add_argument("-f", "--follow", action="store_true", help="verfolgen, bis der Job endet")
     s.set_defaults(func=cmd_log)
+    s = jobs.add_parser("files", help="Dateien eines Jobs: Ordner ~/jobs/<name> oder ein anderer Ordner im Home")
+    s.add_argument("id")
+    s.add_argument("path", nargs="?", help="Ordner relativ zum Home; Standard der Ordner des Jobs (Verwaltende sehen nur diesen)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_files)
+    s = jobs.add_parser("get", help="Datei eines Jobs herunterladen: dhbw-cloud job get <id> jobs/<name>/model.pt")
+    s.add_argument("id")
+    s.add_argument("path", help="Datei relativ zum Home (wie dhbw-cloud job files sie zeigt)")
+    s.add_argument("-o", "--output", help="Zieldatei; - = Standardausgabe; Standard der Dateiname im aktuellen Ordner")
+    s.set_defaults(func=cmd_get)
     s = jobs.add_parser("cancel", help="Job abbrechen")
     s.add_argument("id")
     s.set_defaults(func=cmd_cancel)
