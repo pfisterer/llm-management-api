@@ -196,5 +196,89 @@ class Upload(unittest.TestCase):
         self.assertNotIn("working_dir", self.jobs[0])
 
 
+
+class JobCommands(unittest.TestCase):
+    """The job submitted last as default, job watch until everything has ended, the result in the list, --preemptible."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for name, value in (("TOKEN_FILE", Path(self.dir.name) / "token"), ("LAST_JOB_FILE", Path(self.dir.name) / "last-job")):
+            patcher = mock.patch.object(_config, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.requests, self.lists = [], []
+
+        def job(id, state, **more):
+            return {"id": id, "name": id, "project": "t-kurs", "state": state, "gpu_class": "general-large", "max_hours": 1, **more}
+
+        def service(request):
+            self.requests.append((request.method, request.url.path))
+            if request.method == "POST" and request.url.path == "/v1/gpu/jobs":
+                body = json.loads(request.read())
+                self.submitted = body
+                return httpx.Response(201, json=job("j-0000000001", "queued", guaranteed=not body.get("preemptible")))
+            if request.url.path == "/v1/gpu/jobs":
+                return httpx.Response(200, json=self.lists.pop(0) if len(self.lists) > 1 else self.lists[0])
+            if request.url.path.startswith("/v1/gpu/jobs/"):
+                return httpx.Response(200, json=job(request.url.path.rsplit("/", 1)[1], "succeeded", result="accuracy 0.83"))
+            return httpx.Response(404, json={"error": "?"})
+
+        self.job = job
+        c = AuthenticatedClient(base_url="http://svc", token="t", httpx_args={"transport": httpx.MockTransport(service)}, raise_on_unexpected_status=False)
+        patcher = mock.patch.object(_config, "client", lambda timeout=30.0: c)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(cli.time, "sleep", lambda s: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.dict(os.environ, {"DHBW_PROJECT": "t-kurs"}, clear=True):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_last_job_is_the_default(self):
+        code, _, err = self.run_cli("job", "status")
+        self.assertEqual(code, 1)
+        self.assertIn("Job-ID angeben", err)
+        code, out, err = self.run_cli("job", "submit", "--", "true")
+        self.assertEqual(code, 0, err)
+        self.assertIn("garantiert", out)
+        code, out, err = self.run_cli("job", "status")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.requests[-1], ("GET", "/v1/gpu/jobs/j-0000000001"))
+        self.assertIn("→ accuracy 0.83", out)
+        self.run_cli("job", "status", "j-0000000002")
+        self.assertEqual(self.requests[-1], ("GET", "/v1/gpu/jobs/j-0000000002"))
+
+    def test_preemptible(self):
+        code, out, err = self.run_cli("job", "submit", "--preemptible", "--", "true")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.submitted["preemptible"])
+        self.assertIn("verdrängbar", out)
+        self.run_cli("job", "submit", "--", "true")
+        self.assertNotIn("preemptible", self.submitted)
+
+    def test_watch(self):
+        job = self.job
+        self.lists = [
+            [job("j-a", "queued", position=2), job("j-b", "running"), job("j-old", "succeeded")],
+            [job("j-a", "queued", position=2), job("j-b", "running")],
+            [job("j-a", "running"), job("j-b", "succeeded", result="loss 0.1")],
+            [job("j-a", "failed", exit_code=1), job("j-b", "succeeded", result="loss 0.1")],
+        ]
+        code, out, err = self.run_cli("job", "watch")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 5, out)
+        self.assertNotIn("j-old", out)
+        self.assertIn("Platz 2", lines[0])
+        self.assertIn("→ loss 0.1", out)
+        self.assertIn("Exit-Code 1", lines[-1])
+        self.assertIn("Keine wartenden", err)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,8 @@ type SubmitJobRequest struct {
 	MaxHours float64 `json:"max_hours" example:"2"`
 	// LLMProject is whose LLM tokens the job's key (OPENAI_API_KEY with OPENAI_BASE_URL) draws from, as at a workspace's start: one of the caller's projects with LLM tokens, "none" = without key, empty = as for the project's workspaces (its default_llm_project, else the project itself when it has LLM tokens, else the caller's first LLM project; none when that cannot be had).
 	LLMProject string `json:"llm_project" example:"none"`
+	// Preemptible lets a job yield its GPU to workspaces although the project's budget would run it guaranteed; it then counts like any preemptible job.
+	Preemptible bool `json:"preemptible"`
 }
 
 // JobLogResponse is the end of a job's output: live from its pod, or what was kept when it ended.
@@ -136,7 +138,7 @@ func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Servic
 	if hp == nil {
 		return gpu.Job{}, &workspace.Refusal{Reason: "Kein aktives Projekt " + req.Project + " mit Workspace-Zugang."}
 	}
-	spec := gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed,
+	spec := gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed && !req.Preemptible,
 		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, SharedReadOnly: hp.SharedReadOnly, ScratchGB: hp.ScratchGB, StorageGB: hp.StorageGB,
 		Command: req.Command, Notebook: req.Notebook, WorkingDir: req.WorkingDir}
 	if err := jobLLMKey(ctx, ws, k, a, req, &spec); err != nil {

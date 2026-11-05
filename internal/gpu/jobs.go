@@ -211,6 +211,26 @@ type Job struct {
 	GPUHours   float64    `json:"gpu_hours"`
 	// Position is the job's place in its queue while it waits (1 = next); 0 otherwise.
 	Position int `json:"position,omitempty"`
+	// Result is what the job reported as its result in its last line beginning with "RESULT " (without that word), once it has ended: a short message for lists, e.g. "accuracy 0.83".
+	Result string `json:"result,omitempty" example:"accuracy 0.83"`
+}
+
+// jobResultMax is how long a job's Result may be.
+const jobResultMax = 200
+
+// jobResult is the text after "RESULT " in the last such line of a job's output, shortened to jobResultMax.
+func jobResult(log string) string {
+	lines := strings.Split(log, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if r, ok := strings.CutPrefix(strings.TrimSpace(lines[i]), "RESULT "); ok {
+			r = strings.TrimSpace(r)
+			if len(r) > jobResultMax {
+				r = strings.ToValidUTF8(r[:jobResultMax], "") + "…"
+			}
+			return r
+		}
+	}
+	return ""
 }
 
 // JobRecord is a job's row in gpu_jobs: kept as long as its project, the end of its output (LogTail) JobLogKeep after it ended.
@@ -248,7 +268,15 @@ func (JobRecord) TableName() string { return "gpu_jobs" }
 func (r JobRecord) job() Job {
 	return Job{ID: r.ID, Name: r.Name, Person: r.Person, Project: r.Project, GPUClass: r.GPUClass, GPUs: r.GPUs, MaxHours: r.MaxHours, Guaranteed: r.Guaranteed,
 		Command: r.Command, Notebook: r.Notebook, WorkingDir: r.WorkingDir, LLMProject: r.LLMProject, Image: r.Image, State: r.State, ExitCode: r.ExitCode, Reason: r.Reason,
-		Submitted: r.Submitted, Admitted: r.Admitted, Started: r.Started, Ended: r.Ended, Evictions: r.Evictions, GPUHours: r.GPUHours}
+		Submitted: r.Submitted, Admitted: r.Admitted, Started: r.Started, Ended: r.Ended, Evictions: r.Evictions, GPUHours: r.GPUHours, Result: r.result()}
+}
+
+// result is the job's Result once it has ended; a live job's tail may be an earlier attempt's.
+func (r JobRecord) result() string {
+	if r.live() {
+		return ""
+	}
+	return jobResult(r.LogTail)
 }
 
 func (r JobRecord) live() bool { return r.State == JobQueued || r.State == JobRunning }

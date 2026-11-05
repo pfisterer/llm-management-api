@@ -423,3 +423,24 @@ func TestJobUploadRights(t *testing.T) {
 		t.Errorf("upload from the workspace: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// A job may yield its GPU although the budget would run it guaranteed (todo job_cli, --preemptible); without that it is guaranteed as the budget says.
+func TestJobVoluntarilyPreemptible(t *testing.T) {
+	ctx := context.Background()
+	e := newJobEnv(t)
+	p, _ := e.store.Get(ctx, "t-kurs")
+	p.BatchPriority = workspace.BatchGuaranteed
+	if err := e.store.Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		preemptible, want bool
+	}{{false, true}, {true, false}} {
+		code, body := call(t, e.h, "POST", "/v1/gpu/jobs", "oidc:"+jzMember, "", SubmitJobRequest{Project: "t-kurs", Command: "true", Preemptible: c.preemptible})
+		var j gpu.Job
+		if _ = json.Unmarshal(body, &j); code != http.StatusCreated || j.Guaranteed != c.want {
+			t.Errorf("preemptible %v: %d guaranteed %v, want %v: %s", c.preemptible, code, j.Guaranteed, c.want, body)
+		}
+		_, _ = call(t, e.h, "DELETE", "/v1/gpu/jobs/"+j.ID, "oidc:"+jzAdmin, "", nil)
+	}
+}

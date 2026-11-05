@@ -6,6 +6,8 @@ Python-Client und Kommandozeilenwerkzeug für den KI-Dienst der [DHBW Cloud](htt
 pip install dhbw-cloud
 ```
 
+Ohne eigenes Python-Setup geht es mit [uv](https://docs.astral.sh/uv/): `uv tool install dhbw-cloud` installiert den Befehl `dhbw-cloud` dauerhaft, `uvx dhbw-cloud …` führt ihn ohne Installation aus.
+
 In den Workspaces der DHBW Cloud ist das Paket schon installiert.
 
 ## Anmelden
@@ -68,6 +70,7 @@ dhbw-cloud job submit --gpu-class general-large -- python train.py
 | `--workdir` | Arbeitsverzeichnis im Home; Standard das aktuelle Verzeichnis |
 | `--notebook` | Notebook statt Befehl |
 | `--files` | lokale Dateien und Ordner vor dem Abschicken hochladen, siehe „Dateien mitschicken“ |
+| `--preemptible` | verdrängbar laufen, auch wenn das Budget des Projekts garantierte Jobs erlaubt; die GPU bleibt dann für Workspaces frei |
 | `--llm-project` | LLM-Projekt für `OPENAI_API_KEY` im Job: ein eigenes Projekt mit LLM-Tokens oder `none`; Standard wie im Workspace des Projekts |
 | `-f`, `--follow` | danach die Ausgabe verfolgen, bis der Job endet; Fehlercode, wenn er scheitert |
 
@@ -129,9 +132,14 @@ dhbw-cloud job status j-4f3a9c0d2e       # Einzelheiten; --json für alles
 dhbw-cloud job log j-4f3a9c0d2e          # Ende der Ausgabe (-n Zeilen)
 dhbw-cloud job log -f j-4f3a9c0d2e       # verfolgen, bis der Job endet
 dhbw-cloud job cancel j-4f3a9c0d2e       # abbrechen
+dhbw-cloud job watch                     # alle eigenen wartenden und laufenden Jobs beobachten, bis sie fertig sind
 ```
 
+`status`, `log` und `cancel` ohne Job-ID gelten dem zuletzt von diesem Rechner (bzw. Workspace) abgeschickten Job, also etwa `dhbw-cloud job log -f` direkt nach dem Abschicken. `job watch` zeigt die Jobs einmal und danach jede Änderung (Start, Verdrängung, Ende), alle 15 Sekunden (`-n`).
+
 Ein wartender Job zeigt seinen Platz in der Warteschlange. Nach dem Ende bleiben Zustand, Exit-Code, Zeiten, GPU-Stunden und das Ende der Ausgabe erhalten; die vollständige Ausgabe jedes Versuchs liegt in `~/jobs/<name>/`.
+
+Schreibt ein Job eine Zeile, die mit `RESULT ` beginnt, steht nach dem Ende ihr Rest als Ergebnis in `job list`, `job status` und im Self-Service, bei mehreren die letzte; etwa `print(f"RESULT accuracy {acc:.3f}")` am Ende eines Trainings.
 
 ### Dateien mitschicken
 

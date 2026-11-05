@@ -31,7 +31,11 @@ LLM im Job: OPENAI_API_KEY und OPENAI_BASE_URL wie im Workspace des Projekts; --
 
 Dateien mitschicken: --files train.py daten/ lädt Dateien und Ordner vor dem Abschicken in den Ordner des Jobs (~/jobs/<name>), dort läuft der Befehl dann auch; mit --workdir in dieses Verzeichnis. Ein vorhandener Ordner gleichen Namens wird ergänzt, gleichnamige Dateien ersetzt.
 
-Ergebnisse ohne Workspace: dhbw-cloud job files <id>, dhbw-cloud job get <id> <pfad>."""
+Ergebnis in der Liste: eine Zeile „RESULT …“ in der Ausgabe (die letzte zählt, z. B. print(f"RESULT accuracy {acc:.3f}")) steht nach dem Ende in dhbw-cloud job list und im Self-Service.
+
+Verdrängbar trotz garantiertem Budget: --preemptible gibt die GPU für Workspaces frei.
+
+Ergebnisse ohne Workspace: dhbw-cloud job files <id>, dhbw-cloud job get <id> <pfad>. status, log und cancel ohne ID gelten dem zuletzt von hier abgeschickten Job; dhbw-cloud job watch beobachtet alle eigenen."""
 
 STATES = {"queued": "wartet", "running": "läuft", "succeeded": "fertig", "failed": "gescheitert", "cancelled": "abgebrochen"}
 
@@ -71,6 +75,8 @@ def _row(j):
     if d.get("reason") and d.get("state") != "succeeded":
         state += f" [{d['reason']}]"
     what = " ".join((d.get("notebook") or d.get("command") or "").split())
+    if d.get("result"):
+        what = "→ " + d["result"]
     return f"{d.get('id', ''):13} {d.get('name', '')[:24]:24} {state:28} {d.get('gpu_hours', 0):6.2f} h  {what[:60]}"
 
 
@@ -239,10 +245,11 @@ def cmd_submit(args):
         llm = resolve_project(llm, _projects(c), unknown_ok=True)
     body = WebserverSubmitJobRequest(project=project, name=name or UNSET, gpu_class=args.gpu_class or UNSET, max_hours=args.max_hours or UNSET,
                                      command=command or UNSET, notebook=notebook or UNSET, working_dir=_home_relative(workdir) if workdir else UNSET,
-                                     llm_project=llm or UNSET)
+                                     llm_project=llm or UNSET, preemptible=args.preemptible or UNSET)
     job = _check(submit_gpu_job.sync_detailed(client=c, body=body))
     d = job.to_dict()
-    print(f"Job {d['id']} ({d['name']}) wartet auf eine GPU der Klasse {d.get('gpu_class')}, höchstens {d.get('max_hours')} h.")
+    _config.save_last_job(d["id"])
+    print(f"Job {d['id']} ({d['name']}) wartet auf eine GPU der Klasse {d.get('gpu_class')}, höchstens {d.get('max_hours')} h, {'garantiert' if d.get('guaranteed') else 'verdrängbar'}.")
     print("LLM: " + (f"OPENAI_API_KEY aus dem Projekt {d['llm_project']}" if d.get("llm_project") else "kein Schlüssel"))
     print(f"Ausgabe: ~/jobs/{d['name']}/, Status: dhbw-cloud job status {d['id']}, Protokoll: dhbw-cloud job log -f {d['id']}, Dateien: dhbw-cloud job files {d['id']}")
     if args.follow:
@@ -261,8 +268,16 @@ def cmd_list(args):
         print(_row(j))
 
 
+def _job_id(args):
+    """The job given, else the one submitted last from here."""
+    job_id = args.id or _config.last_job()
+    if not job_id:
+        raise Failed("Job-ID angeben (dhbw-cloud job list); ohne sie gilt der zuletzt von hier abgeschickte Job.")
+    return job_id
+
+
 def cmd_status(args):
-    job = _check(get_gpu_job.sync_detailed(args.id, client=_config.client()))
+    job = _check(get_gpu_job.sync_detailed(_job_id(args), client=_config.client()))
     print(json.dumps(job.to_dict(), indent=2, ensure_ascii=False) if args.json else _row(job))
 
 
@@ -295,15 +310,44 @@ def _follow(job_id, interval=10):
 
 
 def cmd_log(args):
+    job_id = _job_id(args)
     if args.follow:
-        return _follow(args.id)
-    log = _check(get_gpu_job_log.sync_detailed(args.id, client=_config.client(), lines=args.lines)).to_dict().get("log", "")
+        return _follow(job_id)
+    log = _check(get_gpu_job_log.sync_detailed(job_id, client=_config.client(), lines=args.lines)).to_dict().get("log", "")
     sys.stdout.write(log)
 
 
 def cmd_cancel(args):
-    job = _check(cancel_gpu_job.sync_detailed(args.id, client=_config.client()))
+    job = _check(cancel_gpu_job.sync_detailed(_job_id(args), client=_config.client()))
     print(_row(job))
+
+
+def _watch_line(j):
+    """What `job watch` compares between two looks at a job: its state, place in the queue, evictions and result."""
+    d = j.to_dict()
+    return (d.get("state"), d.get("position"), d.get("evictions"), d.get("result"))
+
+
+def cmd_watch(args):
+    """Prints the own live jobs, then every change of one, until none is left waiting or running."""
+    c = _config.client()
+    project = resolve_project(args.project, _projects(c), unknown_ok=True) if args.project else UNSET
+    seen = {}
+    while True:
+        jobs = _check(list_gpu_jobs.sync_detailed(client=c, project=project))
+        live = [j for j in jobs if j.to_dict().get("state") in ("queued", "running")]
+        # The live ones, and those that ended since the last look.
+        for j in jobs:
+            d = j.to_dict()
+            if d["id"] not in seen and d.get("state") not in ("queued", "running"):
+                continue
+            if seen.get(d["id"]) != _watch_line(j):
+                print(f"{time.strftime('%H:%M:%S')}  {_row(j)}", flush=True)
+                seen[d["id"]] = _watch_line(j)
+        if not live:
+            print("Keine wartenden oder laufenden Jobs.", file=sys.stderr)
+            return 0
+        time.sleep(args.interval)
 
 
 def _size(n):
@@ -385,6 +429,7 @@ def main(argv=None):
     s.add_argument("--workdir", help="Arbeitsverzeichnis im Home; Standard das aktuelle")
     s.add_argument("--notebook", help="Notebook statt Befehl, mit papermill ausgeführt")
     s.add_argument("--llm-project", help="LLM-Projekt für OPENAI_API_KEY: eigenes Projekt mit LLM-Tokens oder none; Standard wie im Workspace des Projekts")
+    s.add_argument("--preemptible", action="store_true", help="verdrängbar laufen, auch wenn das Budget des Projekts garantierte Jobs erlaubt (gibt die GPU für Workspaces frei)")
     s.add_argument("--files", nargs="+", metavar="PFAD", help="lokale Dateien und Ordner vorher hochladen, in den Ordner des Jobs (Standard-Arbeitsverzeichnis dann) bzw. nach --workdir")
     s.add_argument("-f", "--follow", action="store_true", help="danach die Ausgabe verfolgen")
     s.add_argument("command", nargs=argparse.REMAINDER, help="Befehl nach --")
@@ -398,12 +443,16 @@ def main(argv=None):
     s.add_argument("--project", help="Jobs dieses Projekts, als Projekt-ID, Name oder Teil des Namens (Verwaltende: alle)")
     s.add_argument("-a", "--all", action="store_true", help="auch beendete")
     s.set_defaults(func=cmd_list)
+    s = jobs.add_parser("watch", help="eigene wartende und laufende Jobs beobachten, bis alle fertig sind")
+    s.add_argument("--project", help="nur Jobs dieses Projekts (Verwaltende: alle des Projekts)")
+    s.add_argument("-n", "--interval", type=float, default=15, help="Sekunden zwischen zwei Abfragen (Standard 15)")
+    s.set_defaults(func=cmd_watch)
     s = jobs.add_parser("status", help="Einzelheiten eines Jobs")
-    s.add_argument("id")
+    s.add_argument("id", nargs="?", help="Job-ID; Standard der zuletzt von hier abgeschickte Job")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_status)
     s = jobs.add_parser("log", help="Ende der Ausgabe")
-    s.add_argument("id")
+    s.add_argument("id", nargs="?", help="Job-ID; Standard der zuletzt von hier abgeschickte Job")
     s.add_argument("-n", "--lines", type=int, default=200)
     s.add_argument("-f", "--follow", action="store_true", help="verfolgen, bis der Job endet")
     s.set_defaults(func=cmd_log)
@@ -418,7 +467,7 @@ def main(argv=None):
     s.add_argument("-o", "--output", help="Zieldatei; - = Standardausgabe; Standard der Dateiname im aktuellen Ordner")
     s.set_defaults(func=cmd_get)
     s = jobs.add_parser("cancel", help="Job abbrechen")
-    s.add_argument("id")
+    s.add_argument("id", nargs="?", help="Job-ID; Standard der zuletzt von hier abgeschickte Job")
     s.set_defaults(func=cmd_cancel)
     args = p.parse_args(argv)
     if getattr(args, "command", None) and args.command[:1] == ["--"]:

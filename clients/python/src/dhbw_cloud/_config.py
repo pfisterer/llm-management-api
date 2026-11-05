@@ -8,6 +8,8 @@ from .api import AuthenticatedClient
 
 DEFAULT_URL = "https://llm-api.llm.services.dhbw.cloud"
 TOKEN_FILE = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "dhbw-cloud" / "token"
+# The id of the job submitted last from here: the default of `job status`, `job log` and `job cancel`.
+LAST_JOB_FILE = TOKEN_FILE.parent / "last-job"
 
 
 def connect():
@@ -30,6 +32,23 @@ def workspace_login():
     if url and token:
         return url.rstrip("/"), token
     return None
+
+
+def save_last_job(job_id):
+    """Remembers the job submitted last; a failure to write it is no failure of the submission."""
+    try:
+        LAST_JOB_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LAST_JOB_FILE.write_text(job_id + "\n")
+    except OSError:
+        pass
+
+
+def last_job():
+    """The id of the job submitted last from here, None when there is none."""
+    try:
+        return LAST_JOB_FILE.read_text().strip() or None
+    except OSError:
+        return None
 
 
 def save_token(token):

@@ -339,3 +339,26 @@ func TestJobHoursOverAttempts(t *testing.T) {
 		t.Errorf("waiting with nothing left: %+v", got)
 	}
 }
+
+// A job's result is its last line beginning with "RESULT ", shown once it has ended.
+func TestJobResult(t *testing.T) {
+	for _, c := range []struct{ log, want string }{
+		{"epoch 1\nRESULT accuracy 0.5\nepoch 2\nRESULT accuracy 0.83\n== Ende, Exit-Code 0\n", "accuracy 0.83"},
+		{"no result\n", ""},
+		{"RESULTS are in\n", ""},
+		{"  RESULT  spaced  \n", "spaced"},
+		{"RESULT " + strings.Repeat("ä", 150), strings.Repeat("ä", 100) + "…"},
+	} {
+		if got := jobResult(c.log); got != c.want {
+			t.Errorf("jobResult(%q) = %q, want %q", c.log, got, c.want)
+		}
+	}
+	r := JobRecord{State: JobSucceeded, LogTail: "RESULT ok\n"}
+	if r.job().Result != "ok" {
+		t.Errorf("ended job: %q", r.job().Result)
+	}
+	r.State = JobQueued
+	if r.job().Result != "" {
+		t.Errorf("live job shows an earlier attempt's result: %q", r.job().Result)
+	}
+}
