@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -393,13 +394,20 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 	}
 }
 
-// KernelStatus is the live pod of one kernel of this server; nil when there is none (not yet created, deleted, evicted).
+// KernelStatus is the live pod of one kernel of this server, else the last one that ended and is not being deleted (evicted, past its deadline: phase failed with Reason and Message, which JupyterLab shows); nil when there is none (not yet created, deleted).
 func (s *Service) KernelStatus(ctx context.Context, o *KernelOwner, kernelID string) (*KernelState, error) {
-	pods, err := s.kernelPods(ctx, "component=kernel,kernel_id="+kernelID+","+kernelLabelOwner+"="+o.Pod)
+	pods, err := s.kernelPods(ctx, "component=kernel,kernel_id="+kernelID+","+kernelLabelOwner+"="+o.Pod, "Pending", "Running", "Failed", "Succeeded")
 	if err != nil || len(pods) == 0 {
 		return nil, err
 	}
-	st := kernelState(pods[0])
+	pod := pods[len(pods)-1]
+	for _, p := range pods {
+		if phase := str(obj(p, "status"), "phase"); phase == "Pending" || phase == "Running" {
+			pod = p
+			break
+		}
+	}
+	st := kernelState(pod)
 	return &st, nil
 }
 
@@ -514,8 +522,11 @@ func holdsGPU(p podInfo) bool {
 	return false
 }
 
-// kernelPods are the live kernel pods matching the selector, oldest first; terminating ones are left out (a restart creates the next before the last is gone).
-func (s *Service) kernelPods(ctx context.Context, selector string) ([]map[string]any, error) {
+// kernelPods are the kernel pods matching the selector, oldest first: the live ones (Pending, Running), or those in the given phases; terminating ones are left out (a restart creates the next before the last is gone).
+func (s *Service) kernelPods(ctx context.Context, selector string, phases ...string) ([]map[string]any, error) {
+	if len(phases) == 0 {
+		phases = []string{"Pending", "Running"}
+	}
 	if s.k8s == nil {
 		return nil, nil
 	}
@@ -528,7 +539,7 @@ func (s *Service) kernelPods(ctx context.Context, selector string) ([]map[string
 	var out []map[string]any
 	for _, p := range pods.Items {
 		phase := str(obj(p, "status"), "phase")
-		if obj(p, "metadata")["deletionTimestamp"] == nil && (phase == "Pending" || phase == "Running") {
+		if obj(p, "metadata")["deletionTimestamp"] == nil && slices.Contains(phases, phase) {
 			out = append(out, p)
 		}
 	}

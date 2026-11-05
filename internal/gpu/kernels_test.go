@@ -12,6 +12,7 @@ import (
 // fakeKernelKube answers the pod listing with a fixed server pod and records what is created and deleted.
 type fakeKernelKube struct {
 	server  string
+	kernels string // the kernel pods a listing of kernel pods returns, comma-separated JSON objects
 	created []map[string]any
 	deleted []string
 }
@@ -20,6 +21,8 @@ func (f *fakeKernelKube) do(_ context.Context, method, path string, body, out an
 	switch {
 	case method == "GET" && strings.Contains(path, "/pods?") && strings.Contains(path, "singleuser-server"):
 		return json.Unmarshal([]byte(`{"items":[`+f.server+`]}`), out)
+	case method == "GET" && strings.Contains(path, "/pods?") && strings.Contains(path, "component%3Dkernel"):
+		return json.Unmarshal([]byte(`{"items":[`+f.kernels+`]}`), out)
 	case method == "GET":
 		return json.Unmarshal([]byte(`{"items":[]}`), out)
 	case method == "POST":
@@ -203,6 +206,31 @@ func TestKernelScratch(t *testing.T) {
 	_ = json.Unmarshal([]byte(`{"metadata":{"name":"kernel-1"},"status":{"phase":"Failed","reason":"Evicted","message":"Pod ephemeral local storage usage exceeds the total limit of containers 1Gi."}}`), &p)
 	if st := kernelState(p); st.Phase != "failed" || st.Reason != "Evicted" || !strings.Contains(st.Message, "ephemeral local storage") {
 		t.Errorf("evicted: %+v", st)
+	}
+}
+
+// The status of a kernel whose pod was evicted is that pod with its reason, so JupyterLab can say why the kernel ended; a live pod of the same kernel (the restart) comes first, one being deleted not at all.
+func TestKernelStatusEnded(t *testing.T) {
+	s, k := kernelTestService(testServerPod)
+	o := &KernelOwner{Pod: "jupyter-a-40dhbw-2ede"}
+	evicted := `{"metadata":{"name":"kernel-old","creationTimestamp":"2026-11-05T09:00:00Z"},"status":{"phase":"Failed","reason":"Evicted","message":"Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. "}}`
+	k.kernels = evicted
+	st, err := s.KernelStatus(context.Background(), o, testKernelID)
+	if err != nil || st == nil || st.Phase != "failed" || st.Reason != "Evicted" || !strings.Contains(st.Message, "10Gi") {
+		t.Fatalf("evicted: %+v, %v", st, err)
+	}
+	k.kernels = evicted + `,{"metadata":{"name":"kernel-new","creationTimestamp":"2026-11-05T09:05:00Z"},"status":{"phase":"Pending"}}`
+	if st, _ := s.KernelStatus(context.Background(), o, testKernelID); st == nil || st.Name != "kernel-new" || st.Reason != "" {
+		t.Errorf("restarted: %+v", st)
+	}
+	k.kernels = strings.Replace(evicted, `"name":"kernel-old"`, `"name":"kernel-old","deletionTimestamp":"2026-11-05T09:06:00Z"`, 1)
+	if st, _ := s.KernelStatus(context.Background(), o, testKernelID); st != nil {
+		t.Errorf("being deleted: %+v", st)
+	}
+	// The overview (status bar, quota) keeps to live pods.
+	k.kernels = evicted
+	if ov, _ := s.KernelOverview(context.Background(), &KernelOwner{Pod: o.Pod, UserLabel: "a-40dhbw-2ede"}); len(ov.Kernels) != 0 {
+		t.Errorf("overview: %+v", ov.Kernels)
 	}
 }
 
