@@ -16,6 +16,8 @@ type fakeFleetKube struct {
 	patched map[string]any
 	writes  int
 	deleted []string
+	// logs are the pods' output by pod name (GET …/pods/<name>/log).
+	logs map[string]string
 }
 
 func (f *fakeFleetKube) listPods(context.Context, string, string) ([]podInfo, error) { return nil, nil }
@@ -41,6 +43,14 @@ func (f *fakeFleetKube) patchNodeLabels(_ context.Context, node string, labels m
 func (f *fakeFleetKube) do(_ context.Context, method, path string, body, out any) error {
 	switch method {
 	case "GET":
+		if base, ok := strings.CutSuffix(strings.SplitN(path, "?", 2)[0], "/log"); ok {
+			log, found := f.logs[base[strings.LastIndex(base, "/")+1:]]
+			if !found {
+				return ErrNotFound
+			}
+			*out.(*string) = log
+			return nil
+		}
 		if base, _, isList := strings.Cut(path, "?"); isList {
 			var items []any
 			for p, o := range f.objects {

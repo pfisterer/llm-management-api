@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 type k8sJob struct {
 	Metadata struct {
 		Name string `json:"name"`
+		UID  string `json:"uid"`
 	} `json:"metadata"`
 	Spec struct {
 		Suspend               *bool  `json:"suspend"`
@@ -153,6 +155,31 @@ func (s *Service) liveJobs(ctx context.Context) (map[string]k8sJob, map[string]j
 	return byID, workloads, nil
 }
 
+// liveJob is one job's Job and Workload, read live: found false when the Job is gone. Without a Workload (not made yet, or the read failed) w is empty, as in liveJobs.
+func (s *Service) liveJob(ctx context.Context, id string) (j k8sJob, w jobWorkload, found bool, err error) {
+	ns := s.kernelNamespace()
+	if err := s.k8s.do(ctx, http.MethodGet, "/apis/batch/v1/namespaces/"+ns+"/jobs/"+id, nil, &j); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return j, w, false, nil
+		}
+		return j, w, false, err
+	}
+	var wls struct {
+		Items []jobWorkload `json:"items"`
+	}
+	// Kueue labels a Job's Workload with the Job's uid.
+	if err := s.k8s.do(ctx, http.MethodGet, "/apis/kueue.x-k8s.io/v1beta2/namespaces/"+ns+"/workloads?labelSelector="+url.QueryEscape("kueue.x-k8s.io/job-uid="+j.Metadata.UID), nil, &wls); err == nil {
+		for _, item := range wls.Items {
+			for _, o := range item.Metadata.OwnerReferences {
+				if o.Kind == "Job" && o.Name == id {
+					w = item
+				}
+			}
+		}
+	}
+	return j, w, true, nil
+}
+
 // SyncJobs brings the live rows of gpu_jobs to what the cluster says: queued or running, admitted and started, evictions, the GPU hours while it runs, and at its end the state, reason, exit code and the end of its output. A job that is gone without an end (deleted by hand) is cancelled. A job is kept within its MaxHours over all its attempts (limitJobHours). Once an hour it also forgets the output of jobs that ended more than JobLogKeep ago.
 func (s *Service) SyncJobs(ctx context.Context) error {
 	if !s.JobsEnabled() {
@@ -171,17 +198,12 @@ func (s *Service) SyncJobs(ctx context.Context) error {
 		var errs []error
 		for _, r := range live {
 			before := r
-			if j, ok := jobs[r.ID]; ok {
-				s.syncJob(ctx, &r, j, workloads[r.ID], now)
-				if r.live() {
-					if err := s.limitJobHours(ctx, &r, j, now); err != nil {
-						errs = append(errs, err)
-					}
+			j, ok := jobs[r.ID]
+			s.syncLive(ctx, &r, j, ok, workloads[r.ID], now)
+			if ok && r.live() {
+				if err := s.limitJobHours(ctx, &r, j, now); err != nil {
+					errs = append(errs, err)
 				}
-			} else if now.Sub(r.Submitted) > time.Minute {
-				// Gone without an end we saw (deleted by hand); a job just submitted may not be listed yet.
-				countHours(&r, now)
-				r.State, r.Reason, r.Ended = JobCancelled, "Deleted", &now
 			}
 			if r != before {
 				if err := s.jobs.SaveJob(ctx, r); err != nil {
@@ -198,6 +220,44 @@ func (s *Service) SyncJobs(ctx context.Context) error {
 		return s.purgeJobLogs(ctx)
 	}
 	return nil
+}
+
+// syncLive brings one live row to its Job (found) and Workload; a Job gone without an end we saw (deleted by hand) cancels it, unless it was just submitted and may not be listed yet.
+func (s *Service) syncLive(ctx context.Context, r *JobRecord, j k8sJob, found bool, w jobWorkload, now time.Time) {
+	if found {
+		s.syncJob(ctx, r, j, w, now)
+	} else if now.Sub(r.Submitted) > time.Minute {
+		countHours(r, now)
+		r.State, r.Reason, r.Ended = JobCancelled, "Deleted", &now
+	}
+}
+
+// refreshJob brings a live row to the cluster's view right now, as SyncJobs does once a minute (without limitJobHours, which stays with it): the job's own Job and Workload, then the row is saved. On any error the row stays as it was; ended rows are returned as they are.
+func (s *Service) refreshJob(ctx context.Context, r JobRecord) JobRecord {
+	if !r.live() || s.k8s == nil || !s.JobsEnabled() {
+		return r
+	}
+	j, w, found, err := s.liveJob(ctx, r.ID)
+	if err != nil {
+		s.log.Debugw("batch job: live status", "job", r.ID, "error", err)
+		return r
+	}
+	before := r
+	s.syncLive(ctx, &r, j, found, w, time.Now().UTC())
+	if r == before {
+		return r
+	}
+	// A cancel or the sync may have ended the row meanwhile: an ended row is not made live again.
+	if cur, err := s.jobs.Job(ctx, r.ID); err != nil || !cur.live() {
+		if err != nil {
+			return before
+		}
+		return cur
+	}
+	if err := s.jobs.SaveJob(ctx, r); err != nil {
+		s.log.Warnw("batch job: saving the live status", "job", r.ID, "error", err)
+	}
+	return r
 }
 
 func (s *Service) syncJob(ctx context.Context, r *JobRecord, j k8sJob, w jobWorkload, now time.Time) {
@@ -247,6 +307,12 @@ func (s *Service) syncJob(ctx context.Context, r *JobRecord, j k8sJob, w jobWork
 	countHours(r, until)
 	r.SeenRunning = nil
 	r.State = JobQueued
+	if r.Started != nil || r.Evictions > 0 {
+		// Evicted: its pod goes with the eviction and the next attempt's has nothing yet, so the row keeps the end of the attempt's output while the pod still answers (during its grace period).
+		if tail := s.lastRunTail(ctx, r.ID); tail != "" {
+			r.LogTail = tail
+		}
+	}
 }
 
 // JobMaxHoursUsed is the reason of a job ended by the service because it ran its MaxHours over all its attempts (limitJobHours); a job that runs out of time within one attempt ends with Kubernetes' DeadlineExceeded.
@@ -347,19 +413,51 @@ type jobPodInfo struct {
 
 // jobPod is the newest pod of the job; nil when it has none (waiting, deleted).
 func (s *Service) jobPod(ctx context.Context, id string) (*jobPodInfo, error) {
+	pods, err := s.jobPods(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return newestPod(pods, false), nil
+}
+
+// jobPods are the pods of the job: the running or ended one, and after an eviction the old one while it ends and the next attempt's while it waits to start.
+func (s *Service) jobPods(ctx context.Context, id string) ([]jobPodInfo, error) {
 	var pods struct {
 		Items []jobPodInfo `json:"items"`
 	}
 	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods?labelSelector="+url.QueryEscape("job-name="+id), nil, &pods); err != nil {
 		return nil, err
 	}
+	return pods.Items, nil
+}
+
+// newestPod is the newest of the pods, with started only one that got past Pending (it has output); nil without one.
+func newestPod(pods []jobPodInfo, started bool) *jobPodInfo {
 	var newest *jobPodInfo
-	for i, p := range pods.Items {
+	for i, p := range pods {
+		if started && (p.Status.Phase == "Pending" || p.Status.Phase == "") {
+			continue
+		}
 		if newest == nil || p.Metadata.CreationTimestamp.After(newest.Metadata.CreationTimestamp) {
-			newest = &pods.Items[i]
+			newest = &pods[i]
 		}
 	}
-	return newest, nil
+	return newest
+}
+
+// lastRunTail is the end of the output of the job's newest pod that ran; empty when there is none or it does not answer.
+func (s *Service) lastRunTail(ctx context.Context, id string) string {
+	if s.k8s == nil {
+		return ""
+	}
+	pods, err := s.jobPods(ctx, id)
+	if err != nil {
+		return ""
+	}
+	if p := newestPod(pods, true); p != nil {
+		return s.podLogTail(ctx, p.Metadata.Name, 5000)
+	}
+	return ""
 }
 
 // podLogTail is the last lines of the job container's output, at most JobLogTail bytes.
@@ -448,7 +546,7 @@ func (s *Service) queuePositions(ctx context.Context, queue string) map[string]i
 	return out
 }
 
-// GetJob is one job from gpu_jobs.
+// GetJob is one job from gpu_jobs; a waiting or running one brought to the cluster's view first (refreshJob), so that an eviction or an end shows at once and not only after the next sync.
 func (s *Service) GetJob(ctx context.Context, id string) (Job, error) {
 	if s.jobs == nil || !JobID(id) {
 		return Job{}, ErrNotFound
@@ -457,10 +555,10 @@ func (s *Service) GetJob(ctx context.Context, id string) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	return r.job(), nil
+	return s.refreshJob(ctx, r).job(), nil
 }
 
-// JobLog is the end of a job's output: live from its pod while there is one (running, or until Kubernetes deletes the finished job), else what gpu_jobs kept.
+// JobLog is the end of a job's output: live from its newest pod that ran (running, ending after an eviction, or until Kubernetes deletes the finished job), else what gpu_jobs kept. A live job without such a pod (waiting, evicted, its next pod still Pending) gets what was kept and a line in the style of the job script's "== …" lines saying what it waits for.
 func (s *Service) JobLog(ctx context.Context, id string, lines int) (string, error) {
 	if s.jobs == nil || !JobID(id) {
 		return "", ErrNotFound
@@ -469,12 +567,43 @@ func (s *Service) JobLog(ctx context.Context, id string, lines int) (string, err
 	if err != nil {
 		return "", err
 	}
-	if s.k8s != nil {
-		if pod, err := s.jobPod(ctx, id); err == nil && pod != nil && pod.Status.Phase != "Pending" {
-			return s.podLogTail(ctx, pod.Metadata.Name, lines), nil
-		}
+	if s.k8s == nil {
+		return r.LogTail, nil
 	}
-	return r.LogTail, nil
+	pods, err := s.jobPods(ctx, id)
+	if err != nil {
+		return r.LogTail, nil
+	}
+	if pod := newestPod(pods, true); pod != nil {
+		return s.podLogTail(ctx, pod.Metadata.Name, lines), nil
+	}
+	if !r.live() {
+		return r.LogTail, nil
+	}
+	return r.LogTail + waitingLine(r, newestPod(pods, false) != nil, time.Now()), nil
+}
+
+// waitingLine says what a live job without a pod that ran waits for: its next attempt's pod to start (pending), the GPU again after an eviction, or a GPU at all. The attempt is counted from Kueue's evictions, as the job script's DHBW_JOB_ATTEMPT would count it.
+func waitingLine(r JobRecord, pending bool, now time.Time) string {
+	ran := r.Started != nil || r.Evictions > 0
+	attempt := r.Evictions + 1
+	if ran {
+		attempt = max(attempt, 2)
+	}
+	at := now.UTC().Format("2006-01-02T15:04:05-07:00")
+	var line string
+	switch {
+	case pending:
+		line = fmt.Sprintf("== %s Versuch %d wird gestartet (Pod wird vorbereitet)", at, attempt)
+	case ran:
+		line = fmt.Sprintf("== %s wartet nach Verdrängung auf eine GPU, Versuch %d folgt", at, attempt)
+	default:
+		line = fmt.Sprintf("== %s wartet auf eine GPU", at)
+	}
+	if r.LogTail != "" && !strings.HasSuffix(r.LogTail, "\n") {
+		line = "\n" + line
+	}
+	return line + "\n"
 }
 
 // CancelJob ends a waiting or running job: Kubernetes deletes it with its pod; the row keeps what it used and, while the pod still answers, the end of its output.

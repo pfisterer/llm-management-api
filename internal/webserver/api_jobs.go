@@ -309,15 +309,16 @@ func (s *Server) submitJob(c *gin.Context) {
 
 // getJob godoc
 //
-//	@ID			getGPUJob
-//	@Summary	One batch job
-//	@Tags		gpu
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Param		id	path		string	true	"job id"
-//	@Success	200	{object}	gpu.Job
-//	@Failure	404	{object}	ErrorResponse
-//	@Router		/v1/gpu/jobs/{id} [get]
+//	@ID				getGPUJob
+//	@Summary		One batch job
+//	@Description	A waiting or running job is read live from Kubernetes and Kueue (state, evictions, GPU hours, end), the list only once a minute.
+//	@Tags			gpu
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			id	path		string	true	"job id"
+//	@Success		200	{object}	gpu.Job
+//	@Failure		404	{object}	ErrorResponse
+//	@Router			/v1/gpu/jobs/{id} [get]
 func (s *Server) getJob(c *gin.Context) {
 	j, err := visibleJob(c.Request.Context(), s.ws, s.gpu, s.jobActor(c), c.Param("id"))
 	if err != nil {
@@ -331,7 +332,7 @@ func (s *Server) getJob(c *gin.Context) {
 //
 //	@ID				getGPUJobLog
 //	@Summary		The end of a batch job's output
-//	@Description	Live from its pod while it runs and until Kubernetes deletes the finished job (a day), then the last 64 KB kept for 30 days. The whole output of every attempt stays in ~/jobs/<name>/.
+//	@Description	Live from its pod while it runs and until Kubernetes deletes the finished job (a day), then the last 64 KB kept for 30 days. While a job waits (for a GPU, after an eviction, or for its next pod to start) the end of its last attempt and a line "== <time> wartet …" or "== <time> Versuch <n> wird gestartet". The whole output of every attempt stays in ~/jobs/<name>/.
 //	@Tags			gpu
 //	@Produce		json
 //	@Security		BearerAuth
