@@ -118,3 +118,30 @@ jobs:
             echo "Run 'make generate-role-provider-client' and commit the result."
             exit 1
           }
+
+  # The command line dhbw-cloud (clients/python): its tests run against a client generated from the current spec, so an API change that breaks the CLI is red here instead of after a PyPI release. Own job because it needs Node (swagger2openapi) and uv, which the checks job deliberately has none of.
+  python-client:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Tests of dhbw-cloud
+        run: make py-test
