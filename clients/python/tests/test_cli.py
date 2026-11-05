@@ -107,5 +107,94 @@ class Files(unittest.TestCase):
         self.assertIn("--llm-project", out.getvalue())
 
 
+
+class Upload(unittest.TestCase):
+    """job upload and job submit --files: what arrives where, with its length, and the job's working directory."""
+
+    def setUp(self):
+        self.puts, self.jobs = [], []
+
+        def service(request):
+            if request.method == "PUT" and request.url.path == "/v1/gpu/files":
+                body = request.read()
+                self.assertEqual(request.headers["Content-Length"], str(len(body)))
+                self.puts.append((request.url.params["project"], request.url.params["path"], body))
+                return httpx.Response(201, json={"name": "x", "path": request.url.params["path"], "type": "file", "size": len(body), "modified": "2026-11-05T10:00:00Z"})
+            if request.method == "POST" and request.url.path == "/v1/gpu/jobs":
+                req = json.loads(request.read())
+                self.jobs.append(req)
+                return httpx.Response(201, json={"id": "j-0123456789", "name": req.get("name", "j-0123456789"), "project": req["project"], "state": "queued", "gpu_class": "general-large", "max_hours": 2})
+            if request.url.path == "/v1/gpu/start-options":
+                return httpx.Response(200, json={"projects": [{"slug": "t-kurs", "name": "Kurs"}]})
+            return httpx.Response(404, json={"error": "?"})
+
+        c = AuthenticatedClient(base_url="http://svc", token="t", httpx_args={"transport": httpx.MockTransport(service)}, raise_on_unexpected_status=False)
+        patcher = mock.patch.object(_config, "client", lambda timeout=30.0: c)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        d = Path(self.dir.name)
+        (d / "train.py").write_text("print(1)")
+        (d / "daten" / "sub").mkdir(parents=True)
+        (d / "daten" / "a.csv").write_text("1,2")
+        (d / "daten" / "sub" / "b.csv").write_text("3")
+        cwd = os.getcwd()
+        os.chdir(self.dir.name)
+        self.addCleanup(os.chdir, cwd)
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.dict(os.environ, {}, clear=True):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_upload(self):
+        code, out, err = self.run_cli("job", "upload", "--project", "t-kurs", "--to", "projekt", "train.py", "daten/")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.puts, [("t-kurs", "projekt/train.py", b"print(1)"), ("t-kurs", "projekt/daten/a.csv", b"1,2"), ("t-kurs", "projekt/daten/sub/b.csv", b"3")])
+        self.assertIn("3 Datei(en)", out)
+
+    def test_upload_into_home(self):
+        code, _, err = self.run_cli("job", "upload", "--project", "t-kurs", "train.py")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.puts[0][1], "train.py")
+
+    def test_upload_missing(self):
+        code, _, err = self.run_cli("job", "upload", "--project", "t-kurs", "fehlt.py")
+        self.assertEqual(code, 1)
+        self.assertIn("Nicht gefunden: fehlt.py", err)
+        self.assertEqual(self.puts, [])
+
+    def test_submit_files(self):
+        code, _, err = self.run_cli("job", "submit", "--project", "t-kurs", "--name", "lauf-1", "--files", "train.py", "daten", "--", "python", "train.py")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([p[1] for p in self.puts], ["jobs/lauf-1/train.py", "jobs/lauf-1/daten/a.csv", "jobs/lauf-1/daten/sub/b.csv"])
+        self.assertEqual(self.jobs[0]["working_dir"], "jobs/lauf-1")
+        self.assertEqual(self.jobs[0]["name"], "lauf-1")
+        self.assertEqual(self.jobs[0]["command"], "python train.py")
+
+    def test_submit_files_without_name(self):
+        code, _, err = self.run_cli("job", "submit", "--project", "t-kurs", "--files", "train.py", "--", "python train.py")
+        self.assertEqual(code, 0, err)
+        name = self.jobs[0]["name"]
+        self.assertRegex(name, r"^job-\d{8}-\d{6}$")
+        self.assertEqual(self.puts[0][1], f"jobs/{name}/train.py")
+        self.assertEqual(self.jobs[0]["working_dir"], f"jobs/{name}")
+
+    def test_submit_files_workdir_and_notebook(self):
+        code, _, err = self.run_cli("job", "submit", "--project", "t-kurs", "--workdir", "kurs", "--files", "train.py", "--notebook", "train.ipynb")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.puts[0][1], "kurs/train.py")
+        self.assertEqual(self.jobs[0]["working_dir"], "kurs")
+        self.assertEqual(self.jobs[0]["notebook"], "kurs/train.ipynb")
+
+    def test_submit_without_files_uploads_nothing(self):
+        code, _, err = self.run_cli("job", "submit", "--project", "t-kurs", "--", "true")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.puts, [])
+        self.assertNotIn("working_dir", self.jobs[0])
+
+
 if __name__ == "__main__":
     unittest.main()

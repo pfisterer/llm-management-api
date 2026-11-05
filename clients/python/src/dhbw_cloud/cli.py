@@ -1,6 +1,6 @@
 """dhbw-cloud: the DHBW Cloud from the command line. `dhbw-cloud login` stores the API token for every command (inside a workspace of the DHBW Cloud it is not needed: the workspace's own hub token is used, with the person's rights in their projects); `dhbw-cloud project list` shows the caller's projects with the project id that --project takes (a name or a unique part of it works too); `dhbw-cloud job …` are the batch jobs (docs/architektur.md "Batch-Jobs" in aiaas-deployment). Further areas of the API come as further subcommands.
 
-A job runs in the project's environment with the person's home and ~/project-shared on one GPU of a class the project has, through the project's queue; its output also lands in ~/jobs/<name>/output-<attempt>.log, and `dhbw-cloud job files|get` fetch its files without a workspace. Paths are relative to the home: inside a workspace the current directory is the default working directory, and the project is DHBW_PROJECT when the workspace sets it."""
+A job runs in the project's environment with the person's home and ~/project-shared on one GPU of a class the project has, through the project's queue; its output also lands in ~/jobs/<name>/output-<attempt>.log, and `dhbw-cloud job files|get` fetch its files without a workspace, `job submit --files` and `job upload` bring files into the home. Paths are relative to the home: inside a workspace the current directory is the default working directory, and the project is DHBW_PROJECT when the workspace sets it."""
 
 import argparse
 import json
@@ -28,6 +28,8 @@ SIGNALS = """Signale und Checkpoints: Bei Verdrängung durch einen Workspace (ve
     signal.signal(signal.SIGTERM, save_and_exit)
 
 LLM im Job: OPENAI_API_KEY und OPENAI_BASE_URL wie im Workspace des Projekts; --llm-project wählt ein anderes eigenes Projekt mit LLM-Tokens oder none.
+
+Dateien mitschicken: --files train.py daten/ lädt Dateien und Ordner vor dem Abschicken in den Ordner des Jobs (~/jobs/<name>), dort läuft der Befehl dann auch; mit --workdir in dieses Verzeichnis. Ein vorhandener Ordner gleichen Namens wird ergänzt, gleichnamige Dateien ersetzt.
 
 Ergebnisse ohne Workspace: dhbw-cloud job files <id>, dhbw-cloud job get <id> <pfad>."""
 
@@ -159,8 +161,59 @@ def cmd_login(args):
     print(f"Gespeichert in {_config.TOKEN_FILE}.")
 
 
+def _upload_plan(paths, target):
+    """The files to upload for the local paths as (local file, path relative to the home): a file into target under its name, a folder with everything in it under the folder's name."""
+    plan = []
+    for p in paths:
+        base = os.path.basename(os.path.normpath(p))
+        if os.path.isdir(p):
+            for root, dirs, files in os.walk(p):
+                dirs.sort()
+                for name in sorted(files):
+                    local = os.path.join(root, name)
+                    plan.append((local, "/".join(x for x in (target, base, os.path.relpath(local, p).replace(os.sep, "/")) if x)))
+        elif os.path.isfile(p):
+            plan.append((p, "/".join(x for x in (target, base) if x)))
+        else:
+            raise Failed(f"Nicht gefunden: {p}")
+    return plan
+
+
+def _chunks(f):
+    while chunk := f.read(1 << 20):
+        yield chunk
+
+
+def _upload(c, project, plan):
+    """Uploads the planned files into the caller's home in the project, one request each with its length."""
+    total = 0
+    for local, remote in plan:
+        size = os.path.getsize(local)
+        with open(local, "rb") as f:
+            resp = c.get_httpx_client().put("/v1/gpu/files", params={"project": project, "path": remote}, content=_chunks(f), headers={"Content-Type": "application/octet-stream", "Content-Length": str(size)})
+        if resp.status_code != 201:
+            try:
+                msg = resp.json().get("error")
+            except ValueError:
+                msg = None
+            raise Failed(f"{local}: {msg or resp.text[:300]} (HTTP {resp.status_code})")
+        total += size
+        print(f"{_size(size):>10}  ~/{remote}", file=sys.stderr)
+    return total
+
+
+def cmd_upload(args):
+    c = _config.client(timeout=150.0)
+    project = _project_arg(args.project, c)
+    if not project:
+        raise Failed("Projekt fehlt: --project angeben.")
+    plan = _upload_plan(args.paths, _home_relative(args.to).strip("/") if args.to else "")
+    total = _upload(c, project, plan)
+    print(f"{len(plan)} Datei(en), {_size(total)} hochgeladen.")
+
+
 def cmd_submit(args):
-    c = _config.client()
+    c = _config.client(timeout=150.0 if args.files else 30.0)
     project = _project_arg(args.project, c)
     if not project:
         raise Failed("Projekt fehlt: --project angeben.")
@@ -169,11 +222,23 @@ def cmd_submit(args):
     if bool(command) == bool(args.notebook):
         raise Failed("Entweder einen Befehl (nach --) oder --notebook angeben.")
     workdir = args.workdir if args.workdir is not None else (os.getcwd() if os.getcwd().startswith(HOME) and not args.notebook else "")
+    notebook = _home_relative(args.notebook) if args.notebook else None
+    name = args.name
+    if args.files:
+        # The files go into the working directory, by default the job's folder, which needs the name before the job exists.
+        name = name or time.strftime("job-%Y%m%d-%H%M%S")
+        target = _home_relative(args.workdir).strip("/") if args.workdir is not None else f"jobs/{name}"
+        workdir = HOME + "/" + target if target else HOME
+        if args.notebook and not os.path.isabs(args.notebook):
+            notebook = f"{target}/{args.notebook}" if target else args.notebook
+        plan = _upload_plan(args.files, target)
+        total = _upload(c, project, plan)
+        print(f"{len(plan)} Datei(en), {_size(total)} hochgeladen nach ~/{target}.")
     llm = args.llm_project
     if llm and llm != "none":
         llm = resolve_project(llm, _projects(c), unknown_ok=True)
-    body = WebserverSubmitJobRequest(project=project, name=args.name or UNSET, gpu_class=args.gpu_class or UNSET, max_hours=args.max_hours or UNSET,
-                                     command=command or UNSET, notebook=_home_relative(args.notebook) if args.notebook else UNSET, working_dir=_home_relative(workdir) if workdir else UNSET,
+    body = WebserverSubmitJobRequest(project=project, name=name or UNSET, gpu_class=args.gpu_class or UNSET, max_hours=args.max_hours or UNSET,
+                                     command=command or UNSET, notebook=notebook or UNSET, working_dir=_home_relative(workdir) if workdir else UNSET,
                                      llm_project=llm or UNSET)
     job = _check(submit_gpu_job.sync_detailed(client=c, body=body))
     d = job.to_dict()
@@ -320,9 +385,15 @@ def main(argv=None):
     s.add_argument("--workdir", help="Arbeitsverzeichnis im Home; Standard das aktuelle")
     s.add_argument("--notebook", help="Notebook statt Befehl, mit papermill ausgeführt")
     s.add_argument("--llm-project", help="LLM-Projekt für OPENAI_API_KEY: eigenes Projekt mit LLM-Tokens oder none; Standard wie im Workspace des Projekts")
+    s.add_argument("--files", nargs="+", metavar="PFAD", help="lokale Dateien und Ordner vorher hochladen, in den Ordner des Jobs (Standard-Arbeitsverzeichnis dann) bzw. nach --workdir")
     s.add_argument("-f", "--follow", action="store_true", help="danach die Ausgabe verfolgen")
     s.add_argument("command", nargs=argparse.REMAINDER, help="Befehl nach --")
     s.set_defaults(func=cmd_submit)
+    s = jobs.add_parser("upload", help="Dateien ins eigene Home des Projekts oder nach project-shared hochladen: dhbw-cloud job upload --to project-shared/daten messung.csv")
+    s.add_argument("--project", help="Projekt wie bei submit; Standard DHBW_PROJECT")
+    s.add_argument("--to", help="Ordner im Home, project-shared/… für den gemeinsamen Ordner des Projekts; Standard das Home selbst")
+    s.add_argument("paths", nargs="+", metavar="PFAD", help="lokale Dateien und Ordner (Ordner mit Inhalt)")
+    s.set_defaults(func=cmd_upload)
     s = jobs.add_parser("list", help="laufende und wartende Jobs")
     s.add_argument("--project", help="Jobs dieses Projekts, als Projekt-ID, Name oder Teil des Namens (Verwaltende: alle)")
     s.add_argument("-a", "--all", action="store_true", help="auch beendete")

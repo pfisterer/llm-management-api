@@ -425,7 +425,7 @@ func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
 //
 //	@ID				listGPUJobFiles
 //	@Summary		Files of a batch job
-//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
+//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home, with the project's shared folder at project-shared, while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
 //	@Tags			gpu
 //	@Produce		json
 //	@Security		BearerAuth
@@ -491,4 +491,65 @@ func (s *Server) downloadJobFile(c *gin.Context) {
 	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.DataFromReader(http.StatusOK, size, "application/octet-stream", body, nil)
+}
+
+// uploadJobFile godoc
+//
+//	@ID				uploadGPUFile
+//	@Summary		Upload a file into the own home of a project
+//	@Description	For batch jobs without a workspace (dhbw-cloud job submit --files, dhbw-cloud job upload): the body is written as path into the caller's home in the project, where the caller's jobs run, or under project-shared/ into the project's shared folder (not for the role reader, as in a workspace). Missing folders are made, an existing file is replaced once the new one is complete. Only the caller's own home and the shared folder, in an active project with workspace access; at most 5 GB and 30 minutes, Content-Length required. The first request may take a few seconds.
+//	@Tags			gpu
+//	@Accept			octet-stream
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			project	query		string	true	"project slug"
+//	@Param			path	query		string	true	"file relative to the home, e.g. jobs/training-1/train.py"
+//	@Param			body	body		string	true	"the file's content"	Format(binary)
+//	@Success		201		{object}	gpu.JobFile
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		409		{object}	ErrorResponse
+//	@Failure		411		{object}	ErrorResponse
+//	@Failure		413		{object}	ErrorResponse
+//	@Router			/v1/gpu/files [put]
+func (s *Server) uploadJobFile(c *gin.Context) {
+	rel, ok := gpu.JobFilePath(c.Query("path"), "")
+	switch {
+	case !ok || rel == "":
+		abort(c, http.StatusBadRequest, "invalid", "Pfad einer Datei im Home angeben.")
+		return
+	case c.Request.ContentLength < 0:
+		abort(c, http.StatusLengthRequired, "length_required", "Content-Length fehlt.")
+		return
+	case c.Request.ContentLength > gpu.JobFileMaxBytes:
+		abort(c, http.StatusRequestEntityTooLarge, "too_large", "Höchstens 5 GB je Datei.")
+		return
+	}
+	ctx := c.Request.Context()
+	a := s.jobActor(c)
+	project := c.Query("project")
+	mine, err := s.ws.ForPerson(ctx, a.tokens, a.person, false)
+	if err != nil {
+		s.jobError(c, "upload", err)
+		return
+	}
+	hps := hubProjects(ctx, s.ws, mine)
+	i := slices.IndexFunc(hps, func(p HubProject) bool { return p.Slug == project })
+	if i < 0 {
+		s.jobError(c, "upload", &workspace.Refusal{Reason: "Kein aktives Projekt " + project + " mit Workspace-Zugang."})
+		return
+	}
+	sharedRO := hps[i].SharedReadOnly
+	ctx, cancel := context.WithTimeout(ctx, gpu.JobFileTimeout)
+	defer cancel()
+	f, err := s.gpu.PutJobFile(ctx, project, a.person, rel, sharedRO, c.Request.Body, c.Request.ContentLength)
+	if errors.Is(err, gpu.ErrNotFound) {
+		// The files pod refuses a path that leaves the home through a symbolic link.
+		abort(c, http.StatusBadRequest, "invalid", "Pfad einer Datei im Home angeben.")
+		return
+	}
+	if err != nil {
+		s.jobError(c, "upload", err)
+		return
+	}
+	c.JSON(http.StatusCreated, f)
 }

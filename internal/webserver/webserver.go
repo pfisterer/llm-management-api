@@ -212,6 +212,7 @@ func (s *Server) Router() *gin.Engine {
 // jobRoutes are the batch-job routes under /v1, here and on the hub listener for workspaces (workspaceRoutes).
 func (s *Server) jobRoutes(v1 *gin.RouterGroup) {
 	v1.POST("/gpu/jobs", s.requireWorkspace, s.submitJob)
+	v1.PUT("/gpu/files", s.requireWorkspace, s.uploadJobFile)
 	// Without requireWorkspace: a person removed from their only project still sees and cancels their own jobs, which run on; visibleJob and listJobs show only their own and those of projects they manage.
 	j := v1.Group("/gpu/jobs")
 	j.GET("", s.listJobs)

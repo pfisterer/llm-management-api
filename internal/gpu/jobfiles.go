@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// Files of a job (docs/architektur.md "Batch-Jobs", todo job_files): whoever only submits jobs has no workspace to fetch results from. A short-lived pod in the workspace namespace mounts the person's home folder of the project's volume (ws-<slug>, subPath homes/<slug>) read-only and serves it to this service alone, over the pod network with a token of its own; this service streams it on. No exec into pods and no new rights in Kubernetes: the service already creates and deletes pods there (GPU kernels). The pod runs the hub's init image (a base with python3, prepulled on every node) with the small server files_server.py; its NetworkPolicy admits this service only, its admission policy keeps the home read-only.
+// Files of a job (docs/architektur.md "Batch-Jobs", todo job_files): whoever only submits jobs has no workspace to fetch results from or to put a script and data into. A short-lived pod in the workspace namespace mounts the person's home folder of the project's volume (ws-<slug>, subPath homes/<slug>) and serves it to this service alone, over the pod network with a token of its own; this service streams it on. No exec into pods and no new rights in Kubernetes: the service already creates and deletes pods there (GPU kernels). The pod runs the hub's init image (a base with python3, prepulled on every node) with the small server files_server.py; its NetworkPolicy admits this service only. Besides the home the pod mounts the project's shared folder at its place in the home (project-shared), as workspaces and jobs do. Reading and writing are separate pods: the one that reads mounts both read-only (the admission policy holds it to that), only an upload starts one that may write (component=upload), the shared folder only for who may write it in a workspace (not a reader of the project).
 
 //go:embed files_server.py
 var filesServer string
@@ -38,6 +38,17 @@ const (
 	JobFileTimeout  = 30 * time.Minute
 	// jobFilesMax is how many entries of a folder a listing returns (files_server.py stops there).
 	jobFilesMax = 5000
+	// SharedDir is the project's shared folder in the home (subPath project-shared of the volume).
+	SharedDir = "project-shared"
+)
+
+// filesAccess is what a files pod may do: read the home and the shared folder, write both, or write the home and only read the shared folder (a reader of the project).
+type filesAccess int
+
+const (
+	filesRead filesAccess = iota
+	filesWrite
+	filesWriteHome
 )
 
 // JobFile is an entry of a folder in a job's home: Path relative to the home, Type file, dir, link (a symbolic link, not followed) or other; Size only for files.
@@ -56,10 +67,11 @@ type JobFiles struct {
 	Truncated bool      `json:"truncated,omitempty"`
 }
 
-// filesPod is a running files pod of a person in a project.
+// filesPod is a running files pod of a person in a project, under key in filesPods; busy counts the transfers running through it (under filesPods.mu), which keep it from being deleted.
 type filesPod struct {
-	name, ip, token string
-	created, used   time.Time
+	key, name, ip, token string
+	created, used        time.Time
+	busy                 int
 }
 
 type filesPods struct {
@@ -92,7 +104,7 @@ func JobFilePath(p, root string) (string, bool) {
 func (s *Service) ListJobFiles(ctx context.Context, j Job, rel string) (JobFiles, error) {
 	ctx, cancel := context.WithTimeout(ctx, filesStart+30*time.Second)
 	defer cancel()
-	resp, err := s.filesGet(ctx, j, "/list", rel)
+	resp, err := s.filesDo(ctx, j.Project, j.Person, filesRead, "/list", rel, nil, 0)
 	if err != nil {
 		return JobFiles{}, err
 	}
@@ -118,7 +130,7 @@ func (s *Service) ListJobFiles(ctx context.Context, j Job, rel string) (JobFiles
 
 // OpenJobFile opens a file of the home of the job's person for reading, with its size; the caller closes it. A file over JobFileMaxBytes is refused before anything is read.
 func (s *Service) OpenJobFile(ctx context.Context, j Job, rel string) (io.ReadCloser, int64, error) {
-	resp, err := s.filesGet(ctx, j, "/file", rel)
+	resp, err := s.filesDo(ctx, j.Project, j.Person, filesRead, "/file", rel, nil, 0)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -134,31 +146,79 @@ func (s *Service) OpenJobFile(ctx context.Context, j Job, rel string) (io.ReadCl
 	return resp.Body, size, nil
 }
 
-// filesGet asks the files pod of the job's person and project; a pod that went away meanwhile is started anew once.
-func (s *Service) filesGet(ctx context.Context, j Job, op, rel string) (*http.Response, error) {
+// PutJobFile writes a file of size bytes from body into the home of the person in the project, or into the project's shared folder (rel under SharedDir) unless sharedReadOnly (a reader of the project); rel is relative to the home (JobFilePath has checked it, not the home itself). Missing folders are made; an existing file is replaced only once the new one is complete. The person's upload pod writes it, the only files pod that may.
+func (s *Service) PutJobFile(ctx context.Context, project, person, rel string, sharedReadOnly bool, body io.Reader, size int64) (JobFile, error) {
+	if size > JobFileMaxBytes {
+		return JobFile{}, &JobRefused{fmt.Sprintf("Die Datei ist größer als %d GB; große Daten besser über S3 oder einen Workspace holen.", JobFileMaxBytes>>30)}
+	}
+	if rel == SharedDir {
+		return JobFile{}, &JobRefused{"Keine Datei (ein Ordner oder etwas anderes)."}
+	}
+	access := filesWrite
+	if sharedReadOnly {
+		if strings.HasPrefix(rel, SharedDir+"/") {
+			return JobFile{}, &JobRefused{"Im gemeinsamen Ordner ~/project-shared darf die Rolle „Lesend“ nur lesen."}
+		}
+		access = filesWriteHome
+	}
+	resp, err := s.filesDo(ctx, project, person, access, "/file", rel, body, size)
+	if err != nil {
+		return JobFile{}, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Size  int64 `json:"size"`
+		MTime int64 `json:"mtime"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&out); err != nil {
+		return JobFile{}, fmt.Errorf("files upload: %w", err)
+	}
+	return JobFile{Name: path.Base(rel), Path: rel, Type: "file", Size: out.Size, Modified: time.Unix(out.MTime, 0).UTC()}, nil
+}
+
+// filesDo asks the files pod of the person and project with the access: GET from the reading one, PUT to one that may write. A pod that went away meanwhile is started anew once; a body cannot be sent twice, so before a write the pod is asked whether it is still there.
+func (s *Service) filesDo(ctx context.Context, project, person string, access filesAccess, op, rel string, body io.Reader, size int64) (*http.Response, error) {
 	if s.k8s == nil || s.cfg.Jobs.InitImage == "" {
 		return nil, &JobRefused{"Dateien von Jobs sind in diesem Cluster nicht eingerichtet."}
 	}
+	write := access != filesRead
+	method := http.MethodGet
+	if write {
+		method = http.MethodPut
+	}
 	for attempt := 0; ; attempt++ {
-		p, err := s.filesPod(ctx, j.Project, j.Person)
+		p, err := s.filesPod(ctx, project, person, access)
 		if err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.files.addr(p.ip)+op+"?"+url.Values{"path": {rel}}.Encode(), nil)
+		if write && attempt == 0 && !s.filesAlive(ctx, p) {
+			s.dropFilesPod(context.WithoutCancel(ctx), p)
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, method, s.files.addr(p.ip)+op+"?"+url.Values{"path": {rel}}.Encode(), body)
 		if err != nil {
 			return nil, err
+		}
+		if write {
+			req.ContentLength = size
+			req.Header.Set("Content-Type", "application/octet-stream")
 		}
 		req.Header.Set("Authorization", "Bearer "+p.token)
+		s.files.mu.Lock()
+		p.busy++
+		s.files.mu.Unlock()
 		resp, err := s.files.http.Do(req)
+		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated) {
+			resp.Body = &filesBody{ReadCloser: resp.Body, done: func() { s.doneFilesPod(context.WithoutCancel(ctx), p) }}
+			return resp, nil
+		}
+		s.doneFilesPod(context.WithoutCancel(ctx), p)
 		if err != nil {
-			s.dropFilesPod(context.WithoutCancel(ctx), j.Project, j.Person, p)
-			if attempt == 0 && ctx.Err() == nil {
+			s.dropFilesPod(context.WithoutCancel(ctx), p)
+			if attempt == 0 && !write && ctx.Err() == nil {
 				continue
 			}
 			return nil, fmt.Errorf("files pod: %w", err)
-		}
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
 		}
 		var e struct {
 			Error string `json:"error"`
@@ -172,6 +232,14 @@ func (s *Service) filesGet(ctx context.Context, j Job, op, rel string) (*http.Re
 			return nil, &JobRefused{"Kein Ordner."}
 		case e.Error == "not_a_file":
 			return nil, &JobRefused{"Keine Datei (ein Ordner oder etwas anderes)."}
+		case e.Error == "parent_not_a_directory":
+			return nil, &JobRefused{"Ein Teil des Pfads ist eine Datei, kein Ordner."}
+		case e.Error == "no_space":
+			return nil, &JobRefused{"Kein Platz mehr im Home: die Speichergrenze des Projekts ist erreicht."}
+		case e.Error == "incomplete":
+			return nil, &JobRefused{"Die Datei kam nicht vollständig an."}
+		case resp.StatusCode == http.StatusForbidden && write:
+			return nil, &JobRefused{"Nicht schreibbar."}
 		case resp.StatusCode == http.StatusForbidden:
 			return nil, &JobRefused{"Nicht lesbar."}
 		}
@@ -179,11 +247,51 @@ func (s *Service) filesGet(ctx context.Context, j Job, op, rel string) (*http.Re
 	}
 }
 
-func filesKey(project, person string) string { return project + "\x00" + strings.ToLower(person) }
+// filesBody is the body of a files pod's answer; closing it ends the transfer (done, once).
+type filesBody struct {
+	io.ReadCloser
+	once sync.Once
+	done func()
+}
 
-// filesPod is the running files pod of the person in the project, started if there is none (or the one there is too old).
-func (s *Service) filesPod(ctx context.Context, project, person string) (*filesPod, error) {
-	key := filesKey(project, person)
+func (b *filesBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.done)
+	return err
+}
+
+// doneFilesPod ends a transfer through the pod: it counts as used now, and one replaced meanwhile is deleted after its last transfer.
+func (s *Service) doneFilesPod(ctx context.Context, p *filesPod) {
+	s.files.mu.Lock()
+	p.busy--
+	p.used = time.Now()
+	gone := p.busy == 0 && s.files.pods[p.key] != p
+	s.files.mu.Unlock()
+	if gone {
+		s.dropFilesPod(ctx, p)
+	}
+}
+
+// filesAlive says whether the pod's server answers.
+func (s *Service) filesAlive(ctx context.Context, p *filesPod) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.files.addr(p.ip)+"/healthz", nil)
+	resp, err := s.files.http.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func filesKey(project, person string, access filesAccess) string {
+	return project + "\x00" + strings.ToLower(person) + "\x00" + strconv.Itoa(int(access))
+}
+
+// filesPod is the running files pod of the person in the project with the access, started if there is none (or the one there is too old).
+func (s *Service) filesPod(ctx context.Context, project, person string, access filesAccess) (*filesPod, error) {
+	key := filesKey(project, person, access)
 	f := &s.files
 	f.mu.Lock()
 	if f.starting == nil {
@@ -207,11 +315,16 @@ func (s *Service) filesPod(ctx context.Context, project, person string) (*filesP
 		f.mu.Unlock()
 		return p, nil
 	}
-	f.mu.Unlock()
-	if p != nil {
-		s.dropFilesPod(ctx, project, person, p)
+	busy := p != nil && p.busy > 0
+	if busy {
+		// Too old to be used again, but a transfer still runs through it: forgotten here, deleted when that ends (doneFilesPod).
+		delete(f.pods, key)
 	}
-	p, err := s.startFilesPod(ctx, project, person)
+	f.mu.Unlock()
+	if p != nil && !busy {
+		s.dropFilesPod(ctx, p)
+	}
+	p, err := s.startFilesPod(ctx, project, person, access)
 	if err != nil {
 		return nil, err
 	}
@@ -225,10 +338,10 @@ func (s *Service) filesPod(ctx context.Context, project, person string) (*filesP
 }
 
 // dropFilesPod forgets the pod and deletes it.
-func (s *Service) dropFilesPod(ctx context.Context, project, person string, p *filesPod) {
+func (s *Service) dropFilesPod(ctx context.Context, p *filesPod) {
 	s.files.mu.Lock()
-	if s.files.pods[filesKey(project, person)] == p {
-		delete(s.files.pods, filesKey(project, person))
+	if s.files.pods[p.key] == p {
+		delete(s.files.pods, p.key)
 	}
 	s.files.mu.Unlock()
 	if err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods/"+p.name, nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
@@ -237,21 +350,21 @@ func (s *Service) dropFilesPod(ctx context.Context, project, person string, p *f
 }
 
 // startFilesPod creates the pod and waits until its server answers.
-func (s *Service) startFilesPod(ctx context.Context, project, person string) (*filesPod, error) {
+func (s *Service) startFilesPod(ctx context.Context, project, person string, access filesAccess) (*filesPod, error) {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
 	token := hex.EncodeToString(b)
 	_, _ = rand.Read(b[:4])
-	p := &filesPod{name: filesApp + "-" + hex.EncodeToString(b[:4]), token: token, created: time.Now(), used: time.Now()}
+	p := &filesPod{key: filesKey(project, person, access), name: filesApp + "-" + hex.EncodeToString(b[:4]), token: token, created: time.Now(), used: time.Now()}
 	ns := s.kernelNamespace()
-	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+ns+"/pods", s.filesPodObject(p, project, person), nil); err != nil {
+	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+ns+"/pods", s.filesPodObject(p, project, person, access), nil); err != nil {
 		return nil, fmt.Errorf("files pod: %w", err)
 	}
-	s.log.Infow("files pod started", "pod", p.name, "project", project, "person", person)
+	s.log.Infow("files pod started", "pod", p.name, "project", project, "person", person, "access", access)
 	ctx, cancel := context.WithTimeout(ctx, filesStart)
 	defer cancel()
 	fail := func(err error) (*filesPod, error) {
-		s.dropFilesPod(context.WithoutCancel(ctx), project, person, p)
+		s.dropFilesPod(context.WithoutCancel(ctx), p)
 		return nil, err
 	}
 	for {
@@ -270,12 +383,8 @@ func (s *Service) startFilesPod(ctx context.Context, project, person string) (*f
 		case "Running":
 			if pod.Status.PodIP != "" {
 				p.ip = pod.Status.PodIP
-				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.files.addr(p.ip)+"/healthz", nil)
-				if resp, err := s.files.http.Do(req); err == nil {
-					resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						return p, nil
-					}
+				if s.filesAlive(ctx, p) {
+					return p, nil
 				}
 			}
 		}
@@ -287,15 +396,19 @@ func (s *Service) startFilesPod(ctx context.Context, project, person string) (*f
 	}
 }
 
-// filesPodObject is the files pod: the person's home folder of the project's volume read-only at /data, made first as in a job (the folder of a person whose job never started may not exist yet, and Kubernetes would create a missing subPath as root); the init image, nothing of the host, no service account, on a CPU node, ended by Kubernetes at filesDeadline.
-func (s *Service) filesPodObject(p *filesPod, project, person string) map[string]any {
+// filesPodObject is the files pod: the person's home folder of the project's volume at /data and the project's shared folder at /data/project-shared, read-only unless the pod is for uploads (component=upload, its server then takes PUT; the shared folder stays read-only for filesWriteHome). Both folders and the mount point in the home are made first as in a job (the folder of a person whose job never started may not exist yet, Kubernetes would create a missing subPath as root, and a read-only home cannot take a new mount point); the init image, nothing of the host, no service account, on a CPU node, ended by Kubernetes at filesDeadline.
+func (s *Service) filesPodObject(p *filesPod, project, person string, access filesAccess) map[string]any {
 	home := "homes/" + HubUserSlug(person)
+	component, mode := "files", "ro"
+	if access != filesRead {
+		component, mode = "upload", "rw"
+	}
 	sec := map[string]any{"runAsUser": 1000, "runAsGroup": 100, "runAsNonRoot": true, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []any{"ALL"}}}
 	return map[string]any{
 		"apiVersion": "v1", "kind": "Pod",
 		"metadata": map[string]any{
 			"name":   p.name,
-			"labels": map[string]any{"app": filesApp, "component": "files", "dhbw.cloud/project": project, jobLabelUser: hubLabel(person)},
+			"labels": map[string]any{"app": filesApp, "component": component, "dhbw.cloud/project": project, jobLabelUser: hubLabel(person)},
 		},
 		"spec": map[string]any{
 			"restartPolicy":                 "Never",
@@ -308,7 +421,7 @@ func (s *Service) filesPodObject(p *filesPod, project, person string) map[string
 			"volumes":                       []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]any{"claimName": "ws-" + project}}},
 			"initContainers": []any{map[string]any{
 				"name": "dhbw-dirs", "image": s.cfg.Jobs.InitImage,
-				"command":         []any{"sh", "-c", `mkdir -p "/ws/$DHBW_HOME_DIR"`},
+				"command":         []any{"sh", "-c", `mkdir -p "/ws/$DHBW_HOME_DIR/project-shared" /ws/project-shared`},
 				"env":             []any{envVar("DHBW_HOME_DIR", home)},
 				"securityContext": sec,
 				"resources":       map[string]any{"requests": map[string]any{"cpu": "10m", "memory": "32Mi"}, "limits": map[string]any{"memory": "128Mi"}},
@@ -317,12 +430,15 @@ func (s *Service) filesPodObject(p *filesPod, project, person string) map[string
 			"containers": []any{map[string]any{
 				"name":            "files",
 				"image":           s.cfg.Jobs.InitImage,
-				"command":         []any{"python3", "-I", "-c", filesServer, "/data", strconv.Itoa(filesPort)},
+				"command":         []any{"python3", "-I", "-c", filesServer, "/data", strconv.Itoa(filesPort), mode},
 				"env":             []any{envVar("DHBW_FILES_TOKEN", p.token)},
 				"ports":           []any{map[string]any{"name": "files", "containerPort": filesPort}},
 				"securityContext": sec,
 				"resources":       map[string]any{"requests": map[string]any{"cpu": "10m", "memory": "48Mi"}, "limits": map[string]any{"cpu": "1", "memory": "256Mi"}},
-				"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/data", "subPath": home, "readOnly": true}},
+				"volumeMounts": []any{
+					map[string]any{"name": "home", "mountPath": "/data", "subPath": home, "readOnly": access == filesRead},
+					map[string]any{"name": "home", "mountPath": "/data/" + SharedDir, "subPath": SharedDir, "readOnly": access != filesWrite},
+				},
 			}},
 		},
 	}
@@ -347,7 +463,7 @@ func (s *Service) sweepFilesPods(ctx context.Context, now time.Time) {
 	known := map[string]bool{}
 	var idle []*filesPod
 	for key, p := range s.files.pods {
-		if now.Sub(p.used) > filesIdle {
+		if p.busy == 0 && now.Sub(p.used) > filesIdle {
 			idle = append(idle, p)
 			delete(s.files.pods, key)
 			continue

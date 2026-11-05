@@ -1,12 +1,14 @@
 package gpu
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,8 +95,14 @@ func (f *fakeFilesKube) do(_ context.Context, method, path string, body, out any
 	return nil
 }
 
-// startFilesServer runs files_server.py on root at a free port with the token, as the files pod does; skipped without python3.
+// startFilesServer runs files_server.py on root at a free port with the token, as the reading files pod does; skipped without python3.
 func startFilesServer(t *testing.T, root, token string) string {
+	t.Helper()
+	return startFilesServerMode(t, root, token, "ro")
+}
+
+// startFilesServerMode is startFilesServer with the mode of the pod (ro, rw).
+func startFilesServerMode(t *testing.T, root, token, mode string) string {
 	t.Helper()
 	py, err := exec.LookPath("python3")
 	if err != nil {
@@ -106,7 +114,7 @@ func startFilesServer(t *testing.T, root, token string) string {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
-	cmd := exec.Command(py, "-I", "-c", filesServer, root, fmt.Sprint(port))
+	cmd := exec.Command(py, "-I", "-c", filesServer, root, fmt.Sprint(port), mode)
 	cmd.Env = append(os.Environ(), "DHBW_FILES_TOKEN="+token)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -209,9 +217,132 @@ func TestJobFiles(t *testing.T) {
 			t.Errorf("files pod lacks %s: %s", want, pod)
 		}
 	}
-	// Unused for filesIdle, the pod is deleted.
+	// While a download runs, the pod stays however long it takes; unused for filesIdle after it, the pod is deleted.
+	body, _, err := s.OpenJobFile(ctx, j, "jobs/train/out.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.sweepFilesPods(ctx, time.Now().Add(filesIdle+time.Minute))
+	if len(k.deleted) != 0 {
+		t.Errorf("pod deleted during a download: %v", k.deleted)
+	}
+	body.Close()
 	s.sweepFilesPods(ctx, time.Now().Add(filesIdle+time.Minute))
 	if len(k.deleted) != 1 || !strings.HasSuffix(k.deleted[0], "/pods/"+k.created[0]["metadata"].(map[string]any)["name"].(string)) {
 		t.Errorf("deleted: %v", k.deleted)
+	}
+}
+
+// Uploads through a files pod that may write (component=upload, its own pod beside the reading one): the file lands in the home with its folders, replaces an older one, and paths out of the home, onto folders or through files are refused; the reading pod takes no PUT.
+func TestPutJobFile(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(filepath.Join(home, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(home, "notes.txt"), []byte("x"), 0o644)
+	_ = os.Symlink("..", filepath.Join(home, "up"))
+
+	s, _, _, _ := testService()
+	k := &fakeFilesKube{}
+	s.k8s = k
+	s.cfg.Jobs.InitImage = "reg/platform/base-python@sha256:abc"
+	// Every pod gets a server of its own, as it was built: its token and its mode.
+	addrs := map[string]string{}
+	s.files.addr = func(string) string {
+		k.mu.Lock()
+		pod := k.created[len(k.created)-1]
+		k.mu.Unlock()
+		name := pod["metadata"].(map[string]any)["name"].(string)
+		if addrs[name] == "" {
+			c := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+			env := c["env"].([]any)[0].(map[string]any)
+			cmd := c["command"].([]any)
+			addrs[name] = startFilesServerMode(t, home, env["value"].(string), cmd[len(cmd)-1].(string))
+		}
+		return addrs[name]
+	}
+	ctx := context.Background()
+	put := func(rel, content string) (JobFile, error) {
+		return s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", rel, false, strings.NewReader(content), int64(len(content)))
+	}
+	if f, err := put("jobs/train/train.py", "print(1)"); err != nil || f.Size != 8 || f.Path != "jobs/train/train.py" {
+		t.Fatalf("upload: %+v %v", f, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(home, "jobs/train/train.py")); string(b) != "print(1)" {
+		t.Errorf("uploaded: %q", b)
+	}
+	if _, err := put("jobs/train/train.py", "print(2)"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(home, "jobs/train/train.py")); string(b) != "print(2)" {
+		t.Errorf("replaced: %q", b)
+	}
+	if left, _ := filepath.Glob(filepath.Join(home, "jobs/train/.dhbw-upload-*")); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+	var refused *JobRefused
+	if _, err := put("data", "x"); !errors.As(err, &refused) {
+		t.Errorf("onto a folder: %v", err)
+	}
+	if _, err := put("notes.txt/a", "x"); !errors.As(err, &refused) {
+		t.Errorf("through a file: %v", err)
+	}
+	if _, err := put("up/outside.txt", "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("out of the home through a link: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "outside.txt")); err == nil {
+		t.Error("written outside the home")
+	}
+	// A body shorter than announced is refused and leaves nothing behind.
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "short.txt", false, strings.NewReader("ab"), 5); err == nil {
+		t.Error("short body accepted")
+	}
+	if _, err := os.Stat(filepath.Join(home, "short.txt")); err == nil {
+		t.Error("short body written")
+	}
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "big", false, bytes.NewReader(nil), JobFileMaxBytes+1); !errors.As(err, &refused) {
+		t.Errorf("too large: %v", err)
+	}
+
+	// The upload pod may write and says so; the reading pod, started for a listing, mounts read-only and refuses PUT.
+	if _, err := s.ListJobFiles(ctx, Job{Project: "t-kurs", Person: "a@dhbw.de"}, "jobs"); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.created) != 2 {
+		t.Fatalf("pods created: %d, want an upload pod and a reading one", len(k.created))
+	}
+	up, _ := json.Marshal(k.created[0])
+	ro, _ := json.Marshal(k.created[1])
+	for _, want := range []string{`"component":"upload"`, `"mountPath":"/data","name":"home","readOnly":false`, `"mountPath":"/data/project-shared","name":"home","readOnly":false,"subPath":"project-shared"`, `"rw"]`, `mkdir -p \"/ws/$DHBW_HOME_DIR/project-shared\" /ws/project-shared`} {
+		if !strings.Contains(string(up), want) {
+			t.Errorf("upload pod lacks %s: %s", want, up)
+		}
+	}
+	for _, want := range []string{`"component":"files"`, `"mountPath":"/data","name":"home","readOnly":true`, `"mountPath":"/data/project-shared","name":"home","readOnly":true`, `"ro"]`} {
+		if !strings.Contains(string(ro), want) {
+			t.Errorf("reading pod lacks %s: %s", want, ro)
+		}
+	}
+	// A reader of the project writes the home, never the shared folder: refused before any pod, and its upload pod mounts the shared folder read-only.
+	var refusedShared *JobRefused
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "project-shared/x", true, strings.NewReader("x"), 1); !errors.As(err, &refusedShared) {
+		t.Errorf("reader into project-shared: %v", err)
+	}
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "notes.md", true, strings.NewReader("x"), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.created) != 3 {
+		t.Fatalf("pods created: %d, want a third for the reader's access", len(k.created))
+	}
+	if b, _ := json.Marshal(k.created[2]); !strings.Contains(string(b), `"mountPath":"/data/project-shared","name":"home","readOnly":true`) {
+		t.Errorf("reader's upload pod writes the shared folder: %s", b)
+	}
+	roName := k.created[1]["metadata"].(map[string]any)["name"].(string)
+	token := k.created[1]["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]any)[0].(map[string]any)["value"].(string)
+	req, _ := http.NewRequest(http.MethodPut, addrs[roName]+"/file?path=x.txt", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+token)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("PUT to the reading pod: %v %v", resp, err)
 	}
 }

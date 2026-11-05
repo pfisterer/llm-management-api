@@ -67,6 +67,7 @@ dhbw-cloud job submit --gpu-class general-large -- python train.py
 | `--max-hours` | Höchstlaufzeit in Stunden; Standard die des Projekts |
 | `--workdir` | Arbeitsverzeichnis im Home; Standard das aktuelle Verzeichnis |
 | `--notebook` | Notebook statt Befehl |
+| `--files` | lokale Dateien und Ordner vor dem Abschicken hochladen, siehe „Dateien mitschicken“ |
 | `--llm-project` | LLM-Projekt für `OPENAI_API_KEY` im Job: ein eigenes Projekt mit LLM-Tokens oder `none`; Standard wie im Workspace des Projekts |
 | `-f`, `--follow` | danach die Ausgabe verfolgen, bis der Job endet; Fehlercode, wenn er scheitert |
 
@@ -132,9 +133,30 @@ dhbw-cloud job cancel j-4f3a9c0d2e       # abbrechen
 
 Ein wartender Job zeigt seinen Platz in der Warteschlange. Nach dem Ende bleiben Zustand, Exit-Code, Zeiten, GPU-Stunden und das Ende der Ausgabe erhalten; die vollständige Ausgabe jedes Versuchs liegt in `~/jobs/<name>/`.
 
+### Dateien mitschicken
+
+Ohne Workspace kommen Skript und Daten mit `--files` ins Home des Projekts. Sie landen im Ordner des Jobs `~/jobs/<name>`, und dort läuft dann auch der Befehl; ohne `--name` bekommt der Job einen Namen wie `job-20261105-153000`. Mit `--workdir` landen sie stattdessen in diesem Verzeichnis. Ordner werden samt Inhalt hochgeladen, ein relativer Pfad bei `--notebook` zählt dann ab diesem Verzeichnis. Gleichnamige Dateien werden ersetzt.
+
+```
+# Skript und Datenordner mitschicken; der Befehl läuft in ~/jobs/training-1
+dhbw-cloud job submit --project ki-kurs --name training-1 --files train.py daten/ -- python train.py --data daten
+
+# Ein Notebook mitschicken und ausführen
+dhbw-cloud job submit --project ki-kurs --files analyse.ipynb --notebook analyse.ipynb
+```
+
+Daten, die mehrere Jobs brauchen, einmal mit `dhbw-cloud job upload` hochladen und im Befehl auf sie verweisen:
+
+```
+dhbw-cloud job upload --project ki-kurs --to daten messung.csv bilder/   # nach ~/daten
+dhbw-cloud job submit --project ki-kurs --files train.py -- python train.py --data ~/daten
+```
+
+Daten für alle im Projekt gehören in den gemeinsamen Ordner: `dhbw-cloud job upload --to project-shared/daten …` legt sie nach `~/project-shared/daten`, wo jeder Job und Workspace des Projekts sie sieht. Das geht wie im Workspace nicht mit der Rolle „Lesend“. Sonst wird nur ins eigene Home hochgeladen, höchstens 5 GB je Datei; der Platz zählt zur Speichergrenze des Projekts.
+
 ### Ergebnisse holen
 
-Die Dateien eines Jobs lassen sich auch ohne Workspace holen, während er läuft und nach seinem Ende. Pfade sind relativ zum Home, wie `dhbw-cloud job files` sie zeigt. Die Person, die den Job abgeschickt hat, sieht ihr ganzes Home im Projekt; Verwaltende des Projekts sehen nur den Ordner des Jobs `~/jobs/<name>`. Die erste Anfrage dauert einige Sekunden. Eine Datei darf höchstens 5 GB groß sein; größere Ergebnisse über S3 oder einen Workspace holen.
+Die Dateien eines Jobs lassen sich auch ohne Workspace holen, während er läuft und nach seinem Ende. Pfade sind relativ zum Home, wie `dhbw-cloud job files` sie zeigt. Die Person, die den Job abgeschickt hat, sieht ihr ganzes Home im Projekt samt `project-shared`; Verwaltende des Projekts sehen nur den Ordner des Jobs `~/jobs/<name>`. Die erste Anfrage dauert einige Sekunden. Eine Datei darf höchstens 5 GB groß sein; größere Ergebnisse über S3 oder einen Workspace holen.
 
 ```
 dhbw-cloud job files j-4f3a9c0d2e                         # Ordner des Jobs, ~/jobs/<name>

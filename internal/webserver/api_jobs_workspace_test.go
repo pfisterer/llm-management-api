@@ -188,7 +188,7 @@ func TestJobLLMKey(t *testing.T) {
 	}
 }
 
-// fakeFilesServer stands for files_server.py (tested itself in package gpu): a folder listing and one file for every path.
+// fakeFilesServer stands for files_server.py (tested itself in package gpu): a folder listing and one file for every path, and an upload of any path.
 func fakeFilesServer(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -197,6 +197,12 @@ func fakeFilesServer(t *testing.T) *httptest.Server {
 		case "/list":
 			_, _ = io.WriteString(w, `{"entries":[{"name":"out.txt","type":"file","size":6,"mtime":0}]}`)
 		case "/file":
+			if r.Method == http.MethodPut {
+				b, _ := io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = fmt.Fprintf(w, `{"size":%d,"mtime":0}`, len(b))
+				return
+			}
 			w.Header().Set("Content-Length", "6")
 			_, _ = io.WriteString(w, "result")
 		default:
@@ -284,5 +290,136 @@ func TestJobFilesRights(t *testing.T) {
 	}
 	if code, _ := call(t, e.h, "GET", base, "oidc:"+jzMember, "", nil); code != ok {
 		t.Errorf("former member, job folder: %d, want 200", code)
+	}
+}
+
+// Who uploads into which home (todo job_files, --files): whoever may submit a job into the project, into their own home there and never another's, and into the project's shared folder unless a reader (as in a workspace); acting on behalf uploads into the person's home, read-only tokens nothing. Paths stay in the home; a body needs its length.
+func TestJobUploadRights(t *testing.T) {
+	e, hub := workspaceEnv(t)
+	files := fakeFilesServer(t)
+	e.gpu.SetFilesAddr(func(string) string { return files.URL })
+	const created, refused, forbidden = http.StatusCreated, http.StatusConflict, http.StatusForbidden
+	// The same as submitting (TestJobRightsWrite): into t-kurs and into t-fremd.
+	matrix := map[string][2]int{
+		"member (owner of jobA)":    {created, refused},
+		"other member":              {created, refused},
+		"reader":                    {created, refused},
+		"manager (group)":           {created, refused},
+		"outsider (other project)":  {refused, created},
+		"no project":                {forbidden, forbidden},
+		"fleet admin, no project":   {forbidden, forbidden},
+		"platform admin":            {refused, refused},
+		"admin as member":           {created, refused},
+		"admin as outsider":         {refused, created},
+		"member's token":            {created, refused},
+		"member's read-only token":  {forbidden, forbidden},
+		"manager's read-only token": {forbidden, forbidden},
+		"admin's token":             {refused, refused},
+	}
+	person := map[string]string{"other member": jzOther, "reader": jzReader, "manager (group)": jzManager, "outsider (other project)": jzOutsider, "admin as member": jzMember, "admin as outsider": jzOutsider}
+	upload := func(path, bearer, actAs, body string) (int, []byte) {
+		req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		if actAs != "" {
+			req.Header.Set("X-Act-As", actAs)
+		}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.Bytes()
+	}
+	// uploadPods are the homes (subPath) the upload pods created so far write into.
+	uploadPods := func() map[string]bool {
+		e.kube.mu.Lock()
+		defer e.kube.mu.Unlock()
+		out := map[string]bool{}
+		for _, o := range e.kube.objects {
+			labels, _ := o["metadata"].(map[string]any)["labels"].(map[string]any)
+			if labels["app"] == "dhbw-files" && labels["component"] == "upload" {
+				c := o["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+				out[c["volumeMounts"].([]any)[0].(map[string]any)["subPath"].(string)] = true
+			}
+		}
+		return out
+	}
+	for _, a := range e.actors(t) {
+		w, found := matrix[a.name]
+		if !found {
+			t.Fatalf("no expectation for %s", a.name)
+		}
+		for i, project := range []string{"t-kurs", "t-fremd"} {
+			code, body := upload("/v1/gpu/files?project="+project+"&path=jobs/run/train.py", strings.TrimPrefix(a.bearer, "Bearer "), a.actAs, "print(1)")
+			if code != w[i] {
+				t.Errorf("%s: upload into %s: want %d, got %d %s", a.name, project, w[i], code, body)
+			}
+			if code == created {
+				var f gpu.JobFile
+				if _ = json.Unmarshal(body, &f); f.Path != "jobs/run/train.py" || f.Size != 8 {
+					t.Errorf("%s: answer %s", a.name, body)
+				}
+				who := person[a.name]
+				if who == "" {
+					who = jzMember
+				}
+				if !uploadPods()["homes/"+gpu.HubUserSlug(who)] {
+					t.Errorf("%s: no upload pod of %s: %v", a.name, who, uploadPods())
+				}
+			}
+		}
+	}
+	for _, c := range []struct {
+		path string
+		want int
+	}{
+		{"/v1/gpu/files?project=t-kurs&path=../other/x", http.StatusBadRequest},
+		{"/v1/gpu/files?project=t-kurs&path=/etc/passwd", http.StatusBadRequest},
+		{"/v1/gpu/files?project=t-kurs", http.StatusBadRequest},
+		{"/v1/gpu/files?project=t-kurs&path=project-shared", http.StatusBadRequest},
+		{"/v1/gpu/files?project=t-unbekannt&path=x", refused},
+	} {
+		if code, body := upload(c.path, "oidc:"+jzMember, "", "x"); code != c.want {
+			t.Errorf("%s: want %d, got %d %s", c.path, c.want, code, body)
+		}
+	}
+	// The shared folder: members write it, readers only read it (the reader's upload pod mounts it read-only).
+	if code, body := upload("/v1/gpu/files?project=t-kurs&path=project-shared/daten/a.csv", "oidc:"+jzMember, "", "1,2"); code != created {
+		t.Errorf("member into project-shared: %d %s", code, body)
+	}
+	if code, body := upload("/v1/gpu/files?project=t-kurs&path=project-shared/a.csv", "oidc:"+jzReader, "", "1,2"); code != http.StatusBadRequest || !strings.Contains(string(body), "Lesend") {
+		t.Errorf("reader into project-shared: %d %s", code, body)
+	}
+	if code, body := upload("/v1/gpu/files?project=t-kurs&path=notes/a.csv", "oidc:"+jzReader, "", "1,2"); code != created {
+		t.Errorf("reader into the own home: %d %s", code, body)
+	}
+	e.kube.mu.Lock()
+	for _, o := range e.kube.objects {
+		labels, _ := o["metadata"].(map[string]any)["labels"].(map[string]any)
+		if labels["component"] != "upload" {
+			continue
+		}
+		mounts := o["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["volumeMounts"].([]any)
+		home, shared := mounts[0].(map[string]any), mounts[1].(map[string]any)
+		if home["readOnly"] != false || shared["subPath"] != "project-shared" || shared["readOnly"] != (home["subPath"] == "homes/"+gpu.HubUserSlug(jzReader)) {
+			t.Errorf("upload pod mounts: %v", mounts)
+		}
+	}
+	e.kube.mu.Unlock()
+	// Without Content-Length (chunked).
+	req := httptest.NewRequest(http.MethodPut, "/v1/gpu/files?project=t-kurs&path=x", io.MultiReader(strings.NewReader("x")))
+	req.ContentLength = -1
+	req.Header.Set("Authorization", "Bearer oidc:"+jzMember)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusLengthRequired {
+		t.Errorf("without length: %d %s", rec.Code, rec.Body)
+	}
+	// From the member's workspace, as the member.
+	wreq := httptest.NewRequest(http.MethodPut, "/v1/gpu/files?project=t-kurs&path=data/a.csv", strings.NewReader("1,2"))
+	wreq.RemoteAddr = "10.42.0.10:40000"
+	wreq.Header.Set("Authorization", "token t-"+jzMember)
+	rec = httptest.NewRecorder()
+	hub.ServeHTTP(rec, wreq)
+	if rec.Code != created {
+		t.Errorf("upload from the workspace: %d %s", rec.Code, rec.Body)
 	}
 }
