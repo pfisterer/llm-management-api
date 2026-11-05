@@ -16,6 +16,7 @@ type InferenceReplica struct {
 	APIBase  string `json:"api_base"`  // <InferenceURL>/<name>/v1
 	GPUClass string `json:"gpu_class"` // label dhbw.cloud/gpu-class
 	Role     string `json:"role"`      // label dhbw.cloud/inference-role: gap-filler or base-load
+	Weight   int    `json:"weight"`    // the node's NodeAssignment.Weight, 1 without one
 }
 
 // podLister is the part of the Kubernetes client the inference listing needs.
@@ -39,6 +40,17 @@ func (s *Service) InferenceReplicas(ctx context.Context) ([]InferenceReplica, er
 	if err != nil {
 		return nil, err
 	}
+	// The weight is the node's: how fast a replica answers depends on the machine it runs on.
+	weights := map[string]int{}
+	if s.fleet != nil {
+		as, err := s.fleet.Assignments(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range as {
+			weights[a.Node] = replicaWeight(&a)
+		}
+	}
 	base := strings.TrimRight(s.cfg.InferenceURL, "/")
 	seen := map[string]bool{}
 	out := []InferenceReplica{}
@@ -49,7 +61,7 @@ func (s *Service) InferenceReplicas(ctx context.Context) ([]InferenceReplica, er
 		}
 		seen[name] = true
 		out = append(out, InferenceReplica{Name: name, APIBase: base + "/" + name + "/v1",
-			GPUClass: p.Metadata.Labels["dhbw.cloud/gpu-class"], Role: p.Metadata.Labels["dhbw.cloud/inference-role"]})
+			GPUClass: p.Metadata.Labels["dhbw.cloud/gpu-class"], Role: p.Metadata.Labels["dhbw.cloud/inference-role"], Weight: max(weights[p.Spec.NodeName], 1)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

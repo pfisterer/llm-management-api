@@ -38,8 +38,36 @@ func TestInferenceReplicas(t *testing.T) {
 	if len(reps) != 2 || reps[0].Name != "gap-a" || reps[1].Name != "gap-b" {
 		t.Fatalf("only ready, not terminating, labelled replicas, sorted: %+v", reps)
 	}
-	if r := reps[1]; r.APIBase != "https://inference.example/gap-b/v1" || r.GPUClass != "l4-3q" || r.Role != "gap-filler" {
+	if r := reps[1]; r.APIBase != "https://inference.example/gap-b/v1" || r.GPUClass != "l4-3q" || r.Role != "gap-filler" || r.Weight != 1 {
 		t.Fatalf("replica: %+v", r)
+	}
+}
+
+// A replica gets its node's weight, 1 on a node without one or without assignment.
+func TestInferenceReplicaWeights(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _ := testService()
+	s.cfg.InferenceURL = "https://inference.example"
+	store := NewMemoryFleetStore()
+	s.SetFleet(store, FleetConfig{})
+	_ = store.SaveAssignment(ctx, NodeAssignment{Node: "fast", Pool: "general", Tier: "large", Weight: 3})
+	_ = store.SaveAssignment(ctx, NodeAssignment{Node: "slow", Pool: "general", Tier: "large"})
+	ready := `"status":{"conditions":[{"type":"Ready","status":"True"}]}`
+	s.pods = fakePods{`[
+		{"metadata":{"name":"a","labels":{"replica":"gap-fast"}},"spec":{"nodeName":"fast"},` + ready + `},
+		{"metadata":{"name":"b","labels":{"replica":"gap-slow"}},"spec":{"nodeName":"slow"},` + ready + `},
+		{"metadata":{"name":"c","labels":{"replica":"base-x"}},"spec":{"nodeName":"other"},` + ready + `}
+	]`}
+	reps, err := s.InferenceReplicas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, r := range reps {
+		got[r.Name] = r.Weight
+	}
+	if got["gap-fast"] != 3 || got["gap-slow"] != 1 || got["base-x"] != 1 {
+		t.Fatalf("weights: %v", got)
 	}
 }
 

@@ -190,6 +190,8 @@ func TestFleetRefusals(t *testing.T) {
 		"unknown pool": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "wi", Tier: "large"}),
 		"unknown tier": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "general", Tier: "riesig"}),
 		"unknown node": s.AssignNode(ctx, NodeAssignment{Node: "gpu-9", Pool: "general", Tier: "large"}),
+		"weight < 0":   s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "general", Tier: "large", Weight: -1}),
+		"weight > max": s.AssignNode(ctx, NodeAssignment{Node: "gpu-3", Pool: "general", Tier: "large", Weight: MaxReplicaWeight + 1}),
 		"pool id":      s.SavePool(ctx, Pool{ID: "W I", Name: "WI"}),
 		"underscore":   s.SavePool(ctx, Pool{ID: "ma_arm64", Name: "MA"}),
 		"double -":     s.SavePool(ctx, Pool{ID: "ma--arm64", Name: "MA"}),

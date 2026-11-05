@@ -76,12 +76,25 @@ type NodeAssignment struct {
 	Tier           string     `json:"tier"`
 	AvailableUntil *time.Time `json:"available_until,omitempty"`
 	// GapModel: the inference gap filler on this node, a key of the configured models; "" = the tier's default, "-" = none.
-	GapModel  string    `json:"gap_model"`
+	GapModel string `json:"gap_model"`
+	// Weight is the share of requests LiteLLM gives the inference replicas on this node, relative to the other members of their alias (2 = twice as many as a member with 1); 0 = 1. Only an alias LiteLLM routes by weight (routing group simple-shuffle, e.g. chat-large) uses it, the others route by latency.
+	Weight    int       `json:"weight,omitempty" example:"2"`
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"`
 }
 
 func (NodeAssignment) TableName() string { return "gpu_node_assignments" }
+
+// MaxReplicaWeight bounds NodeAssignment.Weight: enough to prefer a fast machine clearly, without starving a slow one.
+const MaxReplicaWeight = 10
+
+// replicaWeight is the weight of the inference replicas on a node with this assignment (nil = unassigned).
+func replicaWeight(a *NodeAssignment) int {
+	if a == nil || a.Weight <= 0 {
+		return 1
+	}
+	return a.Weight
+}
 
 // FleetStore keeps pools, classes and node assignments.
 type FleetStore interface {
@@ -438,6 +451,9 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 	}
 	if _, ok := tierByID(a.Tier); !ok {
 		return &ErrFleet{fmt.Sprintf("Stufe %q gibt es nicht.", a.Tier)}
+	}
+	if a.Weight < 0 || a.Weight > MaxReplicaWeight {
+		return &ErrFleet{fmt.Sprintf("Gewicht: 1–%d (leer oder 0 = 1).", MaxReplicaWeight)}
 	}
 	if a.GapModel != "" && a.GapModel != NoGapFiller {
 		models, _, err := s.catalogue(ctx)

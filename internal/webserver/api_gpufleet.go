@@ -65,13 +65,15 @@ type GPUNodeRequest struct {
 	AvailableUntil *time.Time `json:"available_until,omitempty"`
 	// GapModel: inference gap filler; "" = the tier's default, "-" = none.
 	GapModel string `json:"gap_model"`
+	// Weight: share of requests for the node's inference replicas in an alias LiteLLM routes by weight (chat-large), relative to the other members; 0 or missing = 1, at most 10.
+	Weight int `json:"weight,omitempty" example:"2" minimum:"0" maximum:"10"`
 }
 
 // putGPUNode godoc
 //
 //	@ID				putGPUNode
 //	@Summary		Assign a GPU node
-//	@Description	For admins: puts a GPU node into a pool and tier (the class is created on first use) or, with an empty pool, takes it out. The cluster follows within a minute: node labels and the Kueue queues of the classes. Running pods stay where they are.
+//	@Description	For admins: puts a GPU node into a pool and tier (the class is created on first use) or, with an empty pool, takes it out. The cluster follows within a minute: node labels and the Kueue queues of the classes. Running pods stay where they are. The weight is the node's share of requests in an alias LiteLLM routes by weight (chat-large), taken over by the discovery job within five minutes.
 //	@Tags			gpu
 //	@Accept			json
 //	@Produce		json
@@ -88,7 +90,7 @@ func (s *Server) putGPUNode(c *gin.Context) {
 		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
 		return
 	}
-	a := gpu.NodeAssignment{Node: c.Param("name"), Pool: strings.TrimSpace(req.Pool), Tier: req.Tier, AvailableUntil: req.AvailableUntil, GapModel: strings.TrimSpace(req.GapModel), UpdatedBy: caller(c).Email}
+	a := gpu.NodeAssignment{Node: c.Param("name"), Pool: strings.TrimSpace(req.Pool), Tier: req.Tier, AvailableUntil: req.AvailableUntil, GapModel: strings.TrimSpace(req.GapModel), Weight: req.Weight, UpdatedBy: caller(c).Email}
 	if !s.fleetDone(c, s.gpu.AssignNode(c.Request.Context(), a)) {
 		return
 	}
