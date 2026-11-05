@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"path"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
@@ -27,6 +31,8 @@ type SubmitJobRequest struct {
 	WorkingDir string `json:"working_dir" example:"projects/kurs"`
 	// MaxHours is how long the job may run at the latest, which it reserves of the project's GPU hours; 0 = the project's maximum (job_max_hours).
 	MaxHours float64 `json:"max_hours" example:"2"`
+	// LLMProject is whose LLM tokens the job's key (OPENAI_API_KEY with OPENAI_BASE_URL) draws from, as at a workspace's start: one of the caller's projects with LLM tokens, "none" = without key, empty = as for the project's workspaces (its default_llm_project, else the project itself when it has LLM tokens, else the caller's first LLM project; none when that cannot be had).
+	LLMProject string `json:"llm_project" example:"none"`
 }
 
 // JobLogResponse is the end of a job's output: live from its pod, or what was kept when it ended.
@@ -34,25 +40,81 @@ type JobLogResponse struct {
 	Log string `json:"log"`
 }
 
-// jobActor is who acts on jobs: the person (hub user name), their tokens for the project roles, and whether they are an admin of the service.
+// jobActor is who acts on jobs: the person (hub user name), their Keycloak sub when known (signed in as themself), their tokens for the project roles, and whether they are an admin of the service.
 type jobActor struct {
 	person string
+	sub    string
 	tokens []string
 	admin  bool
 }
 
+// jobKeys makes a job's LLM key (the person's workspace key, keySource) and says where the LLM API is; nil = jobs without key.
+type jobKeys struct {
+	keySource
+	baseURL string
+	// gateway and limits: which models the key may use and their limits, for Claude Code's variables (agentEnv); empty gateway = none.
+	gateway string
+	limits  interface {
+		Limits(ctx context.Context) (map[string]ModelLimit, error)
+	}
+}
+
+// agentEnv are Claude Code's variables for a key, as the hub sets them in a workspace (dhbw_agent_env in the hub's values): the gateway's root as ANTHROPIC_BASE_URL, the agent model ("agent" where the key may use it, else "code", else the first) in every slot, chat-fast as the small one, and the model's limits; without the key itself (ANTHROPIC_AUTH_TOKEN, from the Secret). nil without models.
+func agentEnv(baseURL string, models []string, limits map[string]ModelLimit) map[string]string {
+	base := strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
+	agent := ""
+	switch {
+	case slices.Contains(models, "agent"):
+		agent = "agent"
+	case slices.Contains(models, DefaultWorkspaceModel):
+		agent = DefaultWorkspaceModel
+	case len(models) > 0:
+		agent = models[0]
+	}
+	if base == "" || agent == "" {
+		return nil
+	}
+	small := agent
+	if slices.Contains(models, "chat-fast") {
+		small = "chat-fast"
+	}
+	maxIn, maxOut := 24576, 8192
+	if l, ok := limits[agent]; ok {
+		if l.MaxInputTokens > 0 {
+			maxIn = l.MaxInputTokens
+		}
+		if l.MaxOutputTokens > 0 {
+			maxOut = l.MaxOutputTokens
+		}
+	}
+	return map[string]string{"ANTHROPIC_BASE_URL": base, "ANTHROPIC_MODEL": agent, "ANTHROPIC_DEFAULT_OPUS_MODEL": agent, "ANTHROPIC_DEFAULT_SONNET_MODEL": agent, "ANTHROPIC_DEFAULT_HAIKU_MODEL": small,
+		"CLAUDE_CODE_SUBAGENT_MODEL": agent, "CLAUDE_CODE_MAX_CONTEXT_TOKENS": strconv.Itoa(maxIn + maxOut), "CLAUDE_CODE_MAX_OUTPUT_TOKENS": strconv.Itoa(maxOut), "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"}
+}
+
+// jobKeyFailure is a key that could not be found out for a job whose LLM project was chosen.
+type jobKeyFailure struct{ *keyFailure }
+
+func (e jobKeyFailure) Error() string { return e.msg }
+
+// keyReasons are the reasons of workspaceKey for no key, for people.
+var keyReasons = map[string]string{
+	"the chosen LLM project is none of the person's projects with LLM tokens": "Das gewählte LLM-Projekt ist keines der eigenen Projekte mit LLM-Tokens.",
+	"person unknown to the LLM service":                                       "Für LLM-Schlüssel muss die Person den KI-Dienst einmal selbst genutzt haben (anmelden und die LLM-Seite öffnen).",
+	"project has no LLM tokens":                                               "Das gewählte Projekt hat keine LLM-Tokens.",
+}
+
 // submitJob checks the job against the project (membership, batch jobs, class, limits, budget with reservations) and submits it with the project's environment as a start sees it. Check and submit hold the project's job lock: requests sent together cannot all pass the check before any of them is saved.
-func submitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jobActor, req SubmitJobRequest) (gpu.Job, error) {
+func submitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, k *jobKeys, a jobActor, req SubmitJobRequest) (gpu.Job, error) {
 	var job gpu.Job
 	err := g.LockProjectJobs(ctx, req.Project, func(ctx context.Context) error {
 		var err error
-		job, err = checkAndSubmitJob(ctx, ws, g, a, req)
+		job, err = checkAndSubmitJob(ctx, ws, g, k, a, req)
 		return err
 	})
 	return job, err
 }
 
-func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jobActor, req SubmitJobRequest) (gpu.Job, error) {
+func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, k *jobKeys, a jobActor, req SubmitJobRequest) (gpu.Job, error) {
 	live, err := g.Jobs(ctx, gpu.JobFilter{Project: req.Project, Person: a.person, Live: true})
 	if err != nil {
 		return gpu.Job{}, err
@@ -74,9 +136,58 @@ func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Servic
 	if hp == nil {
 		return gpu.Job{}, &workspace.Refusal{Reason: "Kein aktives Projekt " + req.Project + " mit Workspace-Zugang."}
 	}
-	return g.SubmitJob(ctx, gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed,
+	spec := gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed,
 		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, SharedReadOnly: hp.SharedReadOnly, ScratchGB: hp.ScratchGB, StorageGB: hp.StorageGB,
-		Command: req.Command, Notebook: req.Notebook, WorkingDir: req.WorkingDir})
+		Command: req.Command, Notebook: req.Notebook, WorkingDir: req.WorkingDir}
+	if err := jobLLMKey(ctx, ws, k, a, req, &spec); err != nil {
+		return gpu.Job{}, err
+	}
+	return g.SubmitJob(ctx, spec)
+}
+
+// jobLLMKey gives the job the person's LLM key by the rule of their workspaces in the project (keySource.workspaceKey, llmProjectFor). A chosen LLM project that yields no key refuses the job; left to the project, the job runs without key when there is none or it cannot be had right now (LiteLLM not reachable), as a workspace starts without.
+func jobLLMKey(ctx context.Context, ws *workspace.Service, k *jobKeys, a jobActor, req SubmitJobRequest, spec *gpu.JobSpec) error {
+	chosen := strings.TrimSpace(req.LLMProject)
+	if chosen == gpu.NoLLM {
+		return nil
+	}
+	if k == nil {
+		if chosen != "" {
+			return &workspace.Refusal{Reason: "LLM-Schlüssel für Jobs sind in diesem Dienst nicht eingerichtet."}
+		}
+		return nil
+	}
+	proj, err := ws.Get(ctx, req.Project)
+	if err != nil {
+		return err
+	}
+	got, fail := k.workspaceKey(ctx, a.person, a.sub, a.tokens, proj, chosen)
+	switch {
+	case fail != nil && chosen != "":
+		return jobKeyFailure{fail}
+	case fail != nil:
+		return nil
+	case got.Key == "" && chosen != "":
+		reason := keyReasons[got.Reason]
+		if reason == "" {
+			reason = "Kein LLM-Schlüssel aus " + chosen + "."
+		}
+		return &workspace.Refusal{Reason: reason}
+	case got.Key == "":
+		return nil
+	}
+	spec.LLMKey, spec.LLMProject, spec.LLMBaseURL = got.Key, got.LLMProject, k.baseURL
+	// Claude Code's variables need the key's models; without them (gateway not reachable) the job keeps OPENAI_*.
+	if k.gateway != "" {
+		if models, err := keys.ModelsOf(ctx, k.gateway, got.Key); err == nil {
+			var limits map[string]ModelLimit
+			if k.limits != nil {
+				limits, _ = k.limits.Limits(ctx)
+			}
+			spec.LLMAgentEnv = agentEnv(k.baseURL, models, limits)
+		}
+	}
+	return nil
 }
 
 // mayManage says whether the actor may see and cancel all jobs of the project: an admin or one of its managers.
@@ -102,13 +213,33 @@ func visibleJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jo
 
 func (s *Server) jobActor(c *gin.Context) jobActor {
 	cl := caller(c)
-	return jobActor{person: cl.Email, tokens: cl.Tokens, admin: cl.Role.AtLeast(access.RoleAdmin)}
+	a := jobActor{person: cl.Email, tokens: cl.Tokens, admin: cl.Role.AtLeast(access.RoleAdmin)}
+	if cl.Actor == "" {
+		a.sub = cl.Subject
+	}
+	return a
+}
+
+// jobKeys is how the server makes jobs' LLM keys; nil without keys or master key.
+func (s *Server) jobKeys() *jobKeys {
+	if s.keys == nil || s.master == "" {
+		return nil
+	}
+	k := &jobKeys{keySource: keySource{Keys: s.keys, Quota: s.quota, MasterKey: s.master}, baseURL: s.apiURL, gateway: s.gateway}
+	if s.aliases != nil {
+		k.limits = s.aliases
+	}
+	return k
 }
 
 func (s *Server) jobError(c *gin.Context, what string, err error) {
 	var refusal *workspace.Refusal
 	var refused *gpu.JobRefused
+	var keyFail jobKeyFailure
 	switch {
+	case errors.As(err, &keyFail):
+		s.log.Errorw("batch job "+what+": llm key", "error", keyFail.err)
+		abort(c, keyFail.status, keyFail.code, keyFail.msg)
 	case errors.As(err, &refusal):
 		abort(c, http.StatusConflict, "refused", refusal.Reason)
 	case errors.As(err, &refused):
@@ -152,7 +283,7 @@ func (s *Server) listJobs(c *gin.Context) {
 //
 //	@ID				submitGPUJob
 //	@Summary		Submit a batch job
-//	@Description	Checks the job against the project (membership, batch jobs and GPU class allowed, jobs per person, maximum run time, budget: used plus what running and waiting jobs reserve plus GPUs × max_hours of this one must fit), then queues it in the project's queue. A refusal is 409 with its reason; an unknown project and one the caller is no member of are refused alike. Callers without any project get 403. The job runs in the project's environment with the person's home and the shared folder; its output also goes to ~/jobs/<name>/output-<attempt>.log. A preemptible job (the project's batch_priority) is evicted for a workspace and starts again from the beginning; max_hours counts over all its attempts.
+//	@Description	Checks the job against the project (membership, batch jobs and GPU class allowed, jobs per person, maximum run time, budget: used plus what running and waiting jobs reserve plus GPUs × max_hours of this one must fit), then queues it in the project's queue. A refusal is 409 with its reason; an unknown project and one the caller is no member of are refused alike. Callers without any project get 403. The job runs in the project's environment with the person's home and the shared folder; its output also goes to ~/jobs/<name>/output-<attempt>.log. A preemptible job (the project's batch_priority) is evicted for a workspace and starts again from the beginning; max_hours counts over all its attempts. Before an eviction, its deadline or a cancel the command gets TERM and DHBW_JOB_GRACE_SECONDS (default 120) to save a checkpoint into DHBW_JOB_DIR; DHBW_JOB_ATTEMPT counts its starts. The job gets the person's LLM key (OPENAI_API_KEY, OPENAI_BASE_URL, and Claude Code's ANTHROPIC_* as in a workspace) by the rule of their workspaces in the project, llm_project chooses another LLM project or none; a chosen one without key is refused with 409.
 //	@Tags			gpu
 //	@Accept			json
 //	@Produce		json
@@ -168,7 +299,7 @@ func (s *Server) submitJob(c *gin.Context) {
 		abort(c, http.StatusBadRequest, "invalid", "project fehlt.")
 		return
 	}
-	j, err := submitJob(c.Request.Context(), s.ws, s.gpu, s.jobActor(c), req)
+	j, err := submitJob(c.Request.Context(), s.ws, s.gpu, s.jobKeys(), s.jobActor(c), req)
 	if err != nil {
 		s.jobError(c, "submit", err)
 		return
@@ -251,4 +382,112 @@ func (s *Server) cancelJob(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, j)
+}
+
+// jobFilesRoot is the part of the home of the job's person that the actor may read, relative to the home: the whole home for that person while a member of the job's project (their own files, as in a workspace), else only the job's folder jobs/<name> (its output and checkpoints) — for the project's managers and admins, and for the person after leaving the project.
+func jobFilesRoot(ctx context.Context, ws *workspace.Service, a jobActor, j gpu.Job) string {
+	if strings.EqualFold(j.Person, a.person) {
+		if p, err := ws.Get(ctx, j.Project); err == nil && p.RoleOf(a.tokens) != "" {
+			return ""
+		}
+	}
+	return "jobs/" + j.Name
+}
+
+// jobFile is the visible job and the checked path of a file request: in the readable part of the home (jobFilesRoot), the job's folder when path is empty.
+func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
+	ctx := c.Request.Context()
+	a := s.jobActor(c)
+	j, err := visibleJob(ctx, s.ws, s.gpu, a, c.Param("id"))
+	if err != nil {
+		s.jobError(c, "files", err)
+		return gpu.Job{}, "", false
+	}
+	root := jobFilesRoot(ctx, s.ws, a, j)
+	p := c.Query("path")
+	if p == "" {
+		p = "jobs/" + j.Name
+	}
+	rel, ok := gpu.JobFilePath(p, root)
+	if !ok {
+		where := "im Home"
+		if root != "" {
+			where = "im Ordner des Jobs (~/" + root + ")"
+		}
+		abort(c, http.StatusBadRequest, "invalid", "Nur Pfade "+where+".")
+		return gpu.Job{}, "", false
+	}
+	return j, rel, true
+}
+
+// listJobFiles godoc
+//
+//	@ID				listGPUJobFiles
+//	@Summary		Files of a batch job
+//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
+//	@Tags			gpu
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			id		path		string	true	"job id"
+//	@Param			path	query		string	false	"folder relative to the home, default jobs/<name>"
+//	@Success		200		{object}	gpu.JobFiles
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		404		{object}	ErrorResponse
+//	@Router			/v1/gpu/jobs/{id}/files [get]
+func (s *Server) listJobFiles(c *gin.Context) {
+	j, rel, ok := s.jobFile(c)
+	if !ok {
+		return
+	}
+	list, err := s.gpu.ListJobFiles(c.Request.Context(), j, rel)
+	if errors.Is(err, gpu.ErrNotFound) {
+		abort(c, http.StatusNotFound, "not_found", "Ordner nicht gefunden.")
+		return
+	}
+	if err != nil {
+		s.jobError(c, "files", err)
+		return
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+// downloadJobFile godoc
+//
+//	@ID				downloadGPUJobFile
+//	@Summary		Download a file of a batch job
+//	@Description	A file of the home the job ran in, streamed; the same rights and paths as the listing (listGPUJobFiles). At most 5 GB and 30 minutes; a symbolic link must point into the readable part.
+//	@Tags			gpu
+//	@Produce		octet-stream
+//	@Security		BearerAuth
+//	@Param			id		path		string	true	"job id"
+//	@Param			path	query		string	true	"file relative to the home"
+//	@Success		200		{file}		file
+//	@Failure		400		{object}	ErrorResponse
+//	@Failure		404		{object}	ErrorResponse
+//	@Router			/v1/gpu/jobs/{id}/files/download [get]
+func (s *Server) downloadJobFile(c *gin.Context) {
+	if c.Query("path") == "" {
+		abort(c, http.StatusBadRequest, "invalid", "path fehlt.")
+		return
+	}
+	j, rel, ok := s.jobFile(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), gpu.JobFileTimeout)
+	defer cancel()
+	body, size, err := s.gpu.OpenJobFile(ctx, j, rel)
+	if errors.Is(err, gpu.ErrNotFound) {
+		abort(c, http.StatusNotFound, "not_found", "Datei nicht gefunden.")
+		return
+	}
+	if err != nil {
+		s.jobError(c, "file", err)
+		return
+	}
+	defer body.Close()
+	name := path.Base(rel)
+	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.DataFromReader(http.StatusOK, size, "application/octet-stream", body, nil)
 }

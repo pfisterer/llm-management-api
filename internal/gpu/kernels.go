@@ -158,8 +158,20 @@ type tokenHit struct {
 	until time.Time
 }
 
-// KernelCaller is the server asking: the server pod at the request's source address, whose person must own the request's hub token. The address says which server (pods cannot fake their source address: no NET_RAW, NetworkPolicy), the token that it is still the person's running server and not some other pod that got the address.
+// KernelCaller is the server asking for a GPU kernel: ServerCaller, and the server is one of "CPU + GPU-Kernel".
 func (s *Service) KernelCaller(ctx context.Context, ip, token string) (*KernelOwner, error) {
+	o, err := s.ServerCaller(ctx, ip, token)
+	if err != nil {
+		return nil, err
+	}
+	if o.Profile != SplitProfile || o.container == nil {
+		return nil, ErrNoKernelOwner
+	}
+	return o, nil
+}
+
+// ServerCaller is the server asking, of any profile: the server pod at the request's source address, whose person must own the request's hub token. The address says which server (pods cannot fake their source address: no NET_RAW, NetworkPolicy), the token that it is still the person's running server and not some other pod that got the address. ErrNoKernelOwner when either does not fit.
+func (s *Service) ServerCaller(ctx context.Context, ip, token string) (*KernelOwner, error) {
 	if s.whoami == nil || token == "" {
 		return nil, ErrNoKernelOwner
 	}
@@ -184,7 +196,7 @@ func (s *Service) KernelCaller(ctx context.Context, ip, token string) (*KernelOw
 		s.tokens.hits[key] = hit
 		s.tokens.mu.Unlock()
 	}
-	o, err := s.KernelOwnerAt(ctx, ip)
+	o, err := s.serverAt(ctx, ip)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +208,18 @@ func (s *Service) KernelCaller(ctx context.Context, ip, token string) (*KernelOw
 
 // KernelOwnerAt finds the running server pod of "CPU + GPU-Kernel" with this address.
 func (s *Service) KernelOwnerAt(ctx context.Context, ip string) (*KernelOwner, error) {
+	o, err := s.serverAt(ctx, ip)
+	if err != nil {
+		return nil, err
+	}
+	if o.Profile != SplitProfile || o.container == nil {
+		return nil, ErrNoKernelOwner
+	}
+	return o, nil
+}
+
+// serverAt finds the running server pod with this address, of any profile; ErrNoKernelOwner when there is none or it names no person.
+func (s *Service) serverAt(ctx context.Context, ip string) (*KernelOwner, error) {
 	if s.k8s == nil || net.ParseIP(ip) == nil {
 		return nil, ErrNoKernelOwner
 	}
@@ -222,7 +246,7 @@ func (s *Service) KernelOwnerAt(ctx context.Context, ip string) (*KernelOwner, e
 		o.volumes = list(spec, "volumes")
 		o.Arch = str(obj(spec, "nodeSelector"), "kubernetes.io/arch")
 		o.pullSecrets = list(spec, "imagePullSecrets")
-		if o.Profile != SplitProfile || o.Person == "" || o.container == nil {
+		if o.Person == "" {
 			return nil, ErrNoKernelOwner
 		}
 		return o, nil

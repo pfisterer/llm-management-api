@@ -158,6 +158,9 @@ spec:
             - {name: GPU_JOB_INIT_IMAGE, value: {{ .Values.gpu.jobs.initImage | quote }}}
             - {name: GPU_JOB_STORAGE_CLASS, value: {{ .Values.gpu.jobs.storageClass | quote }}}
             - {name: GPU_JOB_STORAGE_ACCESS, value: {{ .Values.gpu.jobs.storageAccess | quote }}}
+            {{- with .Values.gpu.jobs.graceSeconds }}
+            - {name: GPU_JOB_GRACE_SECONDS, value: {{ . | quote }}}
+            {{- end }}
             {{- if .Values.gpu.workspaces }}
             - {name: WORKSPACES, value: {{ .Values.gpu.workspaces | toJson | quote }}}
             {{- end }}

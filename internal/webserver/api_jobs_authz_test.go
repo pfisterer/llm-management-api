@@ -30,12 +30,29 @@ type jobKube struct {
 	objects map[string]map[string]any
 	// onPVC runs on every read of a project volume, before the answer (the race test holds requests there).
 	onPVC func()
+	// servers are the running workspace servers by pod address: whose they are and their project (the workspace caller's lookup).
+	servers map[string][2]string
 }
 
 func (k *jobKube) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	p := r.URL.Path
 	switch {
+	case r.Method == http.MethodGet && strings.HasSuffix(p, "/pods") && strings.Contains(r.URL.Query().Get("labelSelector"), "singleuser-server"):
+		ip, _ := strings.CutPrefix(strings.Split(r.URL.Query().Get("fieldSelector"), ",")[0], "status.podIP=")
+		items := []map[string]any{}
+		if who, ok := k.servers[ip]; ok {
+			items = append(items, map[string]any{
+				"metadata": map[string]any{"name": "jupyter-x", "labels": map[string]any{"component": "singleuser-server", "dhbw.cloud/project": who[1], "dhbw.cloud/profile": "cpu"}, "annotations": map[string]any{"hub.jupyter.org/username": who[0]}},
+				"spec":     map[string]any{"containers": []any{map[string]any{"name": "notebook", "image": "reg/envs/x:1"}}},
+				"status":   map[string]any{"phase": "Running", "podIP": ip},
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		return
+	case r.Method == http.MethodGet && strings.Contains(p, "/pods/dhbw-files-"):
+		_, _ = fmt.Fprint(w, `{"status":{"phase":"Running","podIP":"127.0.0.1"}}`)
+		return
 	case r.Method == http.MethodGet && strings.Contains(p, "/persistentvolumeclaims/ws-"):
 		if k.onPVC != nil {
 			k.onPVC()
@@ -93,6 +110,9 @@ const (
 
 type jobEnv struct {
 	h      http.Handler
+	api    *Server
+	opts   Options
+	gpu    *gpu.Service
 	kube   *jobKube
 	ws     *workspace.Service
 	store  *workspace.MemoryStore
@@ -106,7 +126,7 @@ func jobProject(slug, name string, members ...workspace.Member) *workspace.Proje
 		StorageGB: 10, Limits: workspace.Limits{JobsPerPerson: 10, JobMaxHours: 4}}
 }
 
-func newJobEnv(t *testing.T) *jobEnv {
+func newJobEnv(t *testing.T, opts ...func(*Options, *gpu.Config)) *jobEnv {
 	t.Helper()
 	ctx := context.Background()
 	kube := &jobKube{objects: map[string]map[string]any{}}
@@ -115,7 +135,12 @@ func newJobEnv(t *testing.T) *jobEnv {
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
-	g, err := gpu.New(gpu.Config{KubeAPIURL: srv.URL, KubeCA: ca, Registry: "reg", Jobs: gpu.JobConfig{InitImage: "reg/platform/base-python@sha256:abc"}}, gpu.NewMemoryStore(), zap.NewNop().Sugar())
+	cfg := gpu.Config{KubeAPIURL: srv.URL, KubeCA: ca, Registry: "reg", Jobs: gpu.JobConfig{InitImage: "reg/platform/base-python@sha256:abc"}}
+	var o Options
+	for _, f := range opts {
+		f(&o, &cfg)
+	}
+	g, err := gpu.New(cfg, gpu.NewMemoryStore(), zap.NewNop().Sugar())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,9 +163,15 @@ func newJobEnv(t *testing.T) *jobEnv {
 	}
 	roles := &roleprovider.Mock{Memberships: map[string][]string{jzManager: {"group:kurs-leitung"}}}
 	tokens := token.NewService(APITokenPrefix, token.NewMemoryStore())
-	h := New(Options{Verifier: fakeVerifier{}, Access: accessFor(t, roles, []string{"user:" + jzAdmin}, []string{"user:" + jzFleet}), Log: zap.NewNop().Sugar(), Quota: testQuota,
-		GPU: g, Workspaces: ws, Tokens: TokenOptions{Service: tokens, TTL: token.TTLPolicy{Default: time.Hour, Max: time.Hour}, MaxPerUser: 10}}).Router()
-	return &jobEnv{h: h, kube: kube, ws: ws, store: store, jobs: jobs, tokens: tokens}
+	o.Verifier, o.Access, o.Log, o.GPU, o.Workspaces = fakeVerifier{}, accessFor(t, roles, []string{"user:" + jzAdmin}, []string{"user:" + jzFleet}), zap.NewNop().Sugar(), g, ws
+	o.Tokens = TokenOptions{Service: tokens, TTL: token.TTLPolicy{Default: time.Hour, Max: time.Hour}, MaxPerUser: 10}
+	if o.Quota.Projects == nil {
+		o.Quota = testQuota
+		o.Quota.Projects = ws
+	}
+	srvAPI := New(o)
+	h := srvAPI.Router()
+	return &jobEnv{h: h, api: srvAPI, opts: o, gpu: g, kube: kube, ws: ws, store: store, jobs: jobs, tokens: tokens}
 }
 
 // submit sends a job as a signed-in person and returns its id; it fails the test unless created.

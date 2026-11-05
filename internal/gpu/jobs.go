@@ -30,6 +30,8 @@ type JobConfig struct {
 	// StorageClass and StorageAccess are how the project's volume ws-<slug> is made when a job comes before any workspace with storage, as the hub makes it (juicefs-projects and ReadWriteMany; local-path and ReadWriteOnce without JuiceFS).
 	StorageClass  string
 	StorageAccess string
+	// GraceSeconds is how long a job has after TERM (eviction, its deadline, cancel) to save a checkpoint before Kubernetes kills it: the pod's terminationGracePeriodSeconds. 0 = DefaultJobGraceSeconds; at most MaxJobGraceSeconds. The GPU stays the pod's until it has ended, so this is also how long a workspace that evicts the job may wait for it.
+	GraceSeconds int
 }
 
 const (
@@ -168,6 +170,12 @@ type JobSpec struct {
 	SharedReadOnly bool
 	ScratchGB      int
 	StorageGB      int // the project's volume ws-<slug>, made or grown to this size before the job
+	// LLMKey is the person's LLM key for the job (keys.WorkspaceKey, as their workspaces in the project get it), drawn from LLMProject; it goes into a Secret <id>-llm owned by the Job, never into the Job itself or the job's row. LLMBaseURL is the LLM API as people reach it. Empty = no key.
+	LLMKey     string
+	LLMProject string
+	LLMBaseURL string
+	// LLMAgentEnv are Claude Code's ANTHROPIC_* and CLAUDE_CODE_* variables for the key, as a workspace gets them, without the key itself (ANTHROPIC_AUTH_TOKEN comes from the Secret too); nil = none.
+	LLMAgentEnv map[string]string
 	// What runs: Command in a shell, or Notebook (a path in the home) through papermill; WorkingDir is relative to the home (empty = the home, for a notebook its folder).
 	Command    string
 	Notebook   string
@@ -178,17 +186,19 @@ type JobSpec struct {
 
 // Job is a job as people see it: its row in gpu_jobs with what Kueue says while it lives.
 type Job struct {
-	ID         string     `json:"id" example:"j-4f3a9c0d2e"`
-	Name       string     `json:"name" example:"training-1"`
-	Person     string     `json:"person"`
-	Project    string     `json:"project"`
-	GPUClass   string     `json:"gpu_class"`
-	GPUs       int        `json:"gpus"`
-	MaxHours   float64    `json:"max_hours"`
-	Guaranteed bool       `json:"guaranteed"`
-	Command    string     `json:"command,omitempty"`
-	Notebook   string     `json:"notebook,omitempty"`
-	WorkingDir string     `json:"working_dir,omitempty"`
+	ID         string  `json:"id" example:"j-4f3a9c0d2e"`
+	Name       string  `json:"name" example:"training-1"`
+	Person     string  `json:"person"`
+	Project    string  `json:"project"`
+	GPUClass   string  `json:"gpu_class"`
+	GPUs       int     `json:"gpus"`
+	MaxHours   float64 `json:"max_hours"`
+	Guaranteed bool    `json:"guaranteed"`
+	Command    string  `json:"command,omitempty"`
+	Notebook   string  `json:"notebook,omitempty"`
+	WorkingDir string  `json:"working_dir,omitempty"`
+	// LLMProject is the project whose LLM tokens the job's key (OPENAI_API_KEY) draws from; empty = the job has none.
+	LLMProject string     `json:"llm_project,omitempty"`
 	Image      string     `json:"image"`
 	State      string     `json:"state" enums:"queued,running,succeeded,failed,cancelled"`
 	ExitCode   *int       `json:"exit_code,omitempty"`
@@ -216,6 +226,7 @@ type JobRecord struct {
 	Command    string
 	Notebook   string
 	WorkingDir string
+	LLMProject string
 	Image      string
 	State      string `gorm:"index"`
 	ExitCode   *int
@@ -236,7 +247,7 @@ func (JobRecord) TableName() string { return "gpu_jobs" }
 
 func (r JobRecord) job() Job {
 	return Job{ID: r.ID, Name: r.Name, Person: r.Person, Project: r.Project, GPUClass: r.GPUClass, GPUs: r.GPUs, MaxHours: r.MaxHours, Guaranteed: r.Guaranteed,
-		Command: r.Command, Notebook: r.Notebook, WorkingDir: r.WorkingDir, Image: r.Image, State: r.State, ExitCode: r.ExitCode, Reason: r.Reason,
+		Command: r.Command, Notebook: r.Notebook, WorkingDir: r.WorkingDir, LLMProject: r.LLMProject, Image: r.Image, State: r.State, ExitCode: r.ExitCode, Reason: r.Reason,
 		Submitted: r.Submitted, Admitted: r.Admitted, Started: r.Started, Ended: r.Ended, Evictions: r.Evictions, GPUHours: r.GPUHours}
 }
 
@@ -444,6 +455,9 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 	_, _ = rand.Read(id)
 	r := JobRecord{ID: "j-" + hex.EncodeToString(id), Name: sp.Name, Person: sp.Person, Project: sp.Project, GPUClass: sp.Class, GPUs: sp.GPUs, MaxHours: sp.MaxHours,
 		Guaranteed: sp.Guaranteed, Command: sp.Command, Notebook: sp.Notebook, WorkingDir: sp.WorkingDir, Image: sp.Image, State: JobQueued, Submitted: time.Now().UTC()}
+	if sp.LLMKey != "" {
+		r.LLMProject = sp.LLMProject
+	}
 	if r.Name == "" {
 		r.Name = r.ID
 	}
@@ -469,13 +483,28 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 	if err := s.jobs.SaveJob(ctx, r); err != nil {
 		return Job{}, err
 	}
-	if err := s.k8s.do(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs", s.jobObject(r, sp), nil); err != nil {
+	var created struct {
+		Metadata struct {
+			UID string `json:"uid"`
+		} `json:"metadata"`
+	}
+	failed := func(err error) (Job, error) {
 		end := time.Now().UTC()
 		r.State, r.Reason, r.Ended = JobFailed, "CreateFailed", &end
 		_ = s.jobs.SaveJob(ctx, r)
 		return Job{}, err
 	}
-	s.log.Infow("batch job submitted", "job", r.ID, "person", r.Person, "project", r.Project, "class", r.GPUClass, "max_hours", r.MaxHours, "guaranteed", r.Guaranteed)
+	if err := s.k8s.do(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs", s.jobObject(r, sp), &created); err != nil {
+		return failed(err)
+	}
+	// The key after the Job, which owns it (deleted with it); the Job is suspended until Kueue admits it, and a pod that came first would wait for the Secret.
+	if sp.LLMKey != "" {
+		if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.kernelNamespace()+"/secrets", jobLLMSecret(r, created.Metadata.UID, sp.LLMKey), nil); err != nil {
+			_ = s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil)
+			return failed(fmt.Errorf("llm key secret: %w", err))
+		}
+	}
+	s.log.Infow("batch job submitted", "job", r.ID, "person", r.Person, "project", r.Project, "class", r.GPUClass, "max_hours", r.MaxHours, "guaranteed", r.Guaranteed, "llm_project", r.LLMProject)
 	return r.job(), nil
 }
 
@@ -553,8 +582,32 @@ fi
 echo "== $(date -Iseconds) Ende, Exit-Code $rc" | tee -a "$log"
 exit "$rc"`
 
-// jobGraceSeconds is the pod's terminationGracePeriodSeconds: how long a job has after TERM to save its state before Kubernetes kills it.
-const jobGraceSeconds = 120
+// DefaultJobGraceSeconds is the pod's terminationGracePeriodSeconds without JobConfig.GraceSeconds: how long a job has after TERM to save its state before Kubernetes kills it. MaxJobGraceSeconds caps the setting: a workspace that evicts a job waits that long for the GPU.
+const (
+	DefaultJobGraceSeconds = 120
+	MaxJobGraceSeconds     = 600
+)
+
+// jobGraceSeconds is the grace period of a job's pod (JobConfig.GraceSeconds, DefaultJobGraceSeconds, at most MaxJobGraceSeconds).
+func (s *Service) jobGraceSeconds() int {
+	g := s.cfg.Jobs.GraceSeconds
+	if g <= 0 {
+		return DefaultJobGraceSeconds
+	}
+	return min(g, MaxJobGraceSeconds)
+}
+
+// jobLLMSecretName is the Secret with a job's LLM key.
+func jobLLMSecretName(id string) string { return id + "-llm" }
+
+// jobLLMSecret holds a job's LLM key (OPENAI_API_KEY), owned by its Job (uid; empty only in tests) so that Kubernetes deletes it with the Job.
+func jobLLMSecret(r JobRecord, jobUID, key string) map[string]any {
+	meta := map[string]any{"name": jobLLMSecretName(r.ID), "labels": map[string]any{"app": jobApp, "dhbw.cloud/project": r.Project, "dhbw.cloud/job-id": r.ID}}
+	if jobUID != "" {
+		meta["ownerReferences"] = []any{map[string]any{"apiVersion": "batch/v1", "kind": "Job", "name": r.ID, "uid": jobUID}}
+	}
+	return map[string]any{"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "metadata": meta, "stringData": map[string]any{"OPENAI_API_KEY": key}}
+}
 
 // shellQuote quotes s for a POSIX shell.
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
@@ -629,7 +682,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 	kernelScratchResources(sp.ScratchGB, requests, limits)
 	spec := map[string]any{
 		"restartPolicy":                 "Never",
-		"terminationGracePeriodSeconds": jobGraceSeconds,
+		"terminationGracePeriodSeconds": s.jobGraceSeconds(),
 		"automountServiceAccountToken":  false,
 		"enableServiceLinks":            false,
 		"securityContext":               map[string]any{"runAsUser": 1000, "runAsGroup": 100, "fsGroup": 100},
@@ -665,12 +718,30 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		"image":   r.Image,
 		"command": []any{"sh", "-c", jobScript},
 		"env": []any{envVar("HOME", "/home/jovyan"), envVar("DHBW_JOB_ID", r.ID), envVar("DHBW_JOB_NAME", r.Name), envVar("DHBW_JOB_DIR", "/home/jovyan/jobs/"+r.Name),
-			envVar("DHBW_JOB_WORKDIR", workdir), envVar("DHBW_JOB_COMMAND", command), envVar("DHBW_PROJECT", r.Project), envVar("PYTHONUNBUFFERED", "1")},
+			envVar("DHBW_JOB_WORKDIR", workdir), envVar("DHBW_JOB_COMMAND", command), envVar("DHBW_PROJECT", r.Project), envVar("DHBW_JOB_GRACE_SECONDS", fmt.Sprint(s.jobGraceSeconds())), envVar("PYTHONUNBUFFERED", "1")},
 		"workingDir":      "/home/jovyan",
 		"securityContext": sec,
 		"resources":       map[string]any{"requests": requests, "limits": limits},
 		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/home/jovyan", "subPath": home}, shared},
 	}}
+	if sp.LLMKey != "" {
+		// The key from its Secret, so that it is in neither the Job nor the pod spec; the address as it is, like OPENAI_BASE_URL in a workspace.
+		c := spec["containers"].([]any)[0].(map[string]any)
+		c["env"] = append(c["env"].([]any),
+			map[string]any{"name": "OPENAI_API_KEY", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": jobLLMSecretName(r.ID), "key": "OPENAI_API_KEY"}}},
+			envVar("OPENAI_BASE_URL", sp.LLMBaseURL))
+		if len(sp.LLMAgentEnv) > 0 {
+			c["env"] = append(c["env"].([]any), map[string]any{"name": "ANTHROPIC_AUTH_TOKEN", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": jobLLMSecretName(r.ID), "key": "OPENAI_API_KEY"}}})
+			names := make([]string, 0, len(sp.LLMAgentEnv))
+			for k := range sp.LLMAgentEnv {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			for _, k := range names {
+				c["env"] = append(c["env"].([]any), envVar(k, sp.LLMAgentEnv[k]))
+			}
+		}
+	}
 	annotations := map[string]any{jobAnnotPrefix + "name": r.Name, "hub.jupyter.org/username": r.Person}
 	return map[string]any{
 		"apiVersion": "batch/v1", "kind": "Job",

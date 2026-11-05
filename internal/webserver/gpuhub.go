@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
+	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/keys"
@@ -43,7 +45,9 @@ type GPUHubOptions struct {
 	}
 	// GPU kernels (/gpu/kernels): the notebook servers of "CPU + GPU-Kernel" ask here for their kernel pods, with their own hub token instead of the shared one. nil = routes off.
 	Kernels *gpu.Service
-	Log     *zap.SugaredLogger
+	// API is the main API, whose batch-job routes (and start options) a workspace reaches here under /v1 with its own hub token instead of a personal API token (workspaceCaller); nil or without Kernels = off.
+	API *Server
+	Log *zap.SugaredLogger
 }
 
 // HubProject is a project as the hub needs it for its profile list.
@@ -284,6 +288,9 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 	}
 	if o.Kernels != nil {
 		kernelRoutes(r, o)
+		if o.API != nil {
+			o.API.workspaceRoutes(r.Group("/v1", ginweb.DisableCaching(), workspaceCaller(o)))
+		}
 	}
 	if o.Usage != nil && o.Project != nil {
 		// The output of `juicefs quota list` from the hourly CronJob workspace-storage-usage (tasks/juicefs.yaml), as text: parsing stays here, the job stays a one-liner. Booked as the day's home sizes (the largest of the day counts) and kept for the admins' storage view.
@@ -348,72 +355,17 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				abort(c, http.StatusForbidden, "forbidden", "Kein Mitglied des Projekts.")
 				return
 			}
-			// Without LLM, chosen at the start or set for the project: definitely no key, without asking LiteLLM.
-			chosen := strings.TrimSpace(req.LLMProject)
-			if chosen == gpu.NoLLM || (chosen == "" && proj.DefaultLLMProject == workspace.NoLLM) {
-				reason := "started without LLM"
-				if chosen == "" {
-					reason = "the project's workspaces run without LLM"
-				}
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: reason})
+			got, fail := keySource{Keys: o.Keys, Quota: o.Quota, MasterKey: o.MasterKey}.workspaceKey(ctx, email, req.Subject, tokens, proj, req.LLMProject)
+			if fail != nil {
+				o.Log.Errorw("workspace key failed", "user", email, "project", req.Project, "error", fail.err)
+				abort(c, fail.status, fail.code, fail.msg)
 				return
 			}
-			sub := strings.TrimSpace(req.Subject)
-			if sub == "" {
-				found, ok, err := o.Keys.SubjectOf(ctx, email)
-				if err != nil {
-					o.Log.Errorw("workspace key: person not looked up", "user", email, "error", err)
-					abort(c, http.StatusBadGateway, "upstream", "LiteLLM nicht erreichbar.")
-					return
-				}
-				if !ok {
-					c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "person unknown to the LLM service"})
-					return
-				}
-				sub = found
-			}
-			g, status, msg := o.Quota.GrantFor(ctx, tokens)
-			if status >= 500 {
-				// Projects not readable: an error, not an answer. The hub keeps VS Code's settings as they are (only a 200 with a reason removes the provider "DHBW").
-				abort(c, http.StatusServiceUnavailable, "upstream", msg)
+			if got.Key == "" {
+				c.JSON(http.StatusOK, got)
 				return
 			}
-			if status != 0 {
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: msg})
-				return
-			}
-			var llm []HubLLMProject
-			for _, p := range g.Pools {
-				if p.MTokens > 0 {
-					llm = append(llm, HubLLMProject{Slug: p.Slug, Name: p.Name})
-				}
-			}
-			pick, ok := llmProjectFor(llm, chosen, req.Project, proj.DefaultLLMProject)
-			target := pick.Project
-			switch {
-			case !ok:
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the chosen LLM project is none of the person's projects with LLM tokens"})
-				return
-			case pick.Unavailable:
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the project's LLM project for workspaces (" + proj.DefaultLLMProject + ") is none of the person's projects with LLM tokens"})
-				return
-			case pick.Source == LLMPreset && target == "":
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "the project's workspaces run without LLM"})
-				return
-			case target == "":
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "no project with LLM tokens"})
-				return
-			}
-			key, err := o.Keys.EnsureWorkspaceKey(ctx, keys.Person{Subject: sub, Email: email}, g, o.MasterKey, target)
-			if errors.Is(err, keys.ErrNotEligible) {
-				c.JSON(http.StatusOK, WorkspaceKeyResponse{Reason: "project has no LLM tokens"})
-				return
-			}
-			if err != nil {
-				o.Log.Errorw("workspace key failed", "user", email, "project", req.Project, "error", err)
-				abort(c, http.StatusBadGateway, "upstream", "Key konnte nicht angelegt werden.")
-				return
-			}
+			key, target := got.Key, got.LLMProject
 			models, err := keys.ModelsOf(ctx, o.Gateway, key)
 			if err != nil {
 				o.Log.Warnw("workspace key: models not listed", "project", req.Project, "error", err)
@@ -487,6 +439,36 @@ type WorkspaceKeyResponse struct {
 	// Limits per model of Models, where its deployments declare them; a model without one is missing.
 	Limits map[string]ModelLimit `json:"limits,omitempty"`
 	Reason string                `json:"reason,omitempty"`
+}
+
+// workspaceCaller authenticates a workspace for the main API's routes on this listener (the command dhbw-cloud in a server, without a personal token): the server pod at the request's source address with its own hub token (JUPYTERHUB_API_TOKEN, header "Authorization: token …"), as for GPU kernels but of any profile (gpu.ServerCaller). The caller is the server's person with their role-provider tokens, so a project's rights are theirs; the platform roles are not: never admin or fleet admin, no acting on behalf, whatever the person is otherwise. Only what workspaceRoutes registers is reachable this way.
+func workspaceCaller(o GPUHubOptions) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+		token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "token ")
+		if err != nil || !ok || strings.TrimSpace(token) == "" {
+			abort(c, http.StatusUnauthorized, "unauthenticated", "Nur aus dem eigenen Workspace mit seinem Hub-Token (JUPYTERHUB_API_TOKEN).")
+			return
+		}
+		owner, err := o.Kernels.ServerCaller(c.Request.Context(), ip, strings.TrimSpace(token))
+		switch {
+		case errors.Is(err, gpu.ErrNoKernelOwner):
+			abort(c, http.StatusUnauthorized, "unauthenticated", "Nur aus dem eigenen laufenden Workspace mit seinem Hub-Token; außerhalb ein API-Token (aiaas_…) nutzen.")
+			return
+		case err != nil:
+			o.Log.Errorw("workspace caller", "ip", ip, "error", err)
+			abort(c, http.StatusBadGateway, "unavailable", "Der Workspace konnte nicht geprüft werden.")
+			return
+		}
+		email := strings.ToLower(strings.TrimSpace(owner.Person))
+		who := o.Access.Who(c.Request.Context(), email)
+		who.Role = access.RoleUser
+		if authn.IsWrite(c.Request.Method) {
+			o.Log.Infow("workspace request", "user", email, "pod", owner.Pod, "method", c.Request.Method, "path", c.Request.URL.Path)
+		}
+		c.Set(callerKey, Caller{Identity: Identity{Email: email, ViaWorkspace: true}, Person: who})
+		c.Next()
+	}
 }
 
 func hubToken(c *gin.Context, token string) bool {

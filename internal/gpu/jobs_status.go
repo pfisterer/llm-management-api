@@ -253,7 +253,9 @@ func (s *Service) syncJob(ctx context.Context, r *JobRecord, j k8sJob, w jobWork
 const JobMaxHoursUsed = "MaxHoursUsed"
 
 // jobOverrun is how long a running job may pass its MaxHours over all attempts before the service ends it: its own deadline (activeDeadlineSeconds, which Kubernetes may have restarted) and the grace after TERM go first, and the sync runs every minute.
-const jobOverrun = jobGraceSeconds*time.Second + 2*time.Minute
+func (s *Service) jobOverrun() time.Duration {
+	return time.Duration(s.jobGraceSeconds())*time.Second + 2*time.Minute
+}
 
 // limitJobHours keeps a live job within its MaxHours over all its attempts. Kubernetes restarts a job's deadline (activeDeadlineSeconds) when Kueue admits it again after an eviction, so a job evicted late would get its whole MaxHours again, beyond what it reserved of the budget. A waiting job that already ran gets what is left as its deadline before it starts again; one with nothing left, or one that runs past its MaxHours (admitted again before a sync saw it wait), is ended with JobMaxHoursUsed.
 func (s *Service) limitJobHours(ctx context.Context, r *JobRecord, j k8sJob, now time.Time) error {
@@ -263,7 +265,7 @@ func (s *Service) limitJobHours(ctx context.Context, r *JobRecord, j k8sJob, now
 	}
 	left := time.Duration((r.MaxHours - ran) * float64(time.Hour))
 	if r.State == JobRunning {
-		if left > -jobOverrun {
+		if left > -s.jobOverrun() {
 			return nil
 		}
 	} else if left >= time.Minute {

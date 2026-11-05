@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -95,6 +97,8 @@ type Service struct {
 	cleanupLast atomic.Pointer[CleanupResult]
 	// research is the research log (research.go): told why the service ends a workspace pod and what a waiting GPU kernel was shown; nil = none.
 	research *research.Recorder
+	// files are the files pods of people's homes for their jobs' files (jobfiles.go).
+	files filesPods
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
 	OnClassRenamed func(ctx context.Context, old, new string) error
 }
@@ -130,7 +134,8 @@ func newService(cfg Config, store Store, b builds, i images, s servers, r refRes
 	if len(cfg.GitHosts) == 0 {
 		cfg.GitHosts = []string{"github.com", "gitlab.com"}
 	}
-	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log}
+	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log,
+		files: filesPods{addr: defaultFilesAddr, http: &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second}}}}
 }
 
 // JupyterURL is shown to people with a project.

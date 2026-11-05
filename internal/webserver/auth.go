@@ -22,6 +22,8 @@ type Identity struct {
 	// ViaAPIToken: the caller authenticated with an API token (aiaas_…) rather than by signing in, which this API holds against acting on behalf of somebody and issuing further tokens. TokenID names the token, for the request log.
 	ViaAPIToken bool
 	TokenID     uint
+	// ViaWorkspace: the caller is a workspace with its hub token on the hub listener (workspaceCaller), with the person's project rights and no platform role.
+	ViaWorkspace bool
 }
 
 // Caller is the identity plus their role and role-provider tokens. While an admin acts on somebody's behalf (X-Act-As), Identity and Person are that somebody's — the admin sees and does what they would — and Actor names the admin.

@@ -40,6 +40,10 @@ type Options struct {
 	Keys        *keys.Service
 	// Quota decides a person's LLM pools and their limits, from the tree's projects and the configured defaults.
 	Quota LLMQuota
+	// MasterKey derives the workspace keys a batch job gets (keys.WorkspaceKey); empty = jobs without LLM key.
+	MasterKey string
+	// Gateway is LiteLLM's inference gateway inside the cluster, asked which models a job's key may use (for Claude Code's ANTHROPIC_* variables); empty = no such variables.
+	Gateway string
 	// TreeToken lets the budget tree (resource-management-api) manage its projects under /v1/tree; empty = off.
 	TreeToken string
 	// OnTreeChange runs after the tree created, changed or removed a project (the budget sync's nudge); nil = nothing.
@@ -72,6 +76,8 @@ type Server struct {
 	access   *access.Service
 	keys     *keys.Service
 	quota    LLMQuota
+	master   string
+	gateway  string
 	treeTok  string
 	onTree   func()
 	fleet    *fleet.Service
@@ -92,7 +98,7 @@ func New(o Options) *Server {
 		tokens = &apiTokens{TokenOptions: o.Tokens}
 	}
 	return &Server{tokens: tokens, devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
-		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, treeTok: o.TreeToken, onTree: o.OnTreeChange,
+		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, master: o.MasterKey, gateway: o.Gateway, treeTok: o.TreeToken, onTree: o.OnTreeChange,
 		fleet: o.Fleet, health: o.Health, material: o.Material, aliases: o.Aliases, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }
 
@@ -184,13 +190,7 @@ func (s *Server) Router() *gin.Engine {
 			g.POST("/servers", s.startServer)
 		}
 		if s.ws != nil && s.gpu.JobsEnabled() {
-			g.POST("/jobs", s.submitJob)
-			// Without requireWorkspace: a person removed from their only project still sees and cancels their own jobs, which run on; visibleJob and listJobs show only their own and those of projects they manage.
-			j := v1.Group("/gpu/jobs")
-			j.GET("", s.listJobs)
-			j.GET("/:id", s.getJob)
-			j.GET("/:id/log", s.getJobLog)
-			j.DELETE("/:id", s.cancelJob)
+			s.jobRoutes(v1)
 		}
 	}
 	if s.gpu != nil && s.gpu.FleetEnabled() {
@@ -207,6 +207,30 @@ func (s *Server) Router() *gin.Engine {
 		m.PUT("/tiers/:tier", s.putTierModel)
 	}
 	return r
+}
+
+// jobRoutes are the batch-job routes under /v1, here and on the hub listener for workspaces (workspaceRoutes).
+func (s *Server) jobRoutes(v1 *gin.RouterGroup) {
+	v1.POST("/gpu/jobs", s.requireWorkspace, s.submitJob)
+	// Without requireWorkspace: a person removed from their only project still sees and cancels their own jobs, which run on; visibleJob and listJobs show only their own and those of projects they manage.
+	j := v1.Group("/gpu/jobs")
+	j.GET("", s.listJobs)
+	j.GET("/:id", s.getJob)
+	j.GET("/:id/log", s.getJobLog)
+	j.GET("/:id/files", s.listJobFiles)
+	j.GET("/:id/files/download", s.downloadJobFile)
+	j.DELETE("/:id", s.cancelJob)
+}
+
+// workspaceRoutes are what a workspace reaches on the hub listener with its own hub token instead of a personal API token (workspaceCaller): the batch jobs and the start options (the CLI's projects), as the person and never more.
+func (s *Server) workspaceRoutes(v1 *gin.RouterGroup) {
+	if s.gpu == nil || s.ws == nil {
+		return
+	}
+	v1.GET("/gpu/start-options", s.requireWorkspace, s.getStartOptions)
+	if s.gpu.JobsEnabled() {
+		s.jobRoutes(v1)
+	}
 }
 
 // requestLog writes one line per request — without query strings, which may
