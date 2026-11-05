@@ -100,8 +100,8 @@ func TestStartKernel(t *testing.T) {
 			t.Errorf("kernel pod has %s", unwanted)
 		}
 	}
-	// The environment is the launcher's parameters and the project's LLM key, nothing else of the server (todo kernel_rest): checked by name, so a new variable has to be added here on purpose.
-	launcher := map[string]bool{"RESPONSE_ADDRESS": true, "PUBLIC_KEY": true, "PORT_RANGE": true, "TRANSPORT_ENCRYPTION": true}
+	// The environment is the launcher's parameters, the project's LLM key and the local storage's limit (DHBW_SCRATCH_GB), nothing else of the server (todo kernel_rest): checked by name, so a new variable has to be added here on purpose.
+	launcher := map[string]bool{"RESPONSE_ADDRESS": true, "PUBLIC_KEY": true, "PORT_RANGE": true, "TRANSPORT_ENCRYPTION": true, "DHBW_SCRATCH_GB": true}
 	c := k.created[0]["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
 	if _, ok := c["envFrom"]; ok {
 		t.Errorf("kernel container has envFrom: %v", c["envFrom"])
@@ -174,7 +174,7 @@ func TestKernelWithoutGPU(t *testing.T) {
 	}
 }
 
-// A GPU kernel gets its project's local storage as ephemeral-storage limit, with a request of at most 1 GiB; without SetKernelScratch the default of 1 GB.
+// A GPU kernel gets its project's local storage as ephemeral-storage limit, with a request of at most 1 GiB, and as DHBW_SCRATCH_GB; without SetKernelScratch the default of 1 GB.
 func TestKernelScratch(t *testing.T) {
 	s, k := kernelTestService(testServerPod)
 	o, _ := s.KernelOwnerAt(context.Background(), "10.42.1.5")
@@ -199,6 +199,10 @@ func TestKernelScratch(t *testing.T) {
 		}
 		if r := res["requests"].(map[string]any)["ephemeral-storage"]; r != c.request {
 			t.Errorf("request = %v, want %s", r, c.request)
+		}
+		// The same limit in GB for the base's warning before it.
+		if b, _ := json.Marshal(k.created[0]); !strings.Contains(string(b), `{"name":"DHBW_SCRATCH_GB","value":"`+strings.TrimSuffix(c.limit, "Gi")+`"}`) {
+			t.Errorf("DHBW_SCRATCH_GB missing: %s", b)
 		}
 	}
 	// An evicted kernel tells why.

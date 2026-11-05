@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -287,7 +288,7 @@ func validKernelRequest(o *KernelOwner, r *KernelRequest) error {
 	return nil
 }
 
-// kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, the launcher's parameters as environment, deadline as its upper bound (0 = none) and scratchGB as its local storage outside the home (ephemeral-storage limit). Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
+// kernelPod is the kernel's pod: the image and the home mounts of its server (read-only stays read-only), the owner's labels for counting and booking, the queue for the GPU, the launcher's parameters as environment, deadline as its upper bound (0 = none) and scratchGB as its local storage outside the home (ephemeral-storage limit, and DHBW_SCRATCH_GB for the warning before it). Nothing else of the server's environment goes along (no hub token), only the LLM key of the project (OPENAI_*).
 func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Duration, scratchGB int) map[string]any {
 	queue := s.kernelQueue(o)
 	suffix := make([]byte, 3)
@@ -339,6 +340,10 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 	requests := map[string]any{"cpu": "1", "memory": "2G"}
 	limits := map[string]any{"cpu": "3", "memory": "5G"}
 	kernelScratchResources(scratchGB, requests, limits)
+	if scratchGB > 0 {
+		// The limit for the base's warning in JupyterLab from 80 % (dhbw_scratch), as the hub sets it for the server.
+		env = append(env, envVar("DHBW_SCRATCH_GB", strconv.Itoa(scratchGB)))
+	}
 	spec := map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
