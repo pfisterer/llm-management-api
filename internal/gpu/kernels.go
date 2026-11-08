@@ -423,13 +423,13 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 		"metadata": map[string]any{
 			"name": name,
 			"labels": map[string]any{
+				// No hub.jupyter.org/network-access-* label: the NetworkPolicies gpu-kernels and singleuser (ansible) name app and component, and the kernel reaches its notebook on 8877 only.
 				"kernel_id": r.KernelID, "app": "gateway-provisioners", "component": "kernel",
-				"hub.jupyter.org/network-access-singleuser": "true",
-				"kueue.x-k8s.io/queue-name":                 queue,
-				"dhbw.cloud/kernel-user":                    o.UserLabel,
-				kernelLabelOwner:                            o.Pod,
-				labelClass:                                  o.GPUClass,
-				"dhbw.cloud/project":                        o.Project,
+				"kueue.x-k8s.io/queue-name": queue,
+				"dhbw.cloud/kernel-user":    o.UserLabel,
+				kernelLabelOwner:            o.Pod,
+				labelClass:                  o.GPUClass,
+				"dhbw.cloud/project":        o.Project,
 			},
 			// Deleted with its server.
 			"ownerReferences": []any{map[string]any{"apiVersion": "v1", "kind": "Pod", "name": o.Pod, "uid": o.UID}},

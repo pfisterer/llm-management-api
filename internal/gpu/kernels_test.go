@@ -96,7 +96,7 @@ func TestStartKernel(t *testing.T) {
 			t.Errorf("kernel pod lacks %s: %s", want, pod)
 		}
 	}
-	for _, unwanted := range []string{"JUPYTERHUB_API_TOKEN", "kube-api"} {
+	for _, unwanted := range []string{"JUPYTERHUB_API_TOKEN", "kube-api", "network-access"} {
 		if strings.Contains(pod, unwanted) {
 			t.Errorf("kernel pod has %s", unwanted)
 		}
