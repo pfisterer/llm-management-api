@@ -79,7 +79,6 @@ type filesPods struct {
 	pods map[string]*filesPod
 	// starting serialises the start of one person's pod in one project: parallel requests share it.
 	starting map[string]*sync.Mutex
-	janitor  sync.Once
 	http     *http.Client
 	// addr is the files server of a pod's address (tests point it elsewhere).
 	addr func(ip string) string
@@ -303,7 +302,6 @@ func (s *Service) filesPod(ctx context.Context, project, person string, access f
 		f.starting[key] = start
 	}
 	f.mu.Unlock()
-	f.janitor.Do(func() { go s.filesJanitor(context.WithoutCancel(ctx)) })
 
 	start.Lock()
 	defer start.Unlock()
@@ -444,19 +442,8 @@ func (s *Service) filesPodObject(p *filesPod, project, person string, access fil
 	}
 }
 
-// filesJanitor deletes files pods every minute: its own unused for filesIdle, and every ended one (activeDeadlineSeconds); a running one it does not know may be another replica's and is left to its deadline.
-func (s *Service) filesJanitor(ctx context.Context) {
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		s.sweepFilesPods(ctx, time.Now())
-	}
-}
+// SweepFilesPods deletes files pods, called every minute from the start of the service (with the batch jobs' sync, internal/app.go): its own unused for filesIdle, and every ended one (activeDeadlineSeconds); a running one it does not know may be another replica's and is left to its deadline. Started from the first request instead, it never ran after a restart without one, and an ended pod stayed for days (05.11.2026).
+func (s *Service) SweepFilesPods(ctx context.Context) { s.sweepFilesPods(ctx, time.Now()) }
 
 func (s *Service) sweepFilesPods(ctx context.Context, now time.Time) {
 	s.files.mu.Lock()

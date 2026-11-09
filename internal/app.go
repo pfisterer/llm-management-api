@@ -522,7 +522,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 			}()
 		}
-		// Batch jobs: every minute the rows of gpu_jobs follow the cluster (admitted, running, evicted, ended with its output).
+		// Batch jobs: every minute the rows of gpu_jobs follow the cluster (admitted, running, evicted, ended with its output), and the files pods of the jobs are cleaned up.
 		if gpuSvc.JobsEnabled() {
 			go func() {
 				t := time.NewTicker(time.Minute)
@@ -531,6 +531,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 					if err := gpuSvc.SyncJobs(ctx); err != nil {
 						log.Warnw("batch jobs sync", "error", err)
 					}
+					gpuSvc.SweepFilesPods(ctx)
 					select {
 					case <-ctx.Done():
 						return
