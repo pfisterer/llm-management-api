@@ -187,9 +187,6 @@ func NewService(store Store, cfg Config, running func(ctx context.Context) ([]Ru
 	return &Service{store: store, cfg: cfg, running: running, now: time.Now, starts: newStartCounter(cfg)}
 }
 
-// SetBudgetCheck adds the budget check to CheckStart.
-func (s *Service) SetBudgetCheck(b BudgetCheck) { s.budget = b }
-
 // SetGPUClasses sets where the GPU classes come from (the GPU administration); without it any class is accepted (no GPU cluster).
 func (s *Service) SetGPUClasses(f func(ctx context.Context) ([]GPUClass, error)) { s.classes = f }
 

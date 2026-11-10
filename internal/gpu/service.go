@@ -187,12 +187,11 @@ func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name str
 	if len(commit) < 12 {
 		return Environment{}, fmt.Errorf("%w: Commit %q zu kurz, mindestens 12 Zeichen angeben", ErrInvalidRepo, commit)
 	}
-	tag := commit[:12]
 	if strings.TrimSpace(name) == "" {
 		name = pathBase(canonical)
 	}
 	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit, Base: base}
-	tag = projectImageTag(commit, e.Base)
+	tag := projectImageTag(commit, e.Base)
 	e.Image = fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
 	if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 		return Environment{}, err

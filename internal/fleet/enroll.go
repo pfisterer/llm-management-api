@@ -127,12 +127,8 @@ func NewService(cfg Config, wg WireGuard, store Store, scripts *Scripts) *Servic
 		}}
 }
 
-// SetModelSize replaces the lookup of a model's size (tests; nil = no check).
-func (s *Service) SetModelSize(f ModelSize) { s.size = f }
-
-func (s *Service) Config() Config       { return s.cfg }
-func (s *Service) Scripts() *Scripts    { return s.scripts }
-func (s *Service) WireGuard() WireGuard { return s.wg }
+func (s *Service) Config() Config    { return s.cfg }
+func (s *Service) Scripts() *Scripts { return s.scripts }
 
 // maxPending caps the machines waiting for approval: every holder of the shared enrolment token can register new serials, and each one is a row in the fleet table.
 const maxPending = 200

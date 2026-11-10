@@ -494,9 +494,6 @@ func (s *Service) ModelCatalog(ctx context.Context) (ModelCatalog, error) {
 	return out, nil
 }
 
-// fitsNode tells whether a model fits a node's GPU memory (unknown memory: yes).
-func (m CatalogModel) fitsNode(gb float64) bool { return gb == 0 || m.MinGB <= gb }
-
 // ModelChoice is a catalogue model as the GPU page offers it at a node.
 type ModelChoice struct {
 	Key      string  `json:"key"`

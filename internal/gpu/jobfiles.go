@@ -38,8 +38,6 @@ const (
 	// JobFileMaxBytes is the largest file a download serves; JobFileTimeout how long one may take. Larger results belong into S3 or a workspace.
 	JobFileMaxBytes = 5 << 30
 	JobFileTimeout  = 30 * time.Minute
-	// jobFilesMax is how many entries of a folder a listing returns (files_server.py stops there).
-	jobFilesMax = 5000
 	// SharedDir is the project's shared folder in the home (subPath project-shared of the volume).
 	SharedDir = "project-shared"
 )

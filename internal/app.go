@@ -276,14 +276,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			_ = background.Step(log, "rename_gpu_classes", renameErr)
 			// A pool renamed while the service runs (GPU administration) moves its classes' projects and usage the same way.
 			gpuSvc.OnClassRenamed = renameClass
-			wsSvc.SetGPUClasses(func(ctx context.Context) ([]workspace.GPUClass, error) {
-				classes, err := gpuSvc.GPUClasses(ctx)
-				out := make([]workspace.GPUClass, 0, len(classes))
-				for _, c := range classes {
-					out = append(out, workspace.GPUClass{ID: c.ID, Name: c.Name, Pool: c.Pool, PoolName: c.PoolName, Tier: c.Tier, TierName: c.TierName, Nodes: c.Nodes, GPUs: c.GPUs, Products: c.Products, Replaces: c.Replaces, Lends: c.Lends, Archs: c.Archs, Hardware: c.Hardware})
-				}
-				return out, err
-			})
+			wsSvc.SetGPUClasses(workspaceGPUClasses(gpuSvc))
 		}
 		// The last storage report of the hourly job, so the admins' view is not empty after a restart.
 		_ = background.Step(log, "load_storage", wsSvc.LoadStorage(context.Background()))
@@ -545,13 +538,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			if pods, err := gpuSvc.WorkspacePods(ctx); err != nil {
 				log.Warnw("budget: listing workspaces failed, budgets and storage wait for the next round", "error", err)
 			} else {
-				var running []workspace.RunningServer
-				for _, p := range pods {
-					if p.Running {
-						running = append(running, workspace.RunningServer{Running: workspace.Running{Server: p.Pod, Person: p.Person, Project: p.Project, Profile: p.Profile}, ServerName: p.Server})
-					}
-				}
-				wsSvc.Enforce(ctx, running, func(ctx context.Context, person, server string) error {
+				wsSvc.Enforce(ctx, runningServers(pods), func(ctx context.Context, person, server string) error {
 					return gpuSvc.EndServer(ctx, person, server, research.EndBudget)
 				}, log)
 				purgeStorage(ctx, gpuSvc, wsSvc, pods, log)
@@ -644,48 +631,6 @@ func openRoleProvider(cfg Config, log *zap.SugaredLogger) (roleprovider.Provider
 	}
 }
 
-func workspaceSource(g *gpu.Service) usage.Source {
-	return func(ctx context.Context) ([]usage.Sample, error) {
-		pods, err := g.WorkspacePods(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]usage.Sample, 0, len(pods))
-		for _, p := range pods {
-			if !p.Running {
-				continue // waiting pods reserve nothing yet
-			}
-			out = append(out, usage.Sample{Project: p.Project, Person: p.Person, Profile: p.Profile, GPUClass: p.GPUClass, GPUProduct: p.GPUProduct, CPU: p.CPU, RAMGB: p.RAMGB,
-				GPUs: p.GPUs, CPUUsed: p.CPUUsed, RAMUsedGB: p.RAMUsedGB})
-		}
-		return out, nil
-	}
-}
-
-// gpuSource samples the GPUs: capacity per class from the nodes, the workspace pods with or waiting for a GPU, and the inference pool. The pool is best effort (no inference configured = none).
-func gpuSource(g *gpu.Service) usage.GPUSource {
-	return func(ctx context.Context) (usage.GPUSample, error) {
-		capacity, err := g.GPUCapacity(ctx)
-		if err != nil {
-			return usage.GPUSample{}, err
-		}
-		pods, err := g.WorkspacePods(ctx)
-		if err != nil {
-			return usage.GPUSample{}, err
-		}
-		s := usage.GPUSample{Capacity: capacity}
-		for _, p := range pods {
-			if p.GPUs > 0 {
-				s.Pods = append(s.Pods, usage.GPUPod{GPUClass: p.GPUClass, Project: p.Project, Person: p.Person, Profile: p.Profile, GPUs: p.GPUs, Waiting: p.Queued})
-			}
-		}
-		if inf, err := g.InferenceGPUs(ctx); err == nil {
-			s.Inference = inf
-		}
-		return s, nil
-	}
-}
-
 // purgeStorage deletes the volumes of projects that are gone (deleted in the budget tree or by an admin): first it ends the servers still running in such a project, then it deletes the volume, which removes the members' homes and the shared folder. Workspace.Orphans waits two passes before it names a volume, so a briefly wrong project list deletes nothing.
 func purgeStorage(ctx context.Context, gpuSvc *gpu.Service, wsSvc *workspace.Service, pods []gpu.WorkspacePod, log *zap.SugaredLogger) {
 	vols, err := gpuSvc.ProjectVolumes(ctx)
@@ -742,20 +687,5 @@ func projectOf(acc *access.Service, ws *workspace.Service, log *zap.SugaredLogge
 		}
 		cache.Set(person, project)
 		return project
-	}
-}
-
-func runningWorkspaces(g *gpu.Service) func(context.Context) ([]workspace.Running, error) {
-	return func(ctx context.Context) ([]workspace.Running, error) {
-		pods, err := g.WorkspacePods(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]workspace.Running, 0, len(pods))
-		for _, p := range pods {
-			out = append(out, workspace.Running{Server: p.Pod, Person: p.Person, Project: p.Project, Profile: p.Profile, GPUClass: p.GPUClass,
-				CPU: p.CPU, RAMGB: p.RAMGB, GPUs: p.GPUs})
-		}
-		return out, nil
 	}
 }
