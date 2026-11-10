@@ -30,6 +30,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/retry"
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 	"go.uber.org/zap"
 )
 
@@ -114,7 +116,7 @@ type Service struct {
 
 func NewService(aliases map[string]AliasDef, t Thresholds, store Store, gatewayURL, masterKey string, log *zap.SugaredLogger) *Service {
 	return &Service{aliases: aliases, thresholds: t, store: store, gateway: strings.TrimRight(gatewayURL, "/"),
-		key: masterKey, http: &http.Client{}, log: log}
+		key: masterKey, http: httpx.NewClient(5 * time.Minute), log: log}
 }
 
 // Many classifies models one after another (each measurement loads a machine)
@@ -327,6 +329,9 @@ func msg(text string) []map[string]string {
 	return []map[string]string{{"role": "user", "content": text}}
 }
 
+// probeRetry is the pause between the attempts of a probe's first call: 20 s each; the attempts (three) are counted by probe, Total does not limit them.
+var probeRetry = retry.Policy{Total: time.Hour, Initial: 20 * time.Second, Max: 20 * time.Second}
+
 // probe measures a model with calls through the gateway, i.e. against exactly
 // the machine that serves it. Generous time limits: a cold model first loads
 // several gigabytes.
@@ -334,20 +339,19 @@ func (s *Service) probe(ctx context.Context, model string) probe {
 	// FIRST CALL: reachability and warm-up, deliberately not measured. Up to
 	// three attempts, because the discovery run creates the model right before,
 	// and the gateway replicas reload their model list only every 30 seconds.
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		if _, err = s.ask(ctx, map[string]any{"model": model, "messages": msg("Antworte mit dem Wort: bereit"), "max_tokens": 8}, 4*time.Minute); err == nil {
-			break
+	attempt := 0
+	err := retry.Do(ctx, probeRetry, func(ctx context.Context) error {
+		attempt++
+		_, err := s.ask(ctx, map[string]any{"model": model, "messages": msg("Antworte mit dem Wort: bereit"), "max_tokens": 8}, 4*time.Minute)
+		if err != nil && attempt == 3 {
+			return retry.Permanent(err)
 		}
-		if attempt < 2 {
-			select {
-			case <-ctx.Done():
-				return probe{err: ctx.Err().Error()}
-			case <-time.After(20 * time.Second):
-			}
-		}
-	}
+		return err
+	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return probe{err: ctx.Err().Error()}
+		}
 		return probe{err: err.Error()}
 	}
 

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pfisterer/cloud-self-service-golib/retry"
 )
 
 // Files of a job (docs/architektur.md "Batch-Jobs", todo job_files): whoever only submits jobs has no workspace to fetch results from or to put a script and data into. A short-lived pod in the workspace namespace mounts the person's home folder of the project's volume (ws-<slug>, subPath homes/<slug>) and serves it to this service alone, over the pod network with a token of its own; this service streams it on. No exec into pods and no new rights in Kubernetes: the service already creates and deletes pods there (GPU kernels). The pod runs the hub's init image (a base with python3, prepulled on every node) with the small server files_server.py; its NetworkPolicy admits this service only. Besides the home the pod mounts the project's shared folder at its place in the home (project-shared), as workspaces and jobs do. Reading and writing are separate pods: the one that reads mounts both read-only (the admission policy holds it to that), only an upload starts one that may write (component=upload), the shared folder only for who may write it in a workspace (not a reader of the project).
@@ -365,7 +367,7 @@ func (s *Service) startFilesPod(ctx context.Context, project, person string, acc
 		s.dropFilesPod(context.WithoutCancel(ctx), p)
 		return nil, err
 	}
-	for {
+	err := retry.Do(ctx, filesPoll, func(ctx context.Context) error {
 		var pod struct {
 			Status struct {
 				Phase string `json:"phase"`
@@ -373,26 +375,35 @@ func (s *Service) startFilesPod(ctx context.Context, project, person string, acc
 			} `json:"status"`
 		}
 		if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+ns+"/pods/"+p.name, nil, &pod); err != nil && !errors.Is(err, ErrNotFound) {
-			return fail(fmt.Errorf("files pod: %w", err))
+			return retry.Permanent(fmt.Errorf("files pod: %w", err))
 		}
 		switch pod.Status.Phase {
 		case "Failed", "Succeeded":
-			return fail(fmt.Errorf("files pod %s ended (%s)", p.name, pod.Status.Phase))
+			return retry.Permanent(fmt.Errorf("files pod %s ended (%s)", p.name, pod.Status.Phase))
 		case "Running":
 			if pod.Status.PodIP != "" {
 				p.ip = pod.Status.PodIP
 				if s.filesAlive(ctx, p) {
-					return p, nil
+					return nil
 				}
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return fail(errors.New("files pod did not start in time"))
-		case <-time.After(500 * time.Millisecond):
-		}
+		return errFilesNotUp
+	})
+	switch {
+	case err == nil:
+		return p, nil
+	case errors.Is(err, errFilesNotUp):
+		return fail(errors.New("files pod did not start in time"))
+	default:
+		return fail(err)
 	}
 }
+
+// errFilesNotUp is a files pod that is not answering yet; filesPoll asks again every 500 ms until filesStart is over.
+var errFilesNotUp = errors.New("files pod not up yet")
+
+var filesPoll = retry.Policy{Total: filesStart, Initial: 500 * time.Millisecond, Max: 500 * time.Millisecond}
 
 // filesPodObject is the files pod: the person's home folder of the project's volume at /data and the project's shared folder at /data/project-shared, read-only unless the pod is for uploads (component=upload, its server then takes PUT; the shared folder stays read-only for filesWriteHome). Both folders and the mount point in the home are made first as in a job (the folder of a person whose job never started may not exist yet, Kubernetes would create a missing subPath as root, and a read-only home cannot take a new mount point); the init image, nothing of the host, no service account, on a CPU node, ended by Kubernetes at filesDeadline.
 func (s *Service) filesPodObject(p *filesPod, project, person string, access filesAccess) map[string]any {

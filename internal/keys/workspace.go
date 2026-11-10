@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 // WorkspaceKey is the LiteLLM key a person's workspace servers in one project use (VS Code's chat, OPENAI_API_KEY in notebooks). Derived like the chat key (HMAC of user id and project under the master key), so the hub gets the same key on every start and nothing is stored; a key deleted in the key list comes back on the next start.
@@ -67,6 +69,9 @@ func (s *Service) EnsureWorkspaceKey(ctx context.Context, p Person, g Grant, mas
 	return key, nil
 }
 
+// modelsClient asks the gateway for a key's models; ModelsOf limits each call to 10 s as well.
+var modelsClient = httpx.NewClient(15 * time.Second)
+
 // ModelsOf lists the models a key may use, as the gateway's /v1/models answers it, without embedding models (no use in a chat), sorted.
 func ModelsOf(ctx context.Context, gateway, key string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -76,7 +81,7 @@ func ModelsOf(ctx context.Context, gateway, key string) ([]string, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := modelsClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

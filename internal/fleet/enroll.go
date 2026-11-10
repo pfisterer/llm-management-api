@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -18,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 var (
@@ -120,7 +121,7 @@ type ExtraSites func(ctx context.Context) ([]Site, error)
 func (s *Service) AddSites(src ExtraSites) { s.extra = append(s.extra, src) }
 
 func NewService(cfg Config, wg WireGuard, store Store, scripts *Scripts) *Service {
-	return &Service{cfg: cfg, wg: wg, store: store, scripts: scripts, now: func() time.Time { return time.Now().UTC() }, size: OllamaRegistry(&http.Client{}),
+	return &Service{cfg: cfg, wg: wg, store: store, scripts: scripts, now: func() time.Time { return time.Now().UTC() }, size: OllamaRegistry(httpx.NewClient(30 * time.Second)),
 		lookup: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		}}

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 // hub talks to JupyterHub's REST API with the token of the hub service
@@ -21,7 +23,7 @@ type hub struct {
 }
 
 func newHub(base, token string) *hub {
-	return &hub{base: base, token: token, http: withDNSRetry(&http.Client{Timeout: 30 * time.Second})}
+	return &hub{base: base, token: token, http: httpx.WithRetry(&http.Client{Timeout: 30 * time.Second})}
 }
 
 func (h *hub) do(ctx context.Context, method, path string, body, out any) (int, error) {

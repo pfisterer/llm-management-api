@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 // registry reads Harbor's API anonymously: the projects platform and envs are
@@ -24,7 +26,7 @@ type registry struct {
 }
 
 func newRegistry(host string) *registry {
-	return &registry{host: host, http: withDNSRetry(&http.Client{Timeout: 15 * time.Second})}
+	return &registry{host: host, http: httpx.WithRetry(&http.Client{Timeout: 15 * time.Second})}
 }
 
 func (r *registry) artifactURL(project, repo, ref string) string {

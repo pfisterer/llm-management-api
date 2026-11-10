@@ -1,12 +1,14 @@
 package classify
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -100,5 +102,35 @@ func TestAutoAliases(t *testing.T) {
 	got = membersOnly.Many(t.Context(), []string{"good", "pinned"})
 	if len(got["good"]) != 0 || strings.Join(got["pinned"], ",") != "code" || calls.Load() != before {
 		t.Fatalf("members only: %v, calls %d -> %d", got, before, calls.Load())
+	}
+}
+
+// The first call of a probe is tried three times (the gateway may not know a model created a moment ago), then given up.
+func TestProbeRetriesFirstCall(t *testing.T) {
+	saved := probeRetry
+	probeRetry.Initial, probeRetry.Max = time.Millisecond, time.Millisecond
+	defer func() { probeRetry = saved }()
+	for _, tc := range []struct {
+		failures int32
+		ok       bool
+		calls    int32
+	}{{failures: 2, ok: true}, {failures: 3, ok: false, calls: 3}} {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls.Add(1) <= tc.failures {
+				http.Error(w, `{"error":"model not found"}`, http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "bereit"}}}})
+		}))
+		svc := NewService(aliases, Thresholds{}, nil, srv.URL, "k", zap.NewNop().Sugar())
+		p := svc.probe(context.Background(), "m")
+		srv.Close()
+		if p.ok != tc.ok {
+			t.Fatalf("%d failures: ok=%v err=%q, want ok=%v", tc.failures, p.ok, p.err, tc.ok)
+		}
+		if tc.calls > 0 && calls.Load() != tc.calls {
+			t.Fatalf("%d failures: %d calls, want %d", tc.failures, calls.Load(), tc.calls)
+		}
 	}
 }

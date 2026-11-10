@@ -26,6 +26,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/generated_docs"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/oci"
@@ -288,7 +289,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		_ = background.Step(log, "load_storage", wsSvc.LoadStorage(context.Background()))
 		wsSvc.SetUsage(st.usage)
 		// Finished project images are checked in their registry, anonymously like a node pulls them; images from Git are built by the GPU part.
-		ociClient := &oci.Client{HTTP: gpu.RetryingClient(30 * time.Second)}
+		ociClient := &oci.Client{HTTP: httpx.RetryingClient(30 * time.Second)}
 		wsSvc.SetImageInspector(func(ctx context.Context, image string, auth *workspace.Basic) (workspace.RegistryImage, error) {
 			var a *oci.Auth
 			if auth != nil {
@@ -580,7 +581,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// Images of environments that are gone, deleted from Harbor's project envs (docs/todo.md image_cleanup): one sweep against the environments and projects, which covers every way an environment goes; a failed delete is tried again at the next pass.
 		if cfg.ImageCleanup.Enabled && cfg.GPU.Registry != "" {
 			ic := cfg.ImageCleanup
-			harbor := &oci.Harbor{Client: &oci.Client{HTTP: gpu.RetryingClient(60 * time.Second)}, Host: cfg.GPU.Registry}
+			harbor := &oci.Harbor{Client: &oci.Client{HTTP: httpx.RetryingClient(60 * time.Second)}, Host: cfg.GPU.Registry}
 			if cfg.HarborCleanupUser != "" {
 				harbor.Auth = &oci.Auth{Username: cfg.HarborCleanupUser, Password: cfg.HarborCleanupToken}
 			} else if !ic.DryRun {

@@ -5,13 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
 // gitRefs is what a Git server advertises: ref name -> commit, plus the
@@ -128,4 +130,4 @@ func (g gitRefs) resolve(ref string) (commit, branch string, err error) {
 	return "", "", fmt.Errorf("%w: %s", ErrRefNotFound, ref)
 }
 
-func newGitClient() *http.Client { return withDNSRetry(&http.Client{Timeout: 30 * time.Second}) }
+func newGitClient() *http.Client { return httpx.WithRetry(&http.Client{Timeout: 30 * time.Second}) }
