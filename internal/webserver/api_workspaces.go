@@ -216,14 +216,11 @@ func (s *Server) manager(c *gin.Context, slug string) bool {
 		abort(c, http.StatusBadRequest, "invalid", "Projekt fehlt.")
 		return false
 	}
-	cur, err := s.ws.Get(c.Request.Context(), slug)
-	if err == nil && cur.RoleOf(cl.Tokens) == "" {
-		err = workspace.ErrNotFound
-	}
+	ok, err := s.ws.MayManage(c.Request.Context(), cl.Tokens, false, slug)
 	if s.workspaceError(c, err) {
 		return false
 	}
-	if cur.RoleOf(cl.Tokens) != workspace.RoleManager {
+	if !ok {
 		abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
 		return false
 	}

@@ -192,13 +192,10 @@ func jobLLMKey(ctx context.Context, ws *workspace.Service, k *jobKeys, a jobActo
 	return nil
 }
 
-// mayManage says whether the actor may see and cancel all jobs of the project: an admin or one of its managers.
+// mayManage says whether the actor may see and cancel all jobs of the project: an admin or one of its managers (workspace.Service.MayManage); an unknown project or one that is not theirs is no.
 func mayManage(ctx context.Context, ws *workspace.Service, a jobActor, project string) bool {
-	if a.admin {
-		return true
-	}
-	p, err := ws.Get(ctx, project)
-	return err == nil && p.RoleOf(a.tokens) == workspace.RoleManager
+	ok, _ := ws.MayManage(ctx, a.tokens, a.admin, project)
+	return ok
 }
 
 // visibleJob is the job when the actor may see it: their own, or one of a project they manage.

@@ -410,6 +410,24 @@ func (s *Service) Get(ctx context.Context, slug string) (Project, error) {
 	return s.store.Get(ctx, slug)
 }
 
+// MayManage is the one rule for "admins and the project's managers": an admin manages every project; anyone else manages project slug when it holds them as a manager. A project that is unknown or not theirs (no role in it) is ErrNotFound, so its existence is not told; a member without the manager role gets false.
+func (s *Service) MayManage(ctx context.Context, tokens []string, admin bool, slug string) (bool, error) {
+	if admin {
+		return true, nil
+	}
+	p, err := s.store.Get(ctx, slug)
+	if err != nil {
+		return false, err
+	}
+	switch p.RoleOf(tokens) {
+	case "":
+		return false, ErrNotFound
+	case RoleManager:
+		return true, nil
+	}
+	return false, nil
+}
+
 // Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)

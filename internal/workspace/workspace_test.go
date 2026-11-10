@@ -611,3 +611,29 @@ func TestGPUsPerPersonCappedByProject(t *testing.T) {
 		}
 	}
 }
+
+// One rule for "admins and the project's managers": unknown or not one's own = ErrNotFound, member = no, manager or admin = yes.
+func TestMayManage(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemoryStore()
+	_ = st.Create(ctx, &Project{Slug: "kurs", Name: "Kurs", Members: []Member{{Token: "user:m@dhbw.de", Role: RoleManager}, {Token: "user:s@dhbw.de", Role: "member"}}})
+	s := NewService(st, Config{}, nil)
+	for _, tc := range []struct {
+		tokens []string
+		admin  bool
+		slug   string
+		ok     bool
+		nf     bool
+	}{
+		{[]string{"user:m@dhbw.de"}, false, "kurs", true, false},
+		{[]string{"user:s@dhbw.de"}, false, "kurs", false, false},
+		{[]string{"user:x@dhbw.de"}, false, "kurs", false, true},
+		{[]string{"user:m@dhbw.de"}, false, "weg", false, true},
+		{nil, true, "weg", true, false},
+	} {
+		ok, err := s.MayManage(ctx, tc.tokens, tc.admin, tc.slug)
+		if ok != tc.ok || errors.Is(err, ErrNotFound) != tc.nf {
+			t.Errorf("%v admin=%v %s: %v %v", tc.tokens, tc.admin, tc.slug, ok, err)
+		}
+	}
+}
