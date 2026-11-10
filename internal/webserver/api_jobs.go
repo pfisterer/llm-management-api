@@ -236,12 +236,15 @@ func (s *Server) jobKeys() *jobKeys {
 
 func (s *Server) jobError(c *gin.Context, what string, err error) {
 	var refusal *workspace.Refusal
+	var inv *workspace.Invalid
 	var refused *gpu.JobRefused
 	var keyFail jobKeyFailure
 	switch {
 	case errors.As(err, &keyFail):
 		s.log.Errorw("batch job "+what+": llm key", "error", keyFail.err)
 		abort(c, keyFail.status, keyFail.code, keyFail.msg)
+	case errors.As(err, &inv):
+		abort(c, http.StatusBadRequest, "invalid", inv.Reason)
 	case errors.As(err, &refusal):
 		abort(c, http.StatusConflict, "refused", refusal.Reason)
 	case errors.As(err, &refused):

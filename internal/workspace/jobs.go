@@ -124,7 +124,7 @@ func (s *Service) CheckJob(ctx context.Context, tokens []string, r JobRequest) (
 		g.GPUClass = p.GPUClasses[0]
 	}
 	if g.GPUClass == "" {
-		return JobGrant{}, refuse("Bitte eine GPU-Klasse wählen.")
+		return JobGrant{}, invalid("Bitte eine GPU-Klasse wählen.")
 	}
 	if !p.AllowsGPUClass(g.GPUClass) {
 		return JobGrant{}, refuse("GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", s.ClassName(ctx, g.GPUClass), p.Name)
@@ -183,7 +183,7 @@ func (s *Service) JobQueues(ctx context.Context) ([]JobQueue, error) {
 // checkJobLimits refuses job limits outside their range.
 func checkJobLimits(l Limits) error {
 	if l.JobsPerPerson < 0 || l.JobMaxHours < 0 || l.JobMaxHours > MaxJobHours || math.IsNaN(l.JobMaxHours) {
-		return refuse("Batch-Jobs: Jobs je Person nicht negativ, Höchstlaufzeit zwischen 0 (Standard %s Stunden) und %s Stunden.", num(DefaultJobMaxHours), num(MaxJobHours))
+		return invalid("Batch-Jobs: Jobs je Person nicht negativ, Höchstlaufzeit zwischen 0 (Standard %s Stunden) und %s Stunden.", num(DefaultJobMaxHours), num(MaxJobHours))
 	}
 	return nil
 }

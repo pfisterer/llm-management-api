@@ -16,10 +16,9 @@ import (
 // maxUsageSpan is the longest period a report may cover (three years, like the "lifetime" view of the cloud projects' report).
 const maxUsageSpan = 1098 * 24 * time.Hour
 
-// usagePeriod reads from and to (YYYY-MM-DD, both included); default: the last 30 finished days.
+// usagePeriod reads from and to (YYYY-MM-DD, both included); default: the last 30 finished days (usage.ReportPeriod), unlike a limit's 30d, which counts today.
 func usagePeriod(c *gin.Context) (time.Time, time.Time, bool) {
-	today := usage.Day(time.Now())
-	to, from := today.AddDate(0, 0, -1), today.AddDate(0, 0, -30)
+	from, to := usage.ReportPeriod(time.Now(), 30)
 	parse := func(name string, dst *time.Time) bool {
 		v := c.Query(name)
 		if v == "" {
@@ -66,12 +65,8 @@ func (s *Server) getWorkspaceUsage(c *gin.Context) {
 			s.workspaceUsage(c, nil)
 			return
 		}
-	} else {
-		p, err := s.ws.Get(c.Request.Context(), project)
-		if project == "" || err != nil || p.RoleOf(cl.Tokens) != workspace.RoleManager {
-			abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
-			return
-		}
+	} else if !s.manager(c, project) {
+		return
 	}
 	s.workspaceUsage(c, func(r usage.Row) bool { return r.Project == project })
 }
@@ -197,15 +192,8 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 	}
 	p.Slug = c.Param("slug")
 	admin := cl.Role.AtLeast(access.RoleAdmin)
-	if !admin {
-		cur, err := s.ws.Get(c.Request.Context(), p.Slug)
-		if s.workspaceError(c, err) {
-			return
-		}
-		if cur.RoleOf(cl.Tokens) != workspace.RoleManager {
-			abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
-			return
-		}
+	if !admin && !s.manager(c, p.Slug) {
+		return
 	}
 	out, err := s.ws.Update(c.Request.Context(), p, cl.Email, admin)
 	if s.workspaceError(c, err) {
@@ -214,13 +202,20 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// manager lets admins and the project's managers through.
+// manager lets admins and the project's managers through, the one place for this rule (decided 10.11.2026): no project given is 400; a project that does not exist, or in which the caller has no part, is 404, so nobody learns which projects exist; a member who may not manage it gets 403.
 func (s *Server) manager(c *gin.Context, slug string) bool {
 	cl := caller(c)
 	if cl.Role.AtLeast(access.RoleAdmin) {
 		return true
 	}
+	if slug == "" {
+		abort(c, http.StatusBadRequest, "invalid", "Projekt fehlt.")
+		return false
+	}
 	cur, err := s.ws.Get(c.Request.Context(), slug)
+	if err == nil && cur.RoleOf(cl.Tokens) == "" {
+		err = workspace.ErrNotFound
+	}
 	if s.workspaceError(c, err) {
 		return false
 	}
@@ -418,11 +413,15 @@ func (s *Server) deleteWorkspaceProject(c *gin.Context) {
 
 func (s *Server) workspaceError(c *gin.Context, err error) bool {
 	var r *workspace.Refusal
+	var inv *workspace.Invalid
 	switch {
 	case err == nil:
 		return false
+	case errors.As(err, &inv):
+		abort(c, http.StatusBadRequest, "invalid", inv.Reason)
 	case errors.As(err, &r):
-		abort(c, http.StatusBadRequest, "invalid", r.Reason)
+		// A refusal by the project's rules is 409 here as for batch jobs (decided 10.11.2026).
+		abort(c, http.StatusConflict, "refused", r.Reason)
 	case errors.Is(err, workspace.ErrNotFound):
 		abort(c, http.StatusNotFound, "not_found", "Projekt nicht gefunden.")
 	default:
@@ -476,12 +475,8 @@ func (s *Server) getGPUHours(c *gin.Context) {
 	cl := caller(c)
 	project := c.Query("project")
 	admin := cl.Role.AtLeast(access.RoleAdmin)
-	if !admin {
-		p, err := s.ws.Get(c.Request.Context(), project)
-		if project == "" || err != nil || p.RoleOf(cl.Tokens) != workspace.RoleManager {
-			abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
-			return
-		}
+	if !admin && !s.manager(c, project) {
+		return
 	}
 	today := usage.Day(time.Now())
 	from, to := today.AddDate(0, 0, -6), today

@@ -22,10 +22,15 @@ func service(running ...Running) *Service {
 	return s
 }
 
+// reason is the text of a refusal by the rules or of an invalid input; "ERROR …" for any other error.
 func reason(err error) string {
 	var r *Refusal
 	if errors.As(err, &r) {
 		return r.Reason
+	}
+	var inv *Invalid
+	if errors.As(err, &inv) {
+		return inv.Reason
 	}
 	if err != nil {
 		return "ERROR " + err.Error()

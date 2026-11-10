@@ -30,11 +30,11 @@ func windowStart(window string, now time.Time, created time.Time) time.Time {
 	today := usage.Day(now)
 	switch window {
 	case "24h":
-		return today
+		return usage.LimitWindowStart(now, 1)
 	case "7d":
-		return today.AddDate(0, 0, -6)
+		return usage.LimitWindowStart(now, 7)
 	case "30d":
-		return today.AddDate(0, 0, -29)
+		return usage.LimitWindowStart(now, 30)
 	default:
 		if created.IsZero() {
 			return today.AddDate(-3, 0, 0)

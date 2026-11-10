@@ -42,7 +42,7 @@ func (s *Service) scratchFromTree(gb int) int {
 // checkScratch refuses a value outside 0 (the default) to the upper bound.
 func (s *Service) checkScratch(p Project) error {
 	if p.ScratchGB < 0 || p.ScratchGB > s.scratchMax() {
-		return refuse("Lokaler Speicher je Workspace: zwischen 1 und %d GB, 0 = Standard (%d GB).", s.scratchMax(), s.scratchDefault())
+		return invalid("Lokaler Speicher je Workspace: zwischen 1 und %d GB, 0 = Standard (%d GB).", s.scratchMax(), s.scratchDefault())
 	}
 	return nil
 }

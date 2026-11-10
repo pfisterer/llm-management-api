@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"github.com/pfisterer/llm-management-api/internal/usage"
 	"maps"
 	"regexp"
 	"slices"
@@ -11,10 +12,11 @@ import (
 
 // TreeBudget is a project's share of a budget in the budget tree: an amount per window for the whole project; 0 = no cap.
 type TreeBudget struct {
-	Unit     string  `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours,llm_mtokens,storage_gb"`
-	GPUClass string  `json:"gpu_class,omitempty" example:"l4-3q"`
-	Window   string  `json:"window" example:"30d" enums:"24h,7d,30d"`
-	Amount   float64 `json:"amount" example:"500"`
+	Unit     string `json:"unit" example:"gpu_hours" enums:"server_hours,vcpu_hours,ram_gb_hours,gpu_hours,llm_mtokens,storage_gb"`
+	GPUClass string `json:"gpu_class,omitempty" example:"l4-3q"`
+	// Window has no "total" here on purpose (decided 10.11.2026): the budget tree gives amounts per window only, never one for a project's whole term; a project's managers may still set "total" on budgets of their own (Budget.Window).
+	Window string  `json:"window" example:"30d" enums:"24h,7d,30d"`
+	Amount float64 `json:"amount" example:"500"`
 }
 
 // TreeProject is what the budget tree (resource-management-api) says about one of its projects. It owns these fields; the project's managers keep the rest (shares per person, shorter windows, profiles, images).
@@ -117,7 +119,7 @@ func grantedClasses(tp TreeProject) []string {
 // UpsertFromTree creates or updates the project of a tree node with what the tree says. A new project gets every profile it can use and moderate limits per person, which its managers may change.
 func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProject) (TreeStatus, error) {
 	if strings.TrimSpace(node) == "" {
-		return TreeStatus{}, refuse("Knoten fehlt.")
+		return TreeStatus{}, invalid("Knoten fehlt.")
 	}
 	cur, exists, err := s.byNode(ctx, node)
 	if err != nil {
@@ -174,6 +176,9 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	p.NoWorkspaces = !tp.Workspaces
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
+		if !slices.Contains([]string{"24h", "7d", "30d"}, b.Window) {
+			return TreeStatus{}, invalid("Budget aus dem Baum mit Fenster %q: der Budgetbaum vergibt Mengen je 24h, 7d oder 30d.", b.Window)
+		}
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
 	}
 	p.Budgets = budgets
@@ -330,7 +335,7 @@ func withinTree(p Project) error {
 }
 
 // LLMWindow is the window of a project's LLM tokens; its pool (a LiteLLM team) resets after it.
-const LLMWindow = "30d"
+const LLMWindow = usage.LLMWindow
 
 // LLMPool is a project's pool of LLM tokens, shared by its members: the tokens per 30 days it has now, 0 once it ended, and the project's own rate limits (0 = not set) and extra models, as the tree sent them.
 type LLMPool struct {

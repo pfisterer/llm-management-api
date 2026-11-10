@@ -135,6 +135,13 @@ func (r *Refusal) Error() string { return r.Reason }
 
 func refuse(format string, args ...any) error { return &Refusal{Reason: fmt.Sprintf(format, args...)} }
 
+// Invalid is an input that is wrong in itself (a name, a range, an unknown id), as opposed to a Refusal by the project's rules or state: 400 here, a Refusal 409 (decided 10.11.2026).
+type Invalid struct{ Reason string }
+
+func (e *Invalid) Error() string { return e.Reason }
+
+func invalid(format string, args ...any) error { return &Invalid{Reason: fmt.Sprintf(format, args...)} }
+
 // refuseStart is a refusal of a start, of a kind of StartResults.
 func refuseStart(kind, format string, args ...any) error {
 	return &Refusal{Reason: fmt.Sprintf(format, args...), Kind: kind}
@@ -321,11 +328,11 @@ func (s *Service) validate(p *Project) error {
 	p.Slug = strings.ToLower(strings.TrimSpace(p.Slug))
 	p.Name = strings.TrimSpace(p.Name)
 	if !slugRE.MatchString(p.Slug) {
-		return refuse("Kurzname ungültig: Kleinbuchstaben, Ziffern und Bindestriche, höchstens 40 Zeichen.")
+		return invalid("Kurzname ungültig: Kleinbuchstaben, Ziffern und Bindestriche, höchstens 40 Zeichen.")
 	}
 	// "none" is the start without LLM (llm_project, gpu.NoLLM; DefaultLLMProject), never a project.
 	if p.Slug == NoLLM {
-		return refuse("Kurzname „none“ ist reserviert.")
+		return invalid("Kurzname „none“ ist reserviert.")
 	}
 	if p.Name == "" {
 		p.Name = p.Slug
@@ -333,13 +340,13 @@ func (s *Service) validate(p *Project) error {
 	for i, m := range p.Members {
 		m.Token = strings.TrimSpace(m.Token)
 		if !strings.HasPrefix(m.Token, "user:") && !strings.HasPrefix(m.Token, "group:") {
-			return refuse("Mitglied %q: user:<E-Mail> oder group:<Gruppe>.", m.Token)
+			return invalid("Mitglied %q: user:<E-Mail> oder group:<Gruppe>.", m.Token)
 		}
 		if m.Role == "" {
 			m.Role = RoleMember
 		}
 		if roleRank[m.Role] == 0 {
-			return refuse("Rolle %q unbekannt (reader, member, manager).", m.Role)
+			return invalid("Rolle %q unbekannt (reader, member, manager).", m.Role)
 		}
 		p.Members[i] = m
 	}
@@ -348,28 +355,28 @@ func (s *Service) validate(p *Project) error {
 	if len(s.cfg.Bases) > 0 {
 		b, ok := s.base(p.ImageBase)
 		if !ok {
-			return refuse("Basis %q gibt es nicht.", p.ImageBase)
+			return invalid("Basis %q gibt es nicht.", p.ImageBase)
 		}
 		p.ImageBase = b.ID
 	}
 	for _, c := range p.GPUClasses {
 		if !s.knownClass(c) {
-			return refuse("GPU-Klasse %q gibt es nicht.", c)
+			return invalid("GPU-Klasse %q gibt es nicht.", c)
 		}
 	}
 	l := p.Limits
 	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || p.LLMMTokens < 0 || p.LLMRPM < 0 || p.LLMTPM < 0 {
-		return refuse("Grenzen dürfen nicht negativ sein.")
+		return invalid("Grenzen dürfen nicht negativ sein.")
 	}
 	if err := checkJobLimits(l); err != nil {
 		return err
 	}
 	if p.BatchPriority != "" && p.BatchPriority != BatchGuaranteed {
-		return refuse("Priorität der Batch-Jobs: leer (verdrängbar) oder %q.", BatchGuaranteed)
+		return invalid("Priorität der Batch-Jobs: leer (verdrängbar) oder %q.", BatchGuaranteed)
 	}
 	for c, n := range p.GPUsByClass {
 		if n < 0 || !s.knownClass(c) {
-			return refuse("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", c)
+			return invalid("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", c)
 		}
 	}
 	// A person cannot hold more GPUs than the project has: without a GPU class that is none, so a limit set before the classes went (or by hand) would only mislead.
@@ -379,7 +386,7 @@ func (s *Service) validate(p *Project) error {
 	for _, b := range p.Budgets {
 		if !slices.Contains([]string{"server_hours", "vcpu_hours", "ram_gb_hours", "gpu_hours"}, b.Unit) ||
 			!slices.Contains([]string{"24h", "7d", "30d", "total"}, b.Window) || b.Amount < 0 {
-			return refuse("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster 24h, 7d, 30d oder total; Menge nicht negativ.")
+			return invalid("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster 24h, 7d, 30d oder total; Menge nicht negativ.")
 		}
 	}
 	return nil

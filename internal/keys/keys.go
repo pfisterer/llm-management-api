@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/pfisterer/llm-management-api/internal/usage"
 	"maps"
 	"math"
 	"regexp"
@@ -29,7 +30,7 @@ import (
 const DollarsPerMTokens = 0.1
 
 // PoolWindow is the window of a pool's budget; the team's spend resets after it.
-const PoolWindow = "30d"
+const PoolWindow = usage.LLMWindow
 
 // Pool is a project's LLM tokens, shared by all its members: a LiteLLM team whose id is the project's slug, with the project's limits for all its members together — requests and tokens per minute (0 = no limit) and the models it may use (sorted; none = every model).
 type Pool struct {

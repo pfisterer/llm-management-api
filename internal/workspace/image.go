@@ -139,7 +139,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		return nil
 	}
 	if !imageRE.MatchString(p.ProjectImage) {
-		return refuse("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.ProjectImage)
+		return invalid("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.ProjectImage)
 	}
 	p.ImageDigest, p.ImageUpdate = "", ""
 	s.clearImageFacts(p)

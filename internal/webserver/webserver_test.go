@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pfisterer/llm-management-api/internal/usage"
 	"io"
 	"math"
 	"net/http"
@@ -180,7 +181,7 @@ func llmServer(t *testing.T) (*access.Service, *workspace.Service, http.Handler)
 	quota := testQuota
 	quota.Projects, quota.SelfServiceURL = ws, "https://self-service"
 	h := New(Options{DevMode: true, DevAuthUser: testDevUser, Access: acc, Log: zap.NewNop().Sugar(), ChatURL: "https://chat",
-		Keys: testKeys(fakeBackend(t).URL), Quota: quota, GPU: g, Workspaces: ws}).Router()
+		Keys: testKeys(fakeBackend(t).URL), Quota: quota, GPU: g, Workspaces: ws, Usage: usage.NewMemoryStore()}).Router()
 	return acc, ws, h
 }
 
@@ -569,3 +570,22 @@ func TestLLMProjectFor(t *testing.T) {
 type fakeLimits map[string]ModelLimit
 
 func (f fakeLimits) Limits(context.Context) (map[string]ModelLimit, error) { return f, nil }
+
+// One rule for the managers' endpoints (10.11.2026): a project the caller has no part in answers like one that does not exist (404), a member who may not manage it gets 403, no project 400.
+func TestManagerRule(t *testing.T) {
+	_, _, h := llmServer(t)
+	for _, tc := range []struct {
+		user, path string
+		want       int
+	}{
+		{"member@dhbw.de", "/v1/workspaces/usage?project=t-1", http.StatusForbidden},
+		{"nobody@dhbw.de", "/v1/workspaces/usage?project=t-1", http.StatusNotFound},
+		{"member@dhbw.de", "/v1/workspaces/usage?project=gibt-es-nicht", http.StatusNotFound},
+		{"member@dhbw.de", "/v1/workspaces/usage", http.StatusBadRequest},
+		{"root@dhbw.de", "/v1/workspaces/usage?project=t-1", http.StatusOK},
+	} {
+		if code, body := do(t, h, "GET", tc.path, tc.user, nil); code != tc.want {
+			t.Errorf("%s %s: %d %s, want %d", tc.user, tc.path, code, body, tc.want)
+		}
+	}
+}

@@ -128,10 +128,10 @@ func (s *Service) SetCredential(ctx context.Context, project, host, username, to
 	}
 	host, username, token = normaliseHost(host), strings.TrimSpace(username), strings.TrimSpace(token)
 	if !hostRE.MatchString(host) || !strings.Contains(host, ".") {
-		return refuse("Host %q ungültig: nur der Name, z. B. gitlab.dhbw.de oder ghcr.io.", host)
+		return invalid("Host %q ungültig: nur der Name, z. B. gitlab.dhbw.de oder ghcr.io.", host)
 	}
 	if username == "" || token == "" || strings.ContainsAny(username, ":\n") || strings.ContainsAny(token, "\n ") {
-		return refuse("Benutzername und Token werden gebraucht (Benutzername ohne Doppelpunkt, Token ohne Leerzeichen).")
+		return invalid("Benutzername und Token werden gebraucht (Benutzername ohne Doppelpunkt, Token ohne Leerzeichen).")
 	}
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {

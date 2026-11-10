@@ -211,11 +211,11 @@ func validRange(r Release, what string) error {
 		t := r.kind(kind)
 		for _, v := range []*int{t.IdleOpenMinutes, t.IdleClosedMinutes} {
 			if v != nil && (*v < 1 || *v > MaxIdleMinutes) {
-				return refuse("Rückgabezeiten %s (%s): Leerlauf zwischen 1 und %d Minuten.", what, kindNames[kind], MaxIdleMinutes)
+				return invalid("Rückgabezeiten %s (%s): Leerlauf zwischen 1 und %d Minuten.", what, kindNames[kind], MaxIdleMinutes)
 			}
 		}
 		if t.MaxHours != nil && (*t.MaxHours < 0 || *t.MaxHours > MaxMaxHours) {
-			return refuse("Rückgabezeiten %s (%s): Obergrenze zwischen 1 und %d Stunden, 0 = keine.", what, kindNames[kind], MaxMaxHours)
+			return invalid("Rückgabezeiten %s (%s): Obergrenze zwischen 1 und %d Stunden, 0 = keine.", what, kindNames[kind], MaxMaxHours)
 		}
 	}
 	return nil
