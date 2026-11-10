@@ -499,22 +499,22 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// Every background loop runs through package background: a panic is logged and counted (aiaas_background_panics_total) and the loop goes on; a loop of its own package is started again a minute later.
+	// Every background loop runs through package background (the Start methods too): a panic is logged and counted (aiaas_background_panics_total) and the loop goes on at its next tick.
 	if budgets != nil {
-		background.Supervise(ctx, log, "budget_sync", time.Minute, budgets.Run)
+		budgets.Start(ctx)
 	}
 	if gpuSvc != nil {
 		// Workspace usage (docs/bauplan.md, Stufe 4 W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
-		background.Supervise(ctx, log, "usage_collector", time.Minute, usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run)
+		usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Start(ctx)
 		// GPU use per hour: capacity, workspaces, inference pool, queue (docs/bauplan.md 6.10).
 		if gs, ok := st.usage.(usage.GPUStore); ok {
-			background.Supervise(ctx, log, "gpu_usage_collector", time.Minute, usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Run)
+			usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Start(ctx)
 		}
 		// Research log (internal/research): every minute the GPU cluster's workloads from request to end, pseudonymous; RESEARCH_RETENTION_DAYS=0 switches it off.
 		if cfg.ResearchRetentionDays > 0 {
 			rec := research.NewRecorder(st.research, gpuSvc.ResearchSnapshot, []byte(cfg.ResearchPseudonymKey), time.Duration(cfg.ResearchRetentionDays)*24*time.Hour, time.Minute, log)
 			gpuSvc.SetResearch(rec)
-			background.Supervise(ctx, log, "research_recorder", time.Minute, rec.Run)
+			rec.Start(ctx)
 			if cfg.ResearchPseudonymKey == "" {
 				log.Infow("research log: no RESEARCH_PSEUDONYM_KEY, the rows name no person")
 			}
@@ -588,7 +588,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				ic.DryRun = true
 			}
 			cleanup := gpuSvc.NewImageCleanup(harbor, ic, wsSvc.ReferencedImages)
-			background.Supervise(ctx, log, "image_cleanup", time.Minute, func(ctx context.Context) { cleanup.Run(ctx, 5*time.Minute) })
+			cleanup.Start(ctx, 5*time.Minute)
 		}
 	}
 	// The startup listener gives the API's address back to the real one.

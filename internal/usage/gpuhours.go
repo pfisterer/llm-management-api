@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -92,13 +93,7 @@ func NewGPUCollector(store GPUStore, source GPUSource, project ProjectOf, interv
 // Tick books the time since the previous tick (at most two intervals, as Collector.Tick) to the current hour.
 func (c *GPUCollector) Tick(ctx context.Context) error {
 	now := c.now()
-	dt := c.interval
-	if !c.last.IsZero() {
-		if d := now.Sub(c.last); d < 2*c.interval {
-			dt = d
-		}
-	}
-	c.last = now
+	dt := elapsed(&c.last, now, c.interval)
 	s, err := c.source(ctx)
 	if err != nil {
 		return err
@@ -189,20 +184,13 @@ func BookGPUSample(ctx context.Context, s GPUSample, hour time.Time, h float64, 
 	return rows, out
 }
 
-// Run ticks until ctx ends; errors are logged.
-func (c *GPUCollector) Run(ctx context.Context) {
-	t := time.NewTicker(c.interval)
-	defer t.Stop()
-	for {
+// Start ticks right away and then every interval until ctx ends (background loop gpu_usage_collector); errors are logged.
+func (c *GPUCollector) Start(ctx context.Context) {
+	background.Run(ctx, c.log, "gpu_usage_collector", background.Schedule{Interval: c.interval}, func(ctx context.Context) {
 		if err := c.Tick(ctx); err != nil {
 			c.log.Warnw("gpu sample failed", "error", err)
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+	})
 }
 
 // GPUReport is the hourly GPU use of a period: per class and hour (admins only), and per person (for a project's managers only its rows).

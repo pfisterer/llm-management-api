@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"go.uber.org/zap"
 )
 
@@ -46,13 +47,7 @@ func NewCollector(store Store, source Source, project ProjectOf, interval time.D
 // Tick books the time since the previous tick for every running pod. A gap longer than two intervals (the service was down, a tick hung) counts as one interval: what ran in between is unknown, and booking all of it to whoever runs now would be wrong.
 func (c *Collector) Tick(ctx context.Context) error {
 	now := c.now()
-	dt := c.interval
-	if !c.last.IsZero() {
-		if d := now.Sub(c.last); d < 2*c.interval {
-			dt = d
-		}
-	}
-	c.last = now
+	dt := elapsed(&c.last, now, c.interval)
 	samples, err := c.source(ctx)
 	if err != nil {
 		return err
@@ -85,18 +80,23 @@ func (c *Collector) Tick(ctx context.Context) error {
 
 // During a rollout the old and the new pod both run for a moment, and the new one's first tick books a whole interval: each running workspace can be booked up to about one interval twice per rollout. Measured on 10.11.2026 and left so (decided then): a minute per rollout is far below what a lease between the pods would be worth.
 //
-// Run ticks until ctx ends. Errors are logged, not fatal: a minute without a sample costs a minute of accounting, not the service.
-func (c *Collector) Run(ctx context.Context) {
-	t := time.NewTicker(c.interval)
-	defer t.Stop()
-	for {
+// Start ticks right away and then every interval until ctx ends (background loop usage_collector). Errors are logged, not fatal: a minute without a sample costs a minute of accounting, not the service.
+func (c *Collector) Start(ctx context.Context) {
+	background.Run(ctx, c.log, "usage_collector", background.Schedule{Interval: c.interval}, func(ctx context.Context) {
 		if err := c.Tick(ctx); err != nil {
 			c.log.Warnw("usage sample failed", "error", err)
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
+	})
+}
+
+// elapsed is the time to book at now since *last, and sets *last to now: the time since the previous tick, or one interval for the first tick and after a gap of two intervals or more.
+func elapsed(last *time.Time, now time.Time, interval time.Duration) time.Duration {
+	dt := interval
+	if !last.IsZero() {
+		if d := now.Sub(*last); d < 2*interval {
+			dt = d
 		}
 	}
+	*last = now
+	return dt
 }

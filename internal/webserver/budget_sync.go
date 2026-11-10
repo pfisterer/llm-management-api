@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"github.com/pfisterer/llm-management-api/internal/keys"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
 	"github.com/pfisterer/llm-management-api/internal/promtext"
@@ -54,23 +55,15 @@ func (b *BudgetSync) Nudge() {
 	}
 }
 
-// Run passes on start, every Interval and after each nudge, until ctx ends.
-func (b *BudgetSync) Run(ctx context.Context) {
-	t := time.NewTicker(b.Interval)
-	defer t.Stop()
-	for {
+// Start passes right away, every Interval and after each nudge, until ctx ends (background loop budget_sync).
+func (b *BudgetSync) Start(ctx context.Context) {
+	background.Run(ctx, b.Log, "budget_sync", background.Schedule{Interval: b.Interval, Nudge: b.nudge}, func(ctx context.Context) {
 		if n, err := b.Pass(ctx); err != nil {
 			b.Log.Warnw("budget sync: pass failed", "error", err)
 		} else if n > 0 {
 			b.Log.Infow("budget sync: LiteLLM brought in step with the tree", "writes", n)
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		case <-b.nudge:
-		}
-	}
+	})
 }
 
 // Pass first brings every project's team in step, then goes through every LiteLLM user that is a person (has an email): writes their quota (budget 0) and moves their keys into pools they may draw from (keys.SyncKeys). A person whose access or projects cannot be read right now is skipped, never stopped. Returns how many writes it made (teams, quotas, keys).

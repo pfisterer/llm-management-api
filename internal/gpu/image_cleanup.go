@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"github.com/pfisterer/llm-management-api/internal/oci"
 	"github.com/pfisterer/llm-management-api/internal/promtext"
 )
@@ -377,20 +378,10 @@ func (c *ImageCleanup) record(res CleanupResult) CleanupResult {
 	return res
 }
 
-// Run sweeps every Interval until ctx ends, the first time a few minutes after the start (the stores and the projects are settled by then).
-func (c *ImageCleanup) Run(ctx context.Context, firstDelay time.Duration) {
+// Start sweeps every Interval until ctx ends (background loop image_cleanup), the first time after firstDelay (a few minutes after the start, when the stores and the projects are settled).
+func (c *ImageCleanup) Start(ctx context.Context, firstDelay time.Duration) {
 	c.svc.log.Infow("image cleanup in Harbor on", "project", c.project, "dry_run", c.cfg.DryRun, "min_age", c.cfg.MinAge.String(), "interval", c.cfg.Interval.String())
-	t := time.NewTimer(firstDelay)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		c.Sweep(ctx)
-		t.Reset(c.cfg.Interval)
-	}
+	background.Run(ctx, c.svc.log, "image_cleanup", background.Schedule{Interval: c.cfg.Interval, First: firstDelay}, func(ctx context.Context) { c.Sweep(ctx) })
 }
 
 // writeCleanupMetrics writes the last pass of the image cleanup, if one ran.

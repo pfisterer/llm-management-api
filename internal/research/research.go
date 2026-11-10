@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"go.uber.org/zap"
 )
 
@@ -344,20 +345,13 @@ func (r *Recorder) Tick(ctx context.Context) error {
 	return nil
 }
 
-// Run ticks until ctx ends; errors are logged.
-func (r *Recorder) Run(ctx context.Context) {
-	t := time.NewTicker(r.interval)
-	defer t.Stop()
-	for {
+// Start ticks right away and then every interval until ctx ends (background loop research_recorder); errors are logged.
+func (r *Recorder) Start(ctx context.Context) {
+	background.Run(ctx, r.log, "research_recorder", background.Schedule{Interval: r.interval}, func(ctx context.Context) {
 		if err := r.Tick(ctx); err != nil {
 			r.log.Warnw("research log: sample failed", "error", err)
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+	})
 }
 
 // apply brings the rows to the snapshot; r.mu is held.

@@ -61,37 +61,49 @@ func guard(log *zap.SugaredLogger, loop string, fn func()) {
 	fn()
 }
 
-// Every runs fn every interval until ctx ends: right away first if now is true, else first after one interval. A panic in fn is recovered, logged and counted, and the next tick runs as usual.
-func Every(ctx context.Context, log *zap.SugaredLogger, loop string, interval time.Duration, now bool, fn func(ctx context.Context)) {
+// Schedule says when a loop ticks.
+type Schedule struct {
+	// Interval is the time between two ticks.
+	Interval time.Duration
+	// First is the pause before the first tick; 0 = right away.
+	First time.Duration
+	// Nudge, if set, makes the loop tick at once whenever it receives; the regular ticks go on as before.
+	Nudge <-chan struct{}
+}
+
+// Run runs fn by s until ctx ends. A panic in fn is recovered, logged and counted, and the next tick runs as usual.
+func Run(ctx context.Context, log *zap.SugaredLogger, loop string, s Schedule, fn func(ctx context.Context)) {
 	Panics.Init(loop)
 	go func() {
-		t := time.NewTicker(interval)
+		t := time.NewTicker(s.Interval)
 		defer t.Stop()
-		if now {
-			guard(log, loop, func() { fn(ctx) })
+		if s.First > 0 {
+			first := time.NewTimer(s.First)
+			select {
+			case <-ctx.Done():
+				first.Stop()
+				return
+			case <-first.C:
+			}
+			t.Reset(s.Interval)
 		}
 		for {
+			guard(log, loop, func() { fn(ctx) })
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+			case <-s.Nudge:
 			}
-			guard(log, loop, func() { fn(ctx) })
 		}
 	}()
 }
 
-// Supervise runs a component's own loop (run returns when ctx ends) and, should it panic, starts it again after restart. For the loops that live in their packages (collectors, recorder, budget sync, image cleanup), which have their own ticker.
-func Supervise(ctx context.Context, log *zap.SugaredLogger, loop string, restart time.Duration, run func(ctx context.Context)) {
-	Panics.Init(loop)
-	go func() {
-		for {
-			guard(log, loop, func() { run(ctx) })
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(restart):
-			}
-		}
-	}()
+// Every runs fn every interval until ctx ends: right away first if now is true, else first after one interval.
+func Every(ctx context.Context, log *zap.SugaredLogger, loop string, interval time.Duration, now bool, fn func(ctx context.Context)) {
+	s := Schedule{Interval: interval}
+	if !now {
+		s.First = interval
+	}
+	Run(ctx, log, loop, s, fn)
 }

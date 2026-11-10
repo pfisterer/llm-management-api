@@ -49,25 +49,31 @@ func TestEveryNotNowWaits(t *testing.T) {
 	}
 }
 
-func TestSuperviseRestarts(t *testing.T) {
+func TestRunFirstDelayAndNudge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var runs atomic.Int32
-	done := make(chan struct{})
-	Supervise(ctx, log, "test-supervise", time.Millisecond, func(ctx context.Context) {
-		if runs.Add(1) == 1 {
-			panic("boom")
-		}
-		close(done)
-		<-ctx.Done()
-	})
+	nudge := make(chan struct{}, 1)
+	ticks := make(chan time.Time, 10)
+	start := time.Now()
+	Run(ctx, log, "test-run", Schedule{Interval: time.Hour, First: 30 * time.Millisecond, Nudge: nudge}, func(context.Context) { ticks <- time.Now() })
 	select {
-	case <-done:
+	case at := <-ticks:
+		if at.Sub(start) < 30*time.Millisecond {
+			t.Fatalf("first tick after %v, want at least First", at.Sub(start))
+		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("not restarted after the panic")
+		t.Fatal("no first tick")
 	}
-	if Panics.Value("test-supervise") != 1 {
-		t.Fatal("panic not counted")
+	nudge <- struct{}{}
+	select {
+	case <-ticks:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a nudge did not tick")
+	}
+	select {
+	case <-ticks:
+		t.Fatal("ticked without a nudge or an interval")
+	case <-time.After(30 * time.Millisecond):
 	}
 }
 
