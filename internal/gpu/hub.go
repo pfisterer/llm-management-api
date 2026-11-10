@@ -1,12 +1,10 @@
 package gpu
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -27,38 +25,21 @@ func newHub(base, token string) *hub {
 }
 
 func (h *hub) do(ctx context.Context, method, path string, body, out any) (int, error) {
-	var rd io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return 0, err
-		}
-		rd = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, h.base+"/hub/api"+path, rd)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Authorization", "token "+h.token)
-	resp, err := h.http.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("jupyterhub: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	status, err := httpx.Do(ctx, h.http, httpx.Request{Method: method, URL: h.base + "/hub/api" + path, Header: http.Header{"Authorization": {"token " + h.token}}, Body: body}, out)
+	var se *httpx.StatusError
+	switch {
+	case errors.As(err, &se):
 		var e struct {
 			Message string `json:"message"`
 		}
-		if json.Unmarshal(msg, &e) == nil && e.Message != "" {
-			return resp.StatusCode, &HubError{Status: resp.StatusCode, Message: e.Message}
+		if json.Unmarshal([]byte(se.Body), &e) == nil && e.Message != "" {
+			return status, &HubError{Status: status, Message: e.Message}
 		}
-		return resp.StatusCode, &HubError{Status: resp.StatusCode, Message: string(msg)}
+		return status, &HubError{Status: status, Message: se.Body}
+	case err != nil && status == 0:
+		return 0, fmt.Errorf("jupyterhub: %w", err)
 	}
-	if out != nil {
-		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
-	}
-	return resp.StatusCode, nil
+	return status, err
 }
 
 // HubError carries JupyterHub's message, e.g. a refused start (GPU quota).

@@ -2,14 +2,14 @@ package oci
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 // Harbor is Harbor's v2 API for one registry host, as far as the image cleanup needs it: list a project's repositories and their artifacts, delete artifacts and repositories. Auth is a robot account (nil = anonymously, which lists a public project but deletes nothing).
@@ -52,31 +52,22 @@ func (h *Harbor) repoPath(project, repo string) string {
 }
 
 func (h *Harbor) do(ctx context.Context, method, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, h.api(path), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
+	hdr := http.Header{"Accept": {"application/json"}}
 	if h.Auth != nil {
-		req.SetBasicAuth(h.Auth.Username, h.Auth.Password)
+		hdr.Set("Authorization", httpx.BasicAuth(h.Auth.Username, h.Auth.Password))
 	}
-	resp, err := h.Client.HTTP.Do(req)
-	if err != nil {
+	status, err := httpx.Do(ctx, h.Client.HTTP, httpx.Request{Method: method, URL: h.api(path), Header: hdr, MaxBody: 16 << 20}, out)
+	var se *httpx.StatusError
+	switch {
+	case errors.As(err, &se) && se.Status == http.StatusNotFound:
+		return ErrNotFound
+	case se != nil:
+		// The path only, without the query: no credentials in it, but nothing else to log either.
+		return fmt.Errorf("harbor %s: %s %s: %d", h.Host, method, strings.SplitN(path, "?", 2)[0], se.Status)
+	case err != nil && status == 0:
 		return fmt.Errorf("harbor %s: %w", h.Host, err)
 	}
-	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return ErrNotFound
-	case resp.StatusCode/100 != 2:
-		// The path only, without the query: no credentials in it, but nothing else to log either.
-		return fmt.Errorf("harbor %s: %s %s: %d", h.Host, method, strings.SplitN(path, "?", 2)[0], resp.StatusCode)
-	}
-	if out == nil {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		return nil
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out)
+	return err
 }
 
 // pages reads a listing page by page until a page is not full.

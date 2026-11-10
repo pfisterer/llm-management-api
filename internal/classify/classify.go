@@ -19,11 +19,10 @@
 package classify
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"slices"
@@ -301,28 +300,17 @@ type completion struct {
 func (s *Service) ask(ctx context.Context, body map[string]any, timeout time.Duration) (completion, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	b, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.gateway+"/v1/chat/completions", bytes.NewReader(b))
-	if err != nil {
-		return completion{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+s.key)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return completion{}, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode/100 != 2 {
-		msg := string(raw)
+	var c completion
+	h := http.Header{"Authorization": {"Bearer " + s.key}}
+	_, err := httpx.Do(ctx, s.http, httpx.Request{Method: http.MethodPost, URL: s.gateway + "/v1/chat/completions", Header: h, Body: body, MaxBody: 1 << 20, ErrBody: 1 << 20}, &c)
+	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
+		msg := se.Body
 		if len(msg) > 120 {
 			msg = msg[:120]
 		}
-		return completion{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return completion{}, fmt.Errorf("HTTP %d: %s", se.Status, msg)
 	}
-	var c completion
-	return c, json.Unmarshal(raw, &c)
+	return c, err
 }
 
 func msg(text string) []map[string]string {

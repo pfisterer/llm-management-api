@@ -1,17 +1,16 @@
 package gpu
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 // ErrNotFound is returned by the clients for a missing object.
@@ -35,49 +34,27 @@ func newKube(base, token, caPEM string) (*kube, error) {
 }
 
 func (k *kube) do(ctx context.Context, method, path string, body, out any) error {
-	var rd io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		rd = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, k.base+path, rd)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+k.token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	h := http.Header{"Authorization": {"Bearer " + k.token}}
 	if method == http.MethodPatch {
-		req.Header.Set("Content-Type", "application/merge-patch+json")
+		h.Set("Content-Type", "application/merge-patch+json")
 	}
-	resp, err := k.http.Do(req)
-	if err != nil {
+	var limit int64
+	if _, ok := out.(*string); ok {
+		limit = 1 << 20 // a log
+	}
+	status, err := httpx.Do(ctx, k.http, httpx.Request{Method: method, URL: k.base + path, Header: h, Body: body, MaxBody: limit}, out)
+	var se *httpx.StatusError
+	switch {
+	case errors.As(err, &se) && se.Status == http.StatusNotFound:
+		return ErrNotFound
+	case se != nil && se.Status == http.StatusConflict:
+		return errAlreadyExists
+	case se != nil:
+		return fmt.Errorf("kubernetes %s %s: %d %s", method, path, se.Status, se.Body)
+	case err != nil && status == 0:
 		return fmt.Errorf("kubernetes %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return ErrNotFound
-	}
-	if resp.StatusCode == http.StatusConflict {
-		return errAlreadyExists
-	}
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("kubernetes %s %s: %d %s", method, path, resp.StatusCode, msg)
-	}
-	if out == nil {
-		return nil
-	}
-	if s, ok := out.(*string); ok {
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		*s = string(b)
-		return err
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return err
 }
 
 var errAlreadyExists = errors.New("already exists")

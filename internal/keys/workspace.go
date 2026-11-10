@@ -5,7 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -76,26 +76,20 @@ var modelsClient = httpx.NewClient(15 * time.Second)
 func ModelsOf(ctx context.Context, gateway, key string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(gateway, "/")+"/v1/models", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	resp, err := modelsClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gateway /v1/models: %d", resp.StatusCode)
-	}
 	var body struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	status, err := httpx.Do(ctx, modelsClient, httpx.Request{Method: http.MethodGet, URL: strings.TrimRight(gateway, "/") + "/v1/models", Header: http.Header{"Authorization": {"Bearer " + key}}}, &body)
+	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
+		return nil, fmt.Errorf("gateway /v1/models: %d", se.Status)
+	}
+	if err != nil {
 		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("gateway /v1/models: %d", status)
 	}
 	out := []string{}
 	for _, m := range body.Data {

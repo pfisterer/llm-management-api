@@ -3,16 +3,16 @@
 package litellm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/httpx"
 )
 
 // Client is a minimal JSON client for the endpoints this service needs.
@@ -41,37 +41,20 @@ func IsStatus(err error, status int) bool {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
-	var rd io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		rd = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rd)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.key)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("litellm: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		msg := bytes.TrimSpace(raw)
+	h := http.Header{"Authorization": {"Bearer " + c.key}, "Content-Type": {"application/json"}}
+	status, err := httpx.Do(ctx, c.http, httpx.Request{Method: method, URL: c.base + path, Header: h, Body: body, MaxBody: 4 << 20, ErrBody: 4 << 20, EmptyOK: true}, out)
+	var se *httpx.StatusError
+	switch {
+	case errors.As(err, &se):
+		msg := strings.TrimSpace(se.Body)
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return &Error{Status: resp.StatusCode, Body: string(msg)}
+		return &Error{Status: se.Status, Body: msg}
+	case err != nil && status == 0:
+		return fmt.Errorf("litellm: %w", err)
 	}
-	if out != nil && len(bytes.TrimSpace(raw)) > 0 {
-		return json.Unmarshal(raw, out)
-	}
-	return nil
+	return err
 }
 
 // UserInfo is the part of /user/info this service reads.

@@ -1,11 +1,7 @@
 package gpu
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 )
@@ -34,26 +30,7 @@ type nodeLister interface {
 
 // patchNodeLabels sets labels of a node; a nil value removes the label (JSON merge patch).
 func (k *kube) patchNodeLabels(ctx context.Context, node string, labels map[string]any) error {
-	body, err := json.Marshal(map[string]any{"metadata": map[string]any{"labels": labels}})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, k.base+"/api/v1/nodes/"+url.PathEscape(node), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+k.token)
-	req.Header.Set("Content-Type", "application/merge-patch+json")
-	resp, err := k.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("kubernetes PATCH node %s: %d %s", node, resp.StatusCode, msg)
-	}
-	return nil
+	return k.do(ctx, http.MethodPatch, "/api/v1/nodes/"+url.PathEscape(node), map[string]any{"metadata": map[string]any{"labels": labels}}, nil)
 }
 
 func (k *kube) listNodes(ctx context.Context, selector string) ([]nodeInfo, error) {
