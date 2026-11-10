@@ -195,8 +195,7 @@ func TestNewestBuilderSkipsVariants(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"tags":[{"name":"abc-arm64"}]},{"tags":null},{"tags":[{"name":"abc"}]},{"tags":[{"name":"old"}]}]`))
 	}))
 	defer srv.Close()
-	r := newRegistry(strings.TrimPrefix(srv.URL, "https://"))
-	r.http = srv.Client()
+	r := testRegistry(srv)
 	got, err := r.newestBuilder(context.Background())
 	if err != nil || got != r.host+"/platform/repo2docker-buildkit:abc" {
 		t.Fatalf("builder %q %v", got, err)

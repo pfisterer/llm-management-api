@@ -2,23 +2,20 @@ package gpu
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/httpx"
+	"github.com/pfisterer/llm-management-api/internal/oci"
 )
 
-// registry reads Harbor's API anonymously: the projects platform and envs are
-// public. Pushing is done by the build jobs with their own robot account.
+// registry reads Harbor's API anonymously (oci.Harbor): the projects platform and envs are public. Pushing is done by the build jobs with their own robot account.
 type registry struct {
-	host string
-	http *http.Client
+	host   string
+	harbor *oci.Harbor
 
 	mu          sync.Mutex
 	builder     string
@@ -26,32 +23,12 @@ type registry struct {
 }
 
 func newRegistry(host string) *registry {
-	return &registry{host: host, http: httpx.WithRetry(&http.Client{Timeout: 15 * time.Second})}
-}
-
-func (r *registry) artifactURL(project, repo, ref string) string {
-	return fmt.Sprintf("https://%s/api/v2.0/projects/%s/repositories/%s/artifacts/%s", r.host, project, url.PathEscape(url.PathEscape(repo)), url.PathEscape(ref))
+	return &registry{host: host, harbor: &oci.Harbor{Client: &oci.Client{HTTP: httpx.RetryingClient(15 * time.Second)}, Host: host}}
 }
 
 // exists reports whether project/repo:tag is in the registry.
 func (r *registry) exists(ctx context.Context, project, repo, tag string) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.artifactURL(project, repo, tag), nil)
-	if err != nil {
-		return false, err
-	}
-	resp, err := r.http.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("harbor: %w", err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return true, nil
-	case http.StatusNotFound:
-		return false, nil
-	default:
-		return false, fmt.Errorf("harbor: %s %d", r.artifactURL(project, repo, tag), resp.StatusCode)
-	}
+	return r.harbor.ArtifactExists(ctx, project, repo, tag)
 }
 
 // newestBuilder returns the builder at the most recently pushed tag of platform/repo2docker-buildkit (cached for a few minutes). A builder for several architectures (images.yaml platforms) has its variants as <tag>-<arch> beside the index <tag>: those are skipped, so every build job gets the index and its node pulls its own variant.
@@ -61,31 +38,9 @@ func (r *registry) newestBuilder(ctx context.Context) (string, error) {
 	if r.builder != "" && time.Since(r.builderTime) < 5*time.Minute {
 		return r.builder, nil
 	}
-	u := fmt.Sprintf("https://%s/api/v2.0/projects/platform/repositories/repo2docker-buildkit/artifacts?page_size=20&sort=-push_time&with_tag=true", r.host)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	tag, err := r.harbor.NewestTag(ctx, "platform", "repo2docker-buildkit", archTagged)
 	if err != nil {
 		return "", err
-	}
-	resp, err := r.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("harbor: %w", err)
-	}
-	defer resp.Body.Close()
-	var arts []struct {
-		Tags []struct {
-			Name string `json:"name"`
-		} `json:"tags"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&arts); err != nil {
-		return "", fmt.Errorf("harbor: %w", err)
-	}
-	tag := ""
-	for _, a := range arts {
-		for _, t := range a.Tags {
-			if tag == "" && !archTagged(t.Name) {
-				tag = t.Name
-			}
-		}
 	}
 	if tag == "" {
 		return "", errors.New("harbor: no builder image platform/repo2docker-buildkit")

@@ -2,9 +2,8 @@ package oci
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -92,36 +91,15 @@ func overviewOf(a harborArtifact) (harborOverview, bool) {
 	return harborOverview{}, false
 }
 
+// harborArtifact reads an artifact with its scan overview. Harbor answers 401 or 403 for an artifact of a private project the account may not read: that counts as not found.
 func (c *Client) harborArtifact(ctx context.Context, host, project, repo, ref string, auth *Auth) (harborArtifact, error) {
-	scheme := c.Scheme
-	if scheme == "" {
-		scheme = "https"
-	}
-	// Harbor wants a repository with slashes escaped twice in the path.
-	u := fmt.Sprintf("%s://%s/api/v2.0/projects/%s/repositories/%s/artifacts/%s?with_scan_overview=true", scheme, host, url.PathEscape(project), url.PathEscape(url.PathEscape(repo)), url.PathEscape(ref))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return harborArtifact{}, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Accept-Vulnerabilities", vulnReportTypes)
-	if auth != nil {
-		req.SetBasicAuth(auth.Username, auth.Password)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return harborArtifact{}, err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
-		return harborArtifact{}, ErrNotFound
-	default:
-		return harborArtifact{}, fmt.Errorf("harbor %s: artifact %d", host, resp.StatusCode)
-	}
+	h := &Harbor{Client: c, Host: host, Auth: auth}
 	var a harborArtifact
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&a); err != nil {
+	err := h.doHeader(ctx, http.MethodGet, h.repoPath(project, repo)+"/artifacts/"+url.PathEscape(ref)+"?with_scan_overview=true", http.Header{"X-Accept-Vulnerabilities": {vulnReportTypes}}, &a)
+	if he, ok := errors.AsType[*HarborError](err); ok && (he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden) {
+		return harborArtifact{}, ErrNotFound
+	}
+	if err != nil {
 		return harborArtifact{}, err
 	}
 	return a, nil

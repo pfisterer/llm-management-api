@@ -51,23 +51,69 @@ func (h *Harbor) repoPath(project, repo string) string {
 	return "/projects/" + url.PathEscape(project) + "/repositories/" + url.PathEscape(url.PathEscape(repo))
 }
 
+// HarborError is an answer of Harbor outside 2xx (but 404, which is ErrNotFound), named by the path without the query: no credentials in it, but nothing else to log either.
+type HarborError struct {
+	Host, Method, Path string
+	Status             int
+}
+
+func (e *HarborError) Error() string {
+	return fmt.Sprintf("harbor %s: %s %s: %d", e.Host, e.Method, e.Path, e.Status)
+}
+
 func (h *Harbor) do(ctx context.Context, method, path string, out any) error {
-	hdr := http.Header{"Accept": {"application/json"}}
-	if h.Auth != nil {
-		hdr.Set("Authorization", httpx.BasicAuth(h.Auth.Username, h.Auth.Password))
+	return h.doHeader(ctx, method, path, nil, out)
+}
+
+// doHeader calls Harbor's API with the account of h (anonymously without one) and the extra header hdr: 404 is ErrNotFound, another answer outside 2xx a *HarborError.
+func (h *Harbor) doHeader(ctx context.Context, method, path string, hdr http.Header, out any) error {
+	header := http.Header{"Accept": {"application/json"}}
+	for k, v := range hdr {
+		header[k] = v
 	}
-	status, err := httpx.Do(ctx, h.Client.HTTP, httpx.Request{Method: method, URL: h.api(path), Header: hdr, MaxBody: 16 << 20}, out)
+	if h.Auth != nil {
+		header.Set("Authorization", httpx.BasicAuth(h.Auth.Username, h.Auth.Password))
+	}
+	status, err := httpx.Do(ctx, h.Client.HTTP, httpx.Request{Method: method, URL: h.api(path), Header: header, MaxBody: 16 << 20}, out)
 	var se *httpx.StatusError
 	switch {
 	case errors.As(err, &se) && se.Status == http.StatusNotFound:
 		return ErrNotFound
 	case se != nil:
-		// The path only, without the query: no credentials in it, but nothing else to log either.
-		return fmt.Errorf("harbor %s: %s %s: %d", h.Host, method, strings.SplitN(path, "?", 2)[0], se.Status)
+		return &HarborError{Host: h.Host, Method: method, Path: strings.SplitN(path, "?", 2)[0], Status: se.Status}
 	case err != nil && status == 0:
 		return fmt.Errorf("harbor %s: %w", h.Host, err)
 	}
 	return err
+}
+
+// ArtifactExists tells whether project/repo has an artifact at ref (a tag or a digest).
+func (h *Harbor) ArtifactExists(ctx context.Context, project, repo, ref string) (bool, error) {
+	err := h.do(ctx, http.MethodGet, h.repoPath(project, repo)+"/artifacts/"+url.PathEscape(ref), nil)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// NewestTag is the first tag that skip does not leave out of the most recently pushed tagged artifacts of project/repo (the newest 20); "" when there is none.
+func (h *Harbor) NewestTag(ctx context.Context, project, repo string, skip func(tag string) bool) (string, error) {
+	var arts []struct {
+		Tags []struct {
+			Name string `json:"name"`
+		} `json:"tags"`
+	}
+	if err := h.do(ctx, http.MethodGet, h.repoPath(project, repo)+"/artifacts?page_size=20&sort=-push_time&with_tag=true", &arts); err != nil {
+		return "", err
+	}
+	for _, a := range arts {
+		for _, t := range a.Tags {
+			if skip == nil || !skip(t.Name) {
+				return t.Name, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // pages reads a listing page by page until a page is not full.
