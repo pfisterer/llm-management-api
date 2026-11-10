@@ -167,3 +167,37 @@ Der Dienst ist in sich konsistenter als viele KI-generierte Codebasen: Logging (
 7. `total` fehlt in `TreeBudget.Window` absichtlich: Der Budgetbaum vergibt nur Mengen je Zeitfenster. Das wird im Code als Kommentar festgehalten und geprüft.
 8. Doppelbuchung während eines Rollouts: geprüft am 10.11.2026. Sie tritt auf, pro Rollout höchstens etwa eine Minute je laufendem Workspace (der erste Takt des neuen Pods bucht eine volle Minute, während der alte noch zählt). Entschieden: kein Lease, nur dokumentiert (`internal/usage/collector.go`).
 9. Retry mit Backoff, Token-Prüfung und Zeitraum-Parsing kommen nach `cloud-self-service-golib` und werden von KI-Dienst und os-mgt gemeinsam genutzt.
+
+## Umsetzung (10.11.2026)
+
+Stand nach Commit `f79b8e4`. Jeder Schritt lief mit `go build ./... && go vet ./... && go test ./...` und gofmt grün; `internal/generated_docs` ist unverändert. Nach außen gleich geblieben sind API, Statuscodes, Metriknamen und -werte, gespeicherte Daten und abgeleitete Keys (Abweichungen unten unter „Wirkung nach außen“).
+
+| Maßnahme | Stand | Commits |
+|---|---|---|
+| 1. Postgres/OIDC beim Start abwarten, Startschritte nach einer Regel | erledigt (golib `retry`, Startserver mit 503, `background.Step`) | `c1d1f13`, `778286e` |
+| 2. Ein Muster für die Hintergrundschleifen | erledigt: `background.Every`/`Run` mit `Schedule{Interval, First, Nudge}`; Collector, GPUCollector, Recorder, BudgetSync und Image-Cleanup haben `Start` statt eigener Ticker, `Supervise` ist entfernt; die Lückenregel der Collectors steht einmal (`usage.elapsed`). Nicht umgesetzt: ein `Throttle`-Typ für die drei Stunden-/Tagesdrosseln (je zwei Zeilen, kein Gewinn) | `c1d1f13`, `f85acd8` |
+| 3. Wiederhol-Logik und HTTP-Transport | erledigt: `internal/httpx` (aus `gpu` heraus) wiederholt über golib `retry` mit denselben drei Versuchen, 1 s/2 s, GET/HEAD nur bei Verbindungsabbruch; `classify.probe` und das Warten auf den Files-Pod nutzen golib `retry`; classify, Ollama-Registry und `keys.ModelsOf` haben ein Timeout. Bewusst nicht: `filesDo` (ein sofortiger zweiter Versuch mit neuem Pod und Vorabprüfung beim Schreiben, kein Backoff) und der Files-Client (streamt Downloads bis 30 min; Grenzen über Dial- und Header-Timeout und `JobFileTimeout`) | `927ed0a` |
+| 4. Budget-Einheiten und Fenster als Datenstruktur | erledigt: Tabellen `units` und `windows` (Name, Betrag, Tage, Baum), eine Summierung `usedIn` für `BudgetStatus` und die Metriken, `Budget.coversClass`, ein `parsePeriod` für beide Berichte; Fensterregeln in `usage/window.go` | `fb14092`, `cb77154` |
+| 5. Ein JSON-Request-Helfer | erledigt: `httpx.Do` mit `StatusError` unter kube, hub, litellm, Harbor, `classify.ask`, `keys.ModelsOf`; `patchNodeLabels` geht über `kube.do`. Die geprüften Fehlertypen (`ErrNotFound`, `errAlreadyExists`, `HubError`, `litellm.Error`) bleiben | `97d26c8` |
+| 6. Ein Harbor-Client | erledigt: `oci.Harbor` mit `ArtifactExists`, `NewestTag`, Scan-Übersicht über `doHeader`; `gpu.registry` hält nur den Builder-Cache; neue Tests für `gpu.registry` | `c76c799` |
+| 7. Manager-Prüfung einmal | erledigt: `workspace.Service.MayManage`, genutzt von `Server.manager` und `mayManage` der Jobs (Antworten wie vorher) | `fb14092`, `79c012c` |
+| 8. Generischer TTL-Cache | erledigt: `internal/ttlcache` (`Map`, `Value`) für alle sieben Caches; Chat prüft weiter je Nutzer-ID mit E-Mail-Vergleich, der Hub-Token-Cache weiter mit SHA-256 als Schlüssel und höchstens 10 000 Einträgen; abgelaufene Einträge werden weggeräumt (außer der Projektzuordnung, die bei Fehlern den alten Wert braucht) | `6922258` |
+| 9. Abgeleitete Keys über eine Funktion | erledigt: Golden-Test zuerst, dann `derivedKey`, `keepDerivedKey`, `createDerivedKey`; Golden-Test unverändert grün | `9d4057e`, `ea66828` |
+| 10. Defaults und Magic Strings | erledigt: `gpu.Default*` für LoadConfig und `newService`, ein `workspaceNamespace()`, `workspace.KernelProfile`/`IsServerProfile`, `gpu.HomeDir`, Arbeitsverzeichnis der Kernel über `homeRel`. Das Helm-Chart nennt die Defaults weiter selbst (Deployment-Konfiguration, nicht angefasst) | `2ca2835` |
+
+Weitere Funde:
+
+- A (Token-Prüfung in golib): nicht hier; gehört nach `cloud-self-service-golib` (Entscheidung 9), dort ist nichts geändert.
+- B: per Entscheidung 5 erledigt (`fb14092`).
+- C, D: nicht geändert; Fehlercodes und Health-Pfade sind Vertrag mit UI, Skripten, Probes und Ingress.
+- E: erledigt, die Abbildungen zwischen `gpu`, `workspace` und `usage` stehen in `internal/adapters.go` (`f79b8e4`).
+- F, G, J, K: nicht umgesetzt (nur bei Last lohnend, Aufwand M, vorher fachlich zu prüfen bzw. nur zusammen mit einem Umbau der Jobs).
+- H: erledigt, `fitsNode`, `jobFilesMax`, `fleet.Service.WireGuard` und eine ungenutzte Zuweisung entfernt (`f79b8e4`).
+- I: `SetModelSize` und `SetBudgetCheck` stehen in `export_test.go`; `gpu.NewForTest` und `promtext.CounterVec.Value` bleiben im Produktionscode, weil Tests anderer Pakete sie brauchen.
+- L: `staticcheck.conf` schaltet ST1005 mit Begründung ab (`f79b8e4`).
+- M: nicht umgesetzt; geringer Nutzen, und `access.NormalizeEmail` würde Abhängigkeiten von `keys`, `fleet` und `roleprovider` auf `access` schaffen.
+- N, P: kein Handlungsbedarf; O: entschieden und dokumentiert (`ad849ce`).
+
+Wirkung nach außen (klein, bewusst): Erstens nennt der Fehlertext bei zwei ungültigen Datumsangaben im GPU-Stundenbericht jetzt immer `from` zuerst statt zufällig einen der beiden. Zweitens ist ein ungültiges Arbeitsverzeichnis eines Kernels mit Leerzeichen am Ende jetzt bereinigt statt übernommen. Drittens sendet der Hub-Client bei Requests mit Body `Content-Type: application/json`. Viertens läuft der Image-Cleanup nach dem ersten Durchgang über einen Ticker statt eines nach jedem Lauf neu gestellten Timers; seine Abstände verschieben sich nicht mehr um die Laufzeit eines Durchgangs (erster Lauf weiter nach 5 min, Intervall unverändert). Interne Fehlertexte in Logs (Harbor, Kubernetes-PATCH eines Knotens) sind teils anders formuliert.
+
+Für `cloud-self-service-golib` vorgemerkt (dort nicht geändert): `httpx` (Retry-Transport, `Do`), `ttlcache`, die geteilte Token-Prüfung (A), `parsePeriod` und die Fensterregeln aus `usage/window.go`, damit os-mgt sie mitnutzt. golib `retry` kennt keine Höchstzahl von Versuchen; `httpx` und `classify` zählen sie selbst und geben mit `retry.Permanent` auf. Eine Option `Attempts` in golib würde das vereinfachen.
