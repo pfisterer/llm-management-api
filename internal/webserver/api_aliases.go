@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/litellm"
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 	"go.uber.org/zap"
 )
 
@@ -50,15 +50,15 @@ type AliasSource interface {
 type ModelAliases struct {
 	src     AliasSource
 	aliases []string
-	ttl     time.Duration
-	now     func() time.Time
 	log     *zap.SugaredLogger
+	view    *ttlcache.Value[aliasView]
+}
 
-	mu          sync.Mutex
-	cached      map[string]AliasModels // every model name of the model list
+// aliasView is what one reading of LiteLLM gives, cached for a minute.
+type aliasView struct {
+	models      map[string]AliasModels // every model name of the model list
 	healthKnown bool
 	limits      map[string]ModelLimit // every model name of the model list, not only the aliases
-	until       time.Time
 }
 
 // allProxyModels is the group that opens every model under its own name; it is no model name and has no view.
@@ -66,14 +66,14 @@ const allProxyModels = "all-proxy-models"
 
 // NewModelAliases shows the given aliases (LLM_BASE_MODELS), in this order.
 func NewModelAliases(src AliasSource, aliases []string, log *zap.SugaredLogger) *ModelAliases {
-	return &ModelAliases{src: src, aliases: slices.Clone(aliases), ttl: time.Minute, now: time.Now, log: log}
+	return &ModelAliases{src: src, aliases: slices.Clone(aliases), log: log, view: &ttlcache.Value[aliasView]{TTL: time.Minute, StaleOnError: true,
+		OnStale: func(err error) { log.Warnw("model aliases: serving the previous view", "error", err) }}}
 }
 
 // Get returns the view of the base aliases and the given granted ones, from the cache when it is fresh. When LiteLLM fails and an older view exists, that one is served for another minute instead of an error.
 func (m *ModelAliases) Get(ctx context.Context, granted []string) (ModelAliasesResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := m.refresh(ctx); err != nil {
+	view, err := m.view.Get(ctx, m.load)
+	if err != nil {
 		return ModelAliasesResponse{}, err
 	}
 	names := slices.Clone(m.aliases)
@@ -82,9 +82,9 @@ func (m *ModelAliases) Get(ctx context.Context, granted []string) (ModelAliasesR
 			names = append(names, g)
 		}
 	}
-	out := ModelAliasesResponse{Aliases: make([]AliasModels, 0, len(names)), HealthKnown: m.healthKnown}
+	out := ModelAliasesResponse{Aliases: make([]AliasModels, 0, len(names)), HealthKnown: view.healthKnown}
 	for _, a := range names {
-		v, ok := m.cached[a]
+		v, ok := view.models[a]
 		if !ok {
 			// An alias nothing serves right now (its replica gave way to a job): listed without models, as LiteLLM knows it not.
 			v = AliasModels{Alias: a, Models: []AliasModel{}}
@@ -96,30 +96,11 @@ func (m *ModelAliases) Get(ctx context.Context, granted []string) (ModelAliasesR
 
 // Limits returns the limits of every model name in the model list (aliases and models under their own name), from the same cache as Get. A name without a declared limit is missing.
 func (m *ModelAliases) Limits(ctx context.Context) (map[string]ModelLimit, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := m.refresh(ctx); err != nil {
+	view, err := m.view.Get(ctx, m.load)
+	if err != nil {
 		return nil, err
 	}
-	return m.limits, nil
-}
-
-// refresh rebuilds the cache when it is stale; m.mu is held.
-func (m *ModelAliases) refresh(ctx context.Context) error {
-	if m.cached != nil && m.now().Before(m.until) {
-		return nil
-	}
-	v, healthKnown, limits, err := m.build(ctx)
-	if err != nil {
-		if m.cached == nil {
-			return err
-		}
-		m.log.Warnw("model aliases: serving the previous view", "error", err)
-		m.until = m.now().Add(m.ttl)
-		return nil
-	}
-	m.cached, m.healthKnown, m.limits, m.until = v, healthKnown, limits, m.now().Add(m.ttl)
-	return nil
+	return view.limits, nil
 }
 
 // smallestLimits is per model name the smallest limits its deployments declare (each field on its own; a deployment without one does not count).
@@ -141,6 +122,12 @@ func smallestLimits(deps []litellm.Deployment) map[string]ModelLimit {
 		out[d.ModelName] = l
 	}
 	return out
+}
+
+// load is one reading of LiteLLM for the cache.
+func (m *ModelAliases) load(ctx context.Context) (aliasView, error) {
+	models, healthKnown, limits, err := m.build(ctx)
+	return aliasView{models: models, healthKnown: healthKnown, limits: limits}, err
 }
 
 // build reads per model name of the model list the models behind it, whether health was readable, and the limits.

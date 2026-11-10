@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 )
 
 // Role is what a person may do. Ordered: a higher role includes the lower ones.
@@ -118,18 +119,12 @@ type Service struct {
 	roles    Roles
 
 	cacheTTL time.Duration
-	mu       sync.Mutex
-	cache    map[string]cachedTokens
-}
-
-type cachedTokens struct {
-	tokens  []string
-	expires time.Time
+	cache    *ttlcache.Map[string, []string] // e-mail -> tokens
 }
 
 // NewService resolves tokens through resolver and reuses them for cacheTTL (short: a membership change should take effect within a minute, not at the next restart; 0 = no cache).
 func NewService(resolver TokenResolver, roles Roles, cacheTTL time.Duration) *Service {
-	return &Service{resolver: resolver, roles: roles, cacheTTL: cacheTTL, cache: map[string]cachedTokens{}}
+	return &Service{resolver: resolver, roles: roles, cacheTTL: cacheTTL, cache: ttlcache.NewMap[string, []string](ttlcache.Options{TTL: cacheTTL})}
 }
 
 // Who resolves the person's tokens and their role.
@@ -143,19 +138,12 @@ func (s *Service) tokens(ctx context.Context, email string) []string {
 	if email == "" {
 		return nil
 	}
-	now := time.Now()
-	s.mu.Lock()
-	if c, ok := s.cache[email]; ok && now.Before(c.expires) {
-		s.mu.Unlock()
-		return c.tokens
+	if tokens, ok := s.cache.Get(email); ok {
+		return tokens
 	}
-	s.mu.Unlock()
-
 	tokens := s.resolver.UserTokens(ctx, email)
 	if s.cacheTTL > 0 {
-		s.mu.Lock()
-		s.cache[email] = cachedTokens{tokens: tokens, expires: now.Add(s.cacheTTL)}
-		s.mu.Unlock()
+		s.cache.Set(email, tokens)
 	}
 	return tokens
 }

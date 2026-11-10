@@ -68,7 +68,7 @@ func TestKernelCaller(t *testing.T) {
 		t.Errorf("unknown token: %v", err)
 	}
 	s.whoami = func(context.Context, string) (string, error) { return "b@dhbw.de", nil }
-	s.tokens.hits = nil
+	s.tokens.Clear()
 	if _, err := s.KernelCaller(ctx, "10.42.1.5", "t-a"); !errors.Is(err, ErrNoKernelOwner) {
 		t.Errorf("token of another person: %v", err)
 	}

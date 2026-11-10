@@ -12,12 +12,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/keys"
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
@@ -54,7 +54,7 @@ func ChatRouter(o ChatOptions) http.Handler {
 	if err != nil || target.Host == "" {
 		panic("chat exchange: invalid gateway URL " + o.Gateway)
 	}
-	ex := &chatExchange{o: o, ok: map[string]chatChecked{}}
+	ex := &chatExchange{o: o, ok: ttlcache.NewMap[string, string](ttlcache.Options{TTL: chatKeyTTL})}
 	ex.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
@@ -90,26 +90,18 @@ func ChatRouter(o ChatOptions) http.Handler {
 
 type chatUIDKey struct{}
 
-// chatChecked is a person whose access and key were checked, with the e-mail that came with the sub: another e-mail is checked anew.
-type chatChecked struct {
-	until time.Time
-	email string
-}
-
 type chatExchange struct {
 	o     ChatOptions
 	proxy *httputil.ReverseProxy
-	mu    sync.Mutex
-	ok    map[string]chatChecked // user id -> checked until, for which e-mail
+	// ok is per user id the e-mail that came with the sub when access and key were checked (for chatKeyTTL): another e-mail is checked anew.
+	ok *ttlcache.Map[string, string]
 	// Two requests of one person at once: only one creates the key, or the
 	// second fails on the key the first has just taken.
 	group singleflight.Group
 }
 
 func (ex *chatExchange) forget(uid string) {
-	ex.mu.Lock()
-	delete(ex.ok, uid)
-	ex.mu.Unlock()
+	ex.ok.Delete(uid)
 }
 
 func (ex *chatExchange) serve(w http.ResponseWriter, r *http.Request) {
@@ -166,10 +158,7 @@ func (ex *chatExchange) serve(w http.ResponseWriter, r *http.Request) {
 // key returns the person's chat key, or a status and message for the chat.
 func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, string) {
 	uid := p.UserID()
-	ex.mu.Lock()
-	seen := ex.ok[uid]
-	ex.mu.Unlock()
-	if seen.email == p.Email && time.Now().Before(seen.until) {
+	if email, ok := ex.ok.Get(uid); ok && email == p.Email {
 		return keys.ChatKey(ex.o.MasterKey, uid), 0, ""
 	}
 
@@ -199,9 +188,7 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 			ex.o.Log.Errorw("chat: key not available", "user", uid, "error", err)
 			return answer{status: http.StatusBadGateway, msg: "Key konnte nicht angelegt werden"}, nil
 		}
-		ex.mu.Lock()
-		ex.ok[uid] = chatChecked{until: time.Now().Add(chatKeyTTL), email: p.Email}
-		ex.mu.Unlock()
+		ex.ok.Set(uid, p.Email)
 		return answer{key: key}, nil
 	})
 	a := v.(answer)

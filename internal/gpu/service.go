@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/research"
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
 
 	"go.uber.org/zap"
@@ -74,7 +75,7 @@ type Service struct {
 	jobLocks sync.Map
 	// whoami is the hub user of a token (kernels.go: the server's own token); cached in tokens.
 	whoami func(ctx context.Context, token string) (string, error)
-	tokens tokenCache
+	tokens *ttlcache.Map[string, string] // hub token hash -> person (newTokenCache)
 	// fleet: pools, GPU classes and node assignments (fleet.go); nil = the GPU administration is off.
 	fleet    FleetStore
 	fleetCfg FleetConfig
@@ -134,7 +135,7 @@ func newService(cfg Config, store Store, b builds, i images, s servers, r refRes
 	if len(cfg.GitHosts) == 0 {
 		cfg.GitHosts = []string{"github.com", "gitlab.com"}
 	}
-	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log,
+	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log, tokens: newTokenCache(),
 		files: filesPods{addr: defaultFilesAddr, http: &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second}}}}
 }
 

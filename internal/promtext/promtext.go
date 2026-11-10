@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 )
 
 // Writer collects one page.
@@ -178,30 +180,16 @@ func pairs(names, values []string) []string {
 
 // Cache keeps a part computed from the database or the cluster for a while, so a scrape (or several at once) does not read them every time. An error is not kept: the next scrape tries again.
 type Cache struct {
-	ttl    time.Duration
 	render func(ctx context.Context) ([]byte, error)
-	now    func() time.Time
-	mu     sync.Mutex
-	at     time.Time
-	body   []byte
+	page   ttlcache.Value[[]byte]
 }
 
 // NewCache wraps render with a cache of ttl.
 func NewCache(ttl time.Duration, render func(ctx context.Context) ([]byte, error)) *Cache {
-	return &Cache{ttl: ttl, render: render, now: time.Now}
+	return &Cache{render: render, page: ttlcache.Value[[]byte]{TTL: ttl}}
 }
 
 // Get is the cached page, rendered again once it is older than the ttl. Concurrent scrapes wait for one rendering.
 func (c *Cache) Get(ctx context.Context) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.body != nil && c.now().Sub(c.at) < c.ttl {
-		return c.body, nil
-	}
-	body, err := c.render(ctx)
-	if err != nil {
-		return nil, err
-	}
-	c.body, c.at = body, c.now()
-	return body, nil
+	return c.page.Get(ctx, c.render)
 }

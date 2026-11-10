@@ -36,7 +36,7 @@ func TestServerCaller(t *testing.T) {
 	}
 	// The token of somebody else at this server's address.
 	cpu.whoami = func(context.Context, string) (string, error) { return "b@dhbw.de", nil }
-	cpu.tokens.hits = nil
+	cpu.tokens.Clear()
 	if _, err := cpu.ServerCaller(ctx, "10.42.1.5", "t-x"); !errors.Is(err, ErrNoKernelOwner) {
 		t.Errorf("token of another person: %v", err)
 	}

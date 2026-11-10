@@ -16,8 +16,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 )
 
 // GPU kernels in their own pods (docs/bauplan.md 6.2): the notebook server of "CPU + GPU-Kernel" asks here for a kernel pod instead of creating it itself, so it needs no rights in Kubernetes. Who asks is the server pod with the request's source address (checked against the person's hub token by the caller); the pod is built from that server pod — its image, its home and shared folder as it mounts them, its person and project —, the request only adds the kernel's connection parameters.
@@ -160,15 +161,9 @@ func (s *Service) kernelNamespace() string {
 	return "jupyterhub"
 }
 
-// tokenCache remembers for a few minutes whose a hub token is, so that the provisioner's polling does not ask the hub every second.
-type tokenCache struct {
-	mu   sync.Mutex
-	hits map[string]tokenHit
-}
-
-type tokenHit struct {
-	user  string
-	until time.Time
+// newTokenCache remembers for a few minutes whose a hub token is (keyed by the token's SHA-256, never the token), so that the provisioner's polling does not ask the hub every second; at most 10000 tokens.
+func newTokenCache() *ttlcache.Map[string, string] {
+	return ttlcache.NewMap[string, string](ttlcache.Options{TTL: 5 * time.Minute, MaxLen: 10000})
 }
 
 // KernelCaller is the server asking for a GPU kernel: ServerCaller, and the server is one of "CPU + GPU-Kernel".
@@ -190,30 +185,23 @@ func (s *Service) ServerCaller(ctx context.Context, ip, token string) (*KernelOw
 	}
 	sum := sha256.Sum256([]byte(token))
 	key := hex.EncodeToString(sum[:])
-	s.tokens.mu.Lock()
-	hit, ok := s.tokens.hits[key]
-	s.tokens.mu.Unlock()
-	if !ok || time.Now().After(hit.until) {
-		user, err := s.whoami(ctx, token)
+	user, ok := s.tokens.Get(key)
+	if !ok {
+		var err error
+		user, err = s.whoami(ctx, token)
 		if errors.Is(err, ErrNotFound) {
 			return nil, ErrNoKernelOwner
 		}
 		if err != nil {
 			return nil, err
 		}
-		hit = tokenHit{user: user, until: time.Now().Add(5 * time.Minute)}
-		s.tokens.mu.Lock()
-		if s.tokens.hits == nil || len(s.tokens.hits) > 10000 {
-			s.tokens.hits = map[string]tokenHit{}
-		}
-		s.tokens.hits[key] = hit
-		s.tokens.mu.Unlock()
+		s.tokens.Set(key, user)
 	}
 	o, err := s.serverAt(ctx, ip)
 	if err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(o.Person, hit.user) {
+	if !strings.EqualFold(o.Person, user) {
 		return nil, ErrNoKernelOwner
 	}
 	return o, nil

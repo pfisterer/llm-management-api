@@ -92,7 +92,7 @@ func TestModelAliases(t *testing.T) {
 	var healthDown atomic.Bool
 	ma, h := aliasesServer(t, litellm.New(fakeModelList(t, &calls, &healthDown), "master", 5*time.Second))
 	clock := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
-	ma.now = func() time.Time { return clock }
+	ma.view.Now = func() time.Time { return clock }
 
 	// Somebody with LLM tokens and an admin may read it, somebody without tokens may not.
 	if code, body := do(t, h, "GET", "/v1/models/aliases", "nobody@dhbw.de", nil); code != http.StatusForbidden || !strings.Contains(string(body), "no_quota") {
@@ -177,7 +177,7 @@ func TestModelAliasesUpstreamDown(t *testing.T) {
 	src := &flakySource{}
 	ma, h := aliasesServer(t, src)
 	clock := time.Now()
-	ma.now = func() time.Time { return clock }
+	ma.view.Now = func() time.Time { return clock }
 	src.fail = true
 	if code, _ := do(t, h, "GET", "/v1/models/aliases", "member@dhbw.de", nil); code != http.StatusBadGateway {
 		t.Fatalf("no view yet: %d", code)

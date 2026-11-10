@@ -56,7 +56,7 @@ func TestCache(t *testing.T) {
 		}
 		return []byte("v"), nil
 	})
-	c.now = func() time.Time { return now }
+	c.page.Now = func() time.Time { return now }
 	ctx := context.Background()
 	_, _ = c.Get(ctx)
 	_, _ = c.Get(ctx)

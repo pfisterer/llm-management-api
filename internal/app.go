@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -32,6 +31,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/oci"
 	"github.com/pfisterer/llm-management-api/internal/research"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
+	"github.com/pfisterer/llm-management-api/internal/ttlcache"
 	"github.com/pfisterer/llm-management-api/internal/usage"
 	"github.com/pfisterer/llm-management-api/internal/webserver"
 	"github.com/pfisterer/llm-management-api/internal/workspace"
@@ -721,18 +721,10 @@ func purgeStorage(ctx context.Context, gpuSvc *gpu.Service, wsSvc *workspace.Ser
 
 // projectOf books usage that carries no project of its own (home directories, pods from before projects) to the person's first active project by slug, else to "ohne Projekt". Cached for ten minutes: the collector asks every minute and the answer needs the role-provider.
 func projectOf(acc *access.Service, ws *workspace.Service, log *zap.SugaredLogger) usage.ProjectOf {
-	type entry struct {
-		project string
-		until   time.Time
-	}
-	var mu sync.Mutex
-	cache := map[string]entry{}
+	cache := ttlcache.NewMap[string, string](ttlcache.Options{TTL: 10 * time.Minute, KeepStale: -1})
 	return func(ctx context.Context, person string) string {
-		mu.Lock()
-		e, ok := cache[person]
-		mu.Unlock()
-		if ok && time.Now().Before(e.until) {
-			return e.project
+		if project, ok := cache.Get(person); ok {
+			return project
 		}
 		project := "ohne Projekt"
 		var mine []workspace.Mine
@@ -742,15 +734,13 @@ func projectOf(acc *access.Service, ws *workspace.Service, log *zap.SugaredLogge
 		}
 		if err != nil {
 			log.Warnw("usage: projects of the person not known", "person", person, "error", err)
-			if ok {
-				return e.project
+			if old, ok := cache.Stale(person); ok {
+				return old
 			}
 		} else if len(mine) > 0 {
 			project = mine[0].Slug
 		}
-		mu.Lock()
-		cache[person] = entry{project, time.Now().Add(10 * time.Minute)}
-		mu.Unlock()
+		cache.Set(person, project)
 		return project
 	}
 }
