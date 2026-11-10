@@ -2,9 +2,6 @@ package keys
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 )
 
@@ -14,9 +11,7 @@ import (
 // former Node broker, so chat keys created there remain valid. A new master key
 // yields new chat keys; the stale ones are removed on the next creation.
 func ChatKey(masterKey, userID string) string {
-	mac := hmac.New(sha256.New, []byte(masterKey))
-	mac.Write([]byte("librechat:" + userID))
-	return "sk-lc-" + hex.EncodeToString(mac.Sum(nil))[:48]
+	return derivedKey(masterKey, "sk-lc-", "librechat:"+userID)
 }
 
 // EnsureChatKey makes sure the person exists in LiteLLM with their quota (see userQuota) and has their chat key in the pool of their default project, with that project's key budget, and returns it. Quotas are written only when they differ. A chat key in another pool (the default changed, or the project ended) is moved, not made anew.
@@ -31,20 +26,9 @@ func (s *Service) EnsureChatKey(ctx context.Context, p Person, g Grant, masterKe
 	if !ok {
 		return "", ErrNotEligible
 	}
-	cur, found, err := s.lite.KeyInfo(ctx, key)
-	if err != nil {
+	if found, err := s.keepDerivedKey(ctx, uid, key, pool, "chat"); err != nil {
 		return "", err
-	}
-	if found {
-		if cur.Team() != pool.Slug {
-			if err := s.moveKey(ctx, uid, key, pool); err != nil {
-				return "", fmt.Errorf("move chat key: %w", err)
-			}
-		}
-		cur.Token = key // /key/info may answer with the hashed token
-		if _, err := s.applyKeyBudget(ctx, cur, pool); err != nil {
-			return "", fmt.Errorf("chat key budget: %w", err)
-		}
+	} else if found {
 		return key, nil
 	}
 	// Orphaned chat keys (from an earlier master key) would otherwise show up
@@ -60,11 +44,8 @@ func (s *Service) EnsureChatKey(ctx context.Context, p Person, g Grant, masterKe
 			return "", fmt.Errorf("remove stale chat keys: %w", err)
 		}
 	}
-	if _, err := s.ensureTeam(ctx, pool); err != nil {
-		return "", err
-	}
 	meta := map[string]any{"created_by": "llm-management-api", "purpose": "chat"}
-	if err := s.lite.GenerateKeyWithValue(ctx, uid, pool.Slug, ownAlias(uid, chatAlias), key, s.keyBudget(pool), meta); err != nil {
+	if err := s.createDerivedKey(ctx, uid, key, pool, chatAlias, meta); err != nil {
 		return "", err
 	}
 	return key, nil

@@ -2,9 +2,6 @@ package keys
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,9 +14,7 @@ import (
 
 // WorkspaceKey is the LiteLLM key a person's workspace servers in one project use (VS Code's chat, OPENAI_API_KEY in notebooks). Derived like the chat key (HMAC of user id and project under the master key), so the hub gets the same key on every start and nothing is stored; a key deleted in the key list comes back on the next start.
 func WorkspaceKey(masterKey, userID, project string) string {
-	mac := hmac.New(sha256.New, []byte(masterKey))
-	mac.Write([]byte("workspace:" + userID + ":" + project))
-	return "sk-ws-" + hex.EncodeToString(mac.Sum(nil))[:48]
+	return derivedKey(masterKey, "sk-ws-", "workspace:"+userID+":"+project)
 }
 
 // workspaceAlias is the name the workspace key of a project has in the person's key list.
@@ -43,27 +38,13 @@ func (s *Service) EnsureWorkspaceKey(ctx context.Context, p Person, g Grant, mas
 	if _, _, err := s.reconcile(ctx, p, g); err != nil {
 		return "", err
 	}
-	cur, found, err := s.lite.KeyInfo(ctx, key)
-	if err != nil {
+	if found, err := s.keepDerivedKey(ctx, uid, key, pool, "workspace"); err != nil {
 		return "", err
-	}
-	if found {
-		if cur.Team() != pool.Slug {
-			if err := s.moveKey(ctx, uid, key, pool); err != nil {
-				return "", fmt.Errorf("move workspace key: %w", err)
-			}
-		}
-		cur.Token = key
-		if _, err := s.applyKeyBudget(ctx, cur, pool); err != nil {
-			return "", fmt.Errorf("workspace key budget: %w", err)
-		}
+	} else if found {
 		return key, nil
 	}
-	if _, err := s.ensureTeam(ctx, pool); err != nil {
-		return "", err
-	}
 	meta := map[string]any{"created_by": "llm-management-api", "purpose": "workspace", "project": project}
-	if err := s.lite.GenerateKeyWithValue(ctx, uid, pool.Slug, ownAlias(uid, workspaceAlias(project)), key, s.keyBudget(pool), meta); err != nil {
+	if err := s.createDerivedKey(ctx, uid, key, pool, workspaceAlias(project), meta); err != nil {
 		return "", err
 	}
 	return key, nil
