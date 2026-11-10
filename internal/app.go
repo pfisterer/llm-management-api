@@ -705,7 +705,7 @@ func purgeStorage(ctx context.Context, gpuSvc *gpu.Service, wsSvc *workspace.Ser
 	for _, v := range orphans {
 		for _, p := range pods {
 			// Kernels end with their server; a batch job keeps the volume (in use) until it ends, at the latest after its maximum.
-			if p.Project == v.Project && p.Profile != "gpu-kernel" && p.Profile != workspace.JobProfile {
+			if p.Project == v.Project && workspace.IsServerProfile(p.Profile) {
 				if err := gpuSvc.EndServer(ctx, p.Person, p.Server, research.EndProjectDeleted); err != nil {
 					log.Warnw("storage: ending a server of a deleted project failed", "project", v.Project, "person", p.Person, "server", p.Server, "error", err)
 				}

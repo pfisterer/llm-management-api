@@ -21,7 +21,7 @@ func (s *Service) EnsureCredentialSecrets(ctx context.Context, want map[string]w
 	if s.k8s == nil {
 		return nil
 	}
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	base := "/api/v1/namespaces/" + ns + "/secrets"
 	var have struct {
 		Items []struct {

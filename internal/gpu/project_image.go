@@ -391,10 +391,7 @@ func (s *Service) EnsurePrepull(ctx context.Context, images []workspace.ArchImag
 	if !ok {
 		return nil
 	}
-	ns := s.cfg.WorkspaceNamespace
-	if ns == "" {
-		ns = "jupyterhub"
-	}
+	ns := s.workspaceNamespace()
 	var errs []error
 	for _, arch := range prepullArchs {
 		hold := ""

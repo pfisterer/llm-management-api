@@ -128,7 +128,7 @@ func (w jobWorkload) admittedAt() *time.Time {
 
 // liveJobs are the cluster's batch jobs and their Workloads, by job id.
 func (s *Service) liveJobs(ctx context.Context) (map[string]k8sJob, map[string]jobWorkload, error) {
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	var jobs struct {
 		Items []k8sJob `json:"items"`
 	}
@@ -157,7 +157,7 @@ func (s *Service) liveJobs(ctx context.Context) (map[string]k8sJob, map[string]j
 
 // liveJob is one job's Job and Workload, read live: found false when the Job is gone. Without a Workload (not made yet, or the read failed) w is empty, as in liveJobs.
 func (s *Service) liveJob(ctx context.Context, id string) (j k8sJob, w jobWorkload, found bool, err error) {
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	if err := s.k8s.do(ctx, http.MethodGet, "/apis/batch/v1/namespaces/"+ns+"/jobs/"+id, nil, &j); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return j, w, false, nil
@@ -340,7 +340,7 @@ func (s *Service) limitJobHours(ctx context.Context, r *JobRecord, j k8sJob, now
 			return nil
 		}
 		// Best effort: should it fail, the job is ended once it runs past its MaxHours.
-		if err := s.k8s.do(ctx, http.MethodPatch, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+r.ID, map[string]any{"spec": map[string]any{"activeDeadlineSeconds": secs}}, nil); err != nil {
+		if err := s.k8s.do(ctx, http.MethodPatch, "/apis/batch/v1/namespaces/"+s.workspaceNamespace()+"/jobs/"+r.ID, map[string]any{"spec": map[string]any{"activeDeadlineSeconds": secs}}, nil); err != nil {
 			s.log.Warnw("batch job: deadline for the rest of its hours", "job", r.ID, "seconds", secs, "error", err)
 		}
 		return nil
@@ -366,7 +366,7 @@ func (s *Service) stopJob(ctx context.Context, r *JobRecord, state, reason strin
 	if code, tail := s.jobOutcome(ctx, r.ID); tail != "" {
 		r.ExitCode, r.LogTail = code, tail
 	}
-	err := s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil)
+	err := s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.workspaceNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
@@ -425,7 +425,7 @@ func (s *Service) jobPods(ctx context.Context, id string) ([]jobPodInfo, error) 
 	var pods struct {
 		Items []jobPodInfo `json:"items"`
 	}
-	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods?labelSelector="+url.QueryEscape("job-name="+id), nil, &pods); err != nil {
+	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods?labelSelector="+url.QueryEscape("job-name="+id), nil, &pods); err != nil {
 		return nil, err
 	}
 	return pods.Items, nil
@@ -464,7 +464,7 @@ func (s *Service) lastRunTail(ctx context.Context, id string) string {
 func (s *Service) podLogTail(ctx context.Context, pod string, lines int) string {
 	var log string
 	q := url.Values{"container": {"job"}, "tailLines": {strconv.Itoa(lines)}, "limitBytes": {strconv.Itoa(4 * JobLogTail)}}
-	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods/"+pod+"/log?"+q.Encode(), nil, &log); err != nil {
+	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods/"+pod+"/log?"+q.Encode(), nil, &log); err != nil {
 		return ""
 	}
 	if len(log) > JobLogTail {
@@ -533,7 +533,7 @@ func (s *Service) queuePositions(ctx context.Context, queue string) map[string]i
 		} `json:"items"`
 	}
 	out := map[string]int{}
-	if err := s.k8s.do(ctx, http.MethodGet, "/apis/visibility.kueue.x-k8s.io/v1beta2/namespaces/"+s.kernelNamespace()+"/localqueues/"+queue+"/pendingworkloads", nil, &pending); err != nil {
+	if err := s.k8s.do(ctx, http.MethodGet, "/apis/visibility.kueue.x-k8s.io/v1beta2/namespaces/"+s.workspaceNamespace()+"/localqueues/"+queue+"/pendingworkloads", nil, &pending); err != nil {
 		return out
 	}
 	// The visibility API names the Workload only, not its Job: a Job's Workload is "job-<job name>-<hash>" (Kueue's naming), and job ids contain no "-" after their prefix "j-".

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/research"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
 // SetResearch sets the research log (internal/research): it is told why the service itself ends a workspace pod and what JupyterLab shows a waiting GPU kernel. nil = none.
@@ -68,7 +69,7 @@ func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, erro
 		ns, selector string
 		kueue        bool
 	}
-	sources := []source{{s.kernelNamespace(), "component in (singleuser-server,kernel,job)", true}}
+	sources := []source{{s.workspaceNamespace(), "component in (singleuser-server,kernel,job)", true}}
 	if s.InferenceEnabled() {
 		ns := s.cfg.InferenceNamespace
 		if ns == "" {
@@ -170,7 +171,7 @@ func researchPod(p podInfo, w *kueueWorkload, personOf, productOf map[string]str
 	}
 	switch {
 	case labels["component"] == "kernel":
-		out.Kind, out.Profile = research.KindGPUKernel, "gpu-kernel"
+		out.Kind, out.Profile = research.KindGPUKernel, workspace.KernelProfile
 		for _, o := range p.Metadata.OwnerReferences {
 			if o.Kind == "Pod" {
 				out.OwnerUID, out.Person = o.UID, personOf[o.UID]

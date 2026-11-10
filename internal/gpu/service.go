@@ -123,18 +123,7 @@ func New(cfg Config, store Store, log *zap.SugaredLogger) (*Service, error) {
 }
 
 func newService(cfg Config, store Store, b builds, i images, s servers, r refResolver, log *zap.SugaredLogger) *Service {
-	if cfg.BuildNamespace == "" {
-		cfg.BuildNamespace = "env-build"
-	}
-	if cfg.EnvsProject == "" {
-		cfg.EnvsProject = "envs"
-	}
-	if cfg.BuilderSecret == "" {
-		cfg.BuilderSecret = "harbor-envs-builder"
-	}
-	if len(cfg.GitHosts) == 0 {
-		cfg.GitHosts = []string{"github.com", "gitlab.com"}
-	}
+	cfg.withDefaults()
 	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log, tokens: newTokenCache(),
 		files: filesPods{addr: defaultFilesAddr, http: &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second}}}}
 }
@@ -467,7 +456,7 @@ func (s *Service) ServerProgress(ctx context.Context, user, name string) (Progre
 	if s.pods == nil {
 		return p, nil
 	}
-	pods, err := s.pods.listPods(ctx, s.kernelNamespace(), "component=singleuser-server,hub.jupyter.org/servername="+name)
+	pods, err := s.pods.listPods(ctx, s.workspaceNamespace(), "component=singleuser-server,hub.jupyter.org/servername="+name)
 	if err != nil {
 		return p, nil
 	}

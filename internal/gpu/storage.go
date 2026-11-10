@@ -41,9 +41,10 @@ func (k *kube) deletePVC(ctx context.Context, ns, name string) error {
 	return k.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+ns+"/persistentvolumeclaims/"+url.PathEscape(name), nil, nil)
 }
 
+// workspaceNamespace is the namespace of the hub, the workspace pods, GPU kernels, jobs and files pods.
 func (s *Service) workspaceNamespace() string {
-	if s.cfg.WorkspaceNamespace == "" {
-		return "jupyterhub"
+	if s.cfg.WorkspaceNamespace == "" { // a Service not made by newService (tests)
+		return DefaultWorkspaceNamespace
 	}
 	return s.cfg.WorkspaceNamespace
 }

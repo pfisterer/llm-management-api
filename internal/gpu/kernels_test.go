@@ -256,3 +256,29 @@ func TestShmVolume(t *testing.T) {
 		}
 	}
 }
+
+// A kernel's working directory is an absolute path in the home, cleaned; anything else is refused (the rule of homeRel, which jobs use too).
+func TestKernelWorkingDir(t *testing.T) {
+	base := KernelRequest{KernelID: testKernelID, ResponseAddress: "10.42.1.5:8877", PublicKey: "abc", PortRange: "0..0"}
+	for dir, want := range map[string]string{
+		"/home/jovyan":             "/home/jovyan",
+		"/home/jovyan/":            "/home/jovyan",
+		"/home/jovyan/kurs/../a/b": "/home/jovyan/a/b",
+		"/home/jovyan/./kurs":      "/home/jovyan/kurs",
+		"/home/jovyanx":            "",
+		"/home/jovyan/../x":        "",
+		"/etc":                     "",
+		"kurs":                     "",
+		"../home/jovyan":           "",
+	} {
+		r := base
+		r.WorkingDir = dir
+		err := validKernelRequest(&KernelOwner{IP: "10.42.1.5"}, &r)
+		switch {
+		case want == "" && err == nil:
+			t.Errorf("%q accepted as %q", dir, r.WorkingDir)
+		case want != "" && (err != nil || r.WorkingDir != want):
+			t.Errorf("%q: %q %v, want %q", dir, r.WorkingDir, err, want)
+		}
+	}
+}

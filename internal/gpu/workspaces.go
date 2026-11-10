@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
 // WorkspacePod is one running workspace pod (Jupyter server, GPU kernel or batch job, profile "job") with what it reserves and, when metrics-server answers, what it uses.
@@ -41,10 +43,7 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 	if !ok {
 		return nil, nil
 	}
-	ns := s.cfg.WorkspaceNamespace
-	if ns == "" {
-		ns = "jupyterhub"
-	}
+	ns := s.workspaceNamespace()
 	pods, err := k.listPods(ctx, ns, "component in (singleuser-server,kernel,job)")
 	if err != nil {
 		return nil, err
@@ -91,7 +90,7 @@ func (s *Service) WorkspacePods(ctx context.Context) ([]WorkspacePod, error) {
 			}
 		}
 		if p.Metadata.Labels["component"] == "kernel" {
-			w.Profile = "gpu-kernel"
+			w.Profile = workspace.KernelProfile
 			for _, o := range p.Metadata.OwnerReferences {
 				if o.Kind == "Pod" && personOf[o.Name] != "" {
 					w.Person = personOf[o.Name]

@@ -42,6 +42,37 @@ type Config struct {
 	Jobs    JobConfig    // batch jobs (jobs.go)
 }
 
+// Defaults of the GPU part's settings, in one place: LoadConfig (internal/config.go) uses them for unset variables, newService for a Config left empty (tests).
+const (
+	DefaultBuildNamespace     = "env-build"
+	DefaultEnvsProject        = "envs"
+	DefaultBuilderSecret      = "harbor-envs-builder"
+	DefaultWorkspaceNamespace = "jupyterhub"
+	DefaultInferenceNamespace = "inference"
+)
+
+// DefaultGitHosts are the Git hosts environments may come from when GPU_GIT_HOSTS is not set.
+func DefaultGitHosts() []string { return []string{"github.com", "gitlab.com"} }
+
+// withDefaults fills what is empty with the defaults.
+func (c *Config) withDefaults() {
+	if c.BuildNamespace == "" {
+		c.BuildNamespace = DefaultBuildNamespace
+	}
+	if c.EnvsProject == "" {
+		c.EnvsProject = DefaultEnvsProject
+	}
+	if c.BuilderSecret == "" {
+		c.BuilderSecret = DefaultBuilderSecret
+	}
+	if len(c.GitHosts) == 0 {
+		c.GitHosts = DefaultGitHosts()
+	}
+	if c.WorkspaceNamespace == "" {
+		c.WorkspaceNamespace = DefaultWorkspaceNamespace
+	}
+}
+
 func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil

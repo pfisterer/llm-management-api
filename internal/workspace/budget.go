@@ -154,7 +154,7 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 	type key struct{ project, person string }
 	decided := map[key]string{} // reason or ""
 	for _, r := range running {
-		if r.Project == "" || r.Profile == "gpu-kernel" || r.Profile == JobProfile {
+		if r.Project == "" || !IsServerProfile(r.Profile) {
 			continue // kernels end with their server, jobs run to their end (their budget is reserved at submit)
 		}
 		k := key{r.Project, strings.ToLower(r.Person)}

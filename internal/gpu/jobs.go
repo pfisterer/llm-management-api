@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -118,7 +119,7 @@ func (s *Service) reconcileJobQueues(ctx context.Context, k kubeDoer, classes []
 	if err != nil {
 		return fmt.Errorf("job queues: %w", err)
 	}
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	keep := map[string]bool{}
 	var errs []error
 	for _, q := range want {
@@ -430,9 +431,12 @@ var (
 // JobID says whether id has the form of a job id.
 func JobID(id string) bool { return jobIDPattern.MatchString(id) }
 
-// homeRel is a path in the home, relative to it: an absolute one must lie in /home/jovyan, a relative one counts from there; "" is the home itself, false a path that leaves it.
+// HomeDir is the home of a workspace, a GPU kernel and a job (workspace.NotebookHome); the Python client (clients/python, cli.py) knows the same path and rule.
+const HomeDir = workspace.NotebookHome
+
+// homeRel is a path in the home, relative to it: an absolute one must lie in HomeDir, a relative one counts from there; "" is the home itself, false a path that leaves it.
 func homeRel(p string) (string, bool) {
-	const home = "/home/jovyan"
+	const home = HomeDir
 	p = strings.TrimSpace(p)
 	if !strings.HasPrefix(p, "/") {
 		p = home + "/" + p
@@ -501,7 +505,7 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 				}
 			}
 		}
-		for _, o := range []map[string]any{jobClusterQueueFor(q), jobLocalQueueFor(s.kernelNamespace(), q)} {
+		for _, o := range []map[string]any{jobClusterQueueFor(q), jobLocalQueueFor(s.workspaceNamespace(), q)} {
 			if err := ensureObject(ctx, s.k8s, o); err != nil {
 				return Job{}, fmt.Errorf("job queue: %w", err)
 			}
@@ -522,13 +526,13 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 		_ = s.jobs.SaveJob(ctx, r)
 		return Job{}, err
 	}
-	if err := s.k8s.do(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs", s.jobObject(r, sp), &created); err != nil {
+	if err := s.k8s.do(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+s.workspaceNamespace()+"/jobs", s.jobObject(r, sp), &created); err != nil {
 		return failed(err)
 	}
 	// The key after the Job, which owns it (deleted with it); the Job is suspended until Kueue admits it, and a pod that came first would wait for the Secret.
 	if sp.LLMKey != "" {
-		if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.kernelNamespace()+"/secrets", jobLLMSecret(r, created.Metadata.UID, sp.LLMKey), nil); err != nil {
-			_ = s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.kernelNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil)
+		if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.workspaceNamespace()+"/secrets", jobLLMSecret(r, created.Metadata.UID, sp.LLMKey), nil); err != nil {
+			_ = s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.workspaceNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil)
 			return failed(fmt.Errorf("llm key secret: %w", err))
 		}
 	}
@@ -541,7 +545,7 @@ func (s *Service) ensureProjectVolume(ctx context.Context, project string, gb in
 	if gb <= 0 {
 		return &JobRefused{"Das Projekt hat keinen Workspace-Speicher; Jobs brauchen ihn für Daten und Ausgabe."}
 	}
-	path := "/api/v1/namespaces/" + s.kernelNamespace() + "/persistentvolumeclaims"
+	path := "/api/v1/namespaces/" + s.workspaceNamespace() + "/persistentvolumeclaims"
 	size := fmt.Sprintf("%dGi", gb)
 	var pvc map[string]any
 	err := s.k8s.do(ctx, http.MethodGet, path+"/ws-"+project, nil, &pvc)
@@ -738,7 +742,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		"resources":       map[string]any{"requests": map[string]any{"cpu": "10m", "memory": "32Mi"}, "limits": map[string]any{"memory": "128Mi"}},
 		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/ws"}},
 	}}
-	shared := map[string]any{"name": "home", "mountPath": "/home/jovyan/project-shared", "subPath": "project-shared"}
+	shared := map[string]any{"name": "home", "mountPath": HomeDir + "/project-shared", "subPath": "project-shared"}
 	if sp.SharedReadOnly {
 		shared["readOnly"] = true
 	}
@@ -746,12 +750,12 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		"name":    "job",
 		"image":   r.Image,
 		"command": []any{"sh", "-c", jobScript},
-		"env": []any{envVar("HOME", "/home/jovyan"), envVar("DHBW_JOB_ID", r.ID), envVar("DHBW_JOB_NAME", r.Name), envVar("DHBW_JOB_DIR", "/home/jovyan/jobs/"+r.Name),
+		"env": []any{envVar("HOME", HomeDir), envVar("DHBW_JOB_ID", r.ID), envVar("DHBW_JOB_NAME", r.Name), envVar("DHBW_JOB_DIR", HomeDir+"/jobs/"+r.Name),
 			envVar("DHBW_JOB_WORKDIR", workdir), envVar("DHBW_JOB_COMMAND", command), envVar("DHBW_PROJECT", r.Project), envVar("DHBW_JOB_GRACE_SECONDS", fmt.Sprint(s.jobGraceSeconds())), envVar("PYTHONUNBUFFERED", "1")},
-		"workingDir":      "/home/jovyan",
+		"workingDir":      HomeDir,
 		"securityContext": sec,
 		"resources":       map[string]any{"requests": requests, "limits": limits},
-		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/home/jovyan", "subPath": home}, shared, shmMount},
+		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": HomeDir, "subPath": home}, shared, shmMount},
 	}}
 	if sp.LLMKey != "" {
 		// The key from its Secret, so that it is in neither the Job nor the pod spec; the address as it is, like OPENAI_BASE_URL in a workspace.

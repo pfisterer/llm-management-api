@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/ttlcache"
+	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
 // GPU kernels in their own pods (docs/bauplan.md 6.2): the notebook server of "CPU + GPU-Kernel" asks here for a kernel pod instead of creating it itself, so it needs no rights in Kubernetes. Who asks is the server pod with the request's source address (checked against the person's hub token by the caller); the pod is built from that server pod — its image, its home and shared folder as it mounts them, its person and project —, the request only adds the kernel's connection parameters.
@@ -96,8 +97,8 @@ type kubeDoer interface {
 	do(ctx context.Context, method, path string, body, out any) error
 }
 
-// SplitProfile is the profile whose servers may start GPU kernels.
-const SplitProfile = "cpu-gpukernel"
+// SplitProfile is the profile whose servers may start GPU kernels (workspace.SplitProfile).
+const SplitProfile = workspace.SplitProfile
 
 const kernelLabelOwner = "dhbw.cloud/kernel-owner"
 
@@ -152,13 +153,6 @@ func shmVolume(memLimit string) (volume, mount map[string]any) {
 	}
 	return map[string]any{"name": "dshm", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": fmt.Sprintf("%dMi", mi)}},
 		map[string]any{"name": "dshm", "mountPath": "/dev/shm"}
-}
-
-func (s *Service) kernelNamespace() string {
-	if s.cfg.WorkspaceNamespace != "" {
-		return s.cfg.WorkspaceNamespace
-	}
-	return "jupyterhub"
 }
 
 // newTokenCache remembers for a few minutes whose a hub token is (keyed by the token's SHA-256, never the token), so that the provisioner's polling does not ask the hub every second; at most 10000 tokens.
@@ -228,7 +222,7 @@ func (s *Service) serverAt(ctx context.Context, ip string) (*KernelOwner, error)
 		Items []map[string]any `json:"items"`
 	}
 	q := url.Values{"labelSelector": {"component=singleuser-server"}, "fieldSelector": {"status.podIP=" + ip + ",status.phase=Running"}}
-	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods?"+q.Encode(), nil, &pods); err != nil {
+	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods?"+q.Encode(), nil, &pods); err != nil {
 		return nil, err
 	}
 	for _, p := range pods.Items {
@@ -279,7 +273,7 @@ func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelReque
 	}
 	pod := s.kernelPod(o, r, deadline, scratch)
 	name := pod["metadata"].(map[string]any)["name"].(string)
-	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods", pod, nil); err != nil {
+	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods", pod, nil); err != nil {
 		return "", err
 	}
 	s.log.Infow("gpu kernel started", "pod", name, "owner", o.Pod, "person", o.Person, "project", o.Project)
@@ -304,11 +298,11 @@ func validKernelRequest(o *KernelOwner, r *KernelRequest) error {
 		return &KernelRefused{"Ungültige Transportverschlüsselung."}
 	}
 	if r.WorkingDir != "" {
-		d := path.Clean(r.WorkingDir)
-		if d != "/home/jovyan" && !strings.HasPrefix(d, "/home/jovyan/") {
+		rel, ok := homeRel(r.WorkingDir)
+		if !ok || !path.IsAbs(r.WorkingDir) { // the launcher sends an absolute path; a relative one is no working directory of a server
 			return &KernelRefused{"Arbeitsverzeichnis außerhalb des Homes."}
 		}
-		r.WorkingDir = d
+		r.WorkingDir = path.Join(HomeDir, rel)
 	}
 	return nil
 }
@@ -359,7 +353,7 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 		}
 	}
 	if len(mounts) == 0 {
-		mounts = []any{map[string]any{"name": "home", "mountPath": "/home/jovyan"}}
+		mounts = []any{map[string]any{"name": "home", "mountPath": HomeDir}}
 	}
 
 	requests := map[string]any{"cpu": "1", "memory": "2G"}
@@ -457,7 +451,7 @@ func (s *Service) StopKernel(ctx context.Context, o *KernelOwner, kernelID, reas
 		}
 	}
 	q := url.Values{"labelSelector": {selector}, "gracePeriodSeconds": {"0"}}
-	err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods?"+q.Encode(), nil, nil)
+	err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods?"+q.Encode(), nil, nil)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
@@ -471,7 +465,7 @@ func (s *Service) KernelOverview(ctx context.Context, o *KernelOwner) (KernelOve
 	if err != nil || len(pods) == 0 {
 		return out, err
 	}
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	var wls struct {
 		Items []map[string]any `json:"items"`
 	}
@@ -565,7 +559,7 @@ func (s *Service) kernelPods(ctx context.Context, selector string, phases ...str
 	var pods struct {
 		Items []map[string]any `json:"items"`
 	}
-	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods?labelSelector="+url.QueryEscape(selector), nil, &pods); err != nil {
+	if err := s.k8s.do(ctx, http.MethodGet, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods?labelSelector="+url.QueryEscape(selector), nil, &pods); err != nil {
 		return nil, err
 	}
 	var out []map[string]any

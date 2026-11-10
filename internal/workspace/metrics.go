@@ -20,6 +20,11 @@ var StartResults = []string{"ok", "project", "image_error", "no_profile", "gpu_c
 // KernelProfile is the profile label of GPU kernels (pods of "CPU + GPU-Kernel" servers).
 const KernelProfile = "gpu-kernel"
 
+// IsServerProfile tells whether a workspace pod's profile label is that of a person's server: not a GPU kernel (it ends with its server) and not a batch job (own limits, runs to its end).
+func IsServerProfile(profile string) bool {
+	return profile != KernelProfile && profile != JobProfile
+}
+
 func newStartCounter(cfg Config) *promtext.CounterVec {
 	c := promtext.NewCounterVec("aiaas_workspace_starts_total", "Start decisions of the service (JupyterHub's spawn check and GPU kernels) by profile and result: ok or the kind of refusal. Counted since the service started.", "profile", "result")
 	profiles := []string{KernelProfile}

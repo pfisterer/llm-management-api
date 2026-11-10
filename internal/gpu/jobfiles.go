@@ -344,7 +344,7 @@ func (s *Service) dropFilesPod(ctx context.Context, p *filesPod) {
 		delete(s.files.pods, p.key)
 	}
 	s.files.mu.Unlock()
-	if err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.kernelNamespace()+"/pods/"+p.name, nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods/"+p.name, nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
 		s.log.Warnw("files pod not deleted", "pod", p.name, "error", err)
 	}
 }
@@ -356,7 +356,7 @@ func (s *Service) startFilesPod(ctx context.Context, project, person string, acc
 	token := hex.EncodeToString(b)
 	_, _ = rand.Read(b[:4])
 	p := &filesPod{key: filesKey(project, person, access), name: filesApp + "-" + hex.EncodeToString(b[:4]), token: token, created: time.Now(), used: time.Now()}
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+ns+"/pods", s.filesPodObject(p, project, person, access), nil); err != nil {
 		return nil, fmt.Errorf("files pod: %w", err)
 	}
@@ -469,7 +469,7 @@ func (s *Service) sweepFilesPods(ctx context.Context, now time.Time) {
 		known[p.name] = true
 	}
 	s.files.mu.Unlock()
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	for _, p := range idle {
 		if err := s.k8s.do(ctx, http.MethodDelete, "/api/v1/namespaces/"+ns+"/pods/"+p.name, nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
 			s.log.Warnw("files pod not deleted", "pod", p.name, "error", err)

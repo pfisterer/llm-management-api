@@ -593,7 +593,7 @@ func (s *Service) checkStart(ctx context.Context, tokens []string, r StartReques
 		if !strings.EqualFold(x.Person, r.Person) {
 			continue
 		}
-		if x.Profile != "gpu-kernel" {
+		if x.Profile != KernelProfile {
 			servers++
 		}
 		cpu += x.CPU

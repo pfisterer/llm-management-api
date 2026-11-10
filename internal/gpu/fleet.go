@@ -603,7 +603,7 @@ func (s *Service) removeClassQueues(ctx context.Context, classes []string) error
 	var errs []error
 	for _, c := range classes {
 		for _, p := range []string{
-			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + s.kernelNamespace() + "/localqueues/gpu-" + c,
+			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + s.workspaceNamespace() + "/localqueues/gpu-" + c,
 			"/apis/kueue.x-k8s.io/v1beta2/namespaces/" + ins + "/localqueues/inference-" + c,
 			"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gpu-" + c,
 			"/apis/kueue.x-k8s.io/v1beta2/clusterqueues/gap-" + c,
@@ -700,7 +700,7 @@ func (s *Service) ReconcileFleet(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	ns := s.kernelNamespace()
+	ns := s.workspaceNamespace()
 	pools, err := s.fleet.Pools(ctx)
 	if err != nil {
 		return errors.Join(append(errs, err)...)
