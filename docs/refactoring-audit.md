@@ -165,5 +165,5 @@ Der Dienst ist in sich konsistenter als viele KI-generierte Codebasen: Logging (
 5. Ablehnungen durch die Projektregeln (`workspace.Refusal`) ergeben einheitlich 409. Ein unbekanntes oder nicht sichtbares Projekt ergibt für Nicht-Verwalter einheitlich 404. UI und Python-CLI werden mitgeprüft.
 6. Für Limits zählt das 30-Tage-Fenster heute und die 29 Tage davor; Berichte zählen die letzten 30 abgeschlossenen Tage und sagen das ausdrücklich. Beide Regeln stehen an einer Stelle.
 7. `total` fehlt in `TreeBudget.Window` absichtlich: Der Budgetbaum vergibt nur Mengen je Zeitfenster. Das wird im Code als Kommentar festgehalten und geprüft.
-8. Doppelbuchung während eines Rollouts: erst prüfen, ob sie wirklich auftritt; wenn ja, ein Kubernetes-Lease, sodass nur ein Pod die Hintergrundschleifen ausführt.
+8. Doppelbuchung während eines Rollouts: geprüft am 10.11.2026. Sie tritt auf, pro Rollout höchstens etwa eine Minute je laufendem Workspace (der erste Takt des neuen Pods bucht eine volle Minute, während der alte noch zählt). Entschieden: kein Lease, nur dokumentiert (`internal/usage/collector.go`).
 9. Retry mit Backoff, Token-Prüfung und Zeitraum-Parsing kommen nach `cloud-self-service-golib` und werden von KI-Dienst und os-mgt gemeinsam genutzt.

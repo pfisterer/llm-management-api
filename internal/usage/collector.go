@@ -83,6 +83,8 @@ func (c *Collector) Tick(ctx context.Context) error {
 	return c.store.Add(ctx, out)
 }
 
+// During a rollout the old and the new pod both run for a moment, and the new one's first tick books a whole interval: each running workspace can be booked up to about one interval twice per rollout. Measured on 10.11.2026 and left so (decided then): a minute per rollout is far below what a lease between the pods would be worth.
+//
 // Run ticks until ctx ends. Errors are logged, not fatal: a minute without a sample costs a minute of accounting, not the service.
 func (c *Collector) Run(ctx context.Context) {
 	t := time.NewTicker(c.interval)
