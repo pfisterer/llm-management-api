@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/gpu"
 	"github.com/pfisterer/llm-management-api/internal/promtext"
@@ -75,6 +76,7 @@ func MetricsRouter(o MetricsOptions) *gin.Engine {
 		if o.Budgets != nil {
 			o.Budgets.WriteMetrics(&w)
 		}
+		background.WriteMetrics(&w)
 		if len(parts) > 0 {
 			w.Header("aiaas_metrics_part_up", "gauge", "1 when a part of this page (workspaces: the projects from the database; workspace_pods: the workspace pods from the cluster) could be read at its last refresh; its series are missing while 0.")
 			for _, p := range parts {

@@ -17,9 +17,11 @@ import (
 
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
+	"github.com/pfisterer/cloud-self-service-golib/retry"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/cloud-self-service-golib/tokengorm"
 	"github.com/pfisterer/llm-management-api/internal/access"
+	"github.com/pfisterer/llm-management-api/internal/background"
 	"github.com/pfisterer/llm-management-api/internal/classify"
 	"github.com/pfisterer/llm-management-api/internal/fleet"
 	"github.com/pfisterer/llm-management-api/internal/generated_docs"
@@ -55,7 +57,7 @@ func RunApplication() {
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == "import-classified" {
-		st, err := stores(cfg)
+		st, err := stores(context.Background(), cfg, log)
 		if err == nil {
 			var n int
 			if n, err = classify.Import(context.Background(), st.classify, os.Args[2]); err == nil {
@@ -84,27 +86,32 @@ type allStores struct {
 	jobs     gpu.JobStore
 }
 
-// stores opens the fleet, classification, GPU, usage and project stores on one connection.
-func stores(cfg Config) (allStores, error) {
+// stores opens the fleet, classification, GPU, usage and project stores on one connection. It waits up to dbWait for Postgres: since the NetworkPolicies a new pod is let through only a moment after it starts. Creating or migrating a table is fatal; the rest of the startup is not (background.Step).
+func stores(ctx context.Context, cfg Config, log *zap.SugaredLogger) (allStores, error) {
 	if cfg.DBType == "memory" {
 		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore(), gpu.NewMemoryJobStore()}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
 	}
-	db, err := gorm.Open(postgres.Open(cfg.DBConnectionString), &gorm.Config{
-		// Maps unique-constraint violations to gorm.ErrDuplicatedKey (-> 409).
-		TranslateError: true,
-		Logger:         gormlogger.Default.LogMode(gormlogger.Warn),
+	var db *gorm.DB
+	err := retry.Do(ctx, retry.Policy{Total: dbWait, OnRetry: func(attempt int, err error, wait time.Duration) {
+		log.Infow("postgres not reachable yet, trying again", "attempt", attempt, "in", wait.String(), "error", err)
+	}}, func(context.Context) error {
+		var err error
+		db, err = gorm.Open(postgres.Open(cfg.DBConnectionString), &gorm.Config{
+			// Maps unique-constraint violations to gorm.ErrDuplicatedKey (-> 409).
+			TranslateError: true,
+			Logger:         gormlogger.Default.LogMode(gormlogger.Warn),
+		})
+		return err
 	})
 	if err != nil {
 		return allStores{}, fmt.Errorf("postgres: %w", err)
 	}
 	// The access rules are gone (roles come from ADMIN_TOKENS and FLEET_ADMIN_TOKENS, LLM limits from the projects of the budget tree): their table goes too.
 	if m := db.Migrator(); m.HasTable("access_rules") {
-		if err := m.DropTable("access_rules"); err != nil {
-			return allStores{}, fmt.Errorf("drop access_rules: %w", err)
-		}
+		_ = background.Step(log, "drop_access_rules", m.DropTable("access_rules"))
 	}
 	fs, err := fleet.NewGormStore(db)
 	if err != nil {
@@ -156,6 +163,25 @@ func stores(cfg Config) (allStores, error) {
 	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs, js}, nil
 }
 
+// dbWait is how long the service waits for Postgres and the OIDC provider at startup before it gives up (decided 10.11.2026).
+const dbWait = 60 * time.Second
+
+// startupServer answers on the API's address while the service starts: /health (and everything else) with 503 "starting", so the probes see a pod that is alive but not ready instead of a refused connection.
+func startupServer(addr string, log *zap.SugaredLogger) *http.Server {
+	hs := &http.Server{Addr: addr, ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"starting"}`))
+	})}
+	go func() {
+		if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Warnw("startup listener", "bind", addr, "error", err)
+		}
+	}()
+	return hs
+}
+
 func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
 	fc, wg, err := fleet.ParseConfig(cfg.FleetJSON, cfg.WireGuardJSON)
 	if err != nil {
@@ -165,7 +191,7 @@ func fleetService(cfg Config, store fleet.Store) (*fleet.Service, error) {
 }
 
 func importPeers(cfg Config, path string, log *zap.SugaredLogger) error {
-	st, err := stores(cfg)
+	st, err := stores(context.Background(), cfg, log)
 	if err != nil {
 		return err
 	}
@@ -182,7 +208,8 @@ func importPeers(cfg Config, path string, log *zap.SugaredLogger) error {
 }
 
 func run(cfg Config, log *zap.SugaredLogger) error {
-	st, err := stores(cfg)
+	starting := startupServer(cfg.Bind, log)
+	st, err := stores(context.Background(), cfg, log)
 	if err != nil {
 		return err
 	}
@@ -218,19 +245,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		// GPU administration (docs/bauplan.md 10.13): pools, tiers and node assignments; the classes are what projects and the tree know.
 		if cfg.GPUFleet.Enabled {
 			gpuSvc.SetFleet(st.gpuFleet, cfg.GPUFleet.FleetConfig)
-			if err := gpuSvc.SeedFleet(context.Background()); err != nil {
-				return fmt.Errorf("gpu fleet: %w", err)
-			}
+			_ = background.Step(log, "seed_fleet", gpuSvc.SeedFleet(context.Background()))
 			// The catalogue of the platform's own models (docs/bauplan.md 10.16); the inventory seeds it once.
 			gpuSvc.SetModels(st.models)
-			if err := gpuSvc.SeedModels(context.Background()); err != nil {
-				return fmt.Errorf("model catalogue: %w", err)
-			}
+			_ = background.Step(log, "seed_models", gpuSvc.SeedModels(context.Background()))
 			// A class that replaces an id (a pool or tier renamed) takes over its projects and booked usage, once (idempotent); the tree renames its resources when it sees "replaces" in the catalogue.
 			classes, err := gpuSvc.GPUClasses(context.Background())
-			if err != nil {
-				return fmt.Errorf("gpu classes: %w", err)
-			}
+			_ = background.Step(log, "gpu_classes", err)
 			renameClass := func(ctx context.Context, old, new string) error {
 				n, err := wsSvc.RenameGPUClass(ctx, old, new)
 				if err != nil {
@@ -248,14 +269,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 				return nil
 			}
+			var renameErr error
 			for _, c := range classes {
 				if c.Replaces == "" || c.Replaces == c.ID {
 					continue
 				}
-				if err := renameClass(context.Background(), c.Replaces, c.ID); err != nil {
-					return err
-				}
+				renameErr = errors.Join(renameErr, renameClass(context.Background(), c.Replaces, c.ID))
 			}
+			_ = background.Step(log, "rename_gpu_classes", renameErr)
 			// A pool renamed while the service runs (GPU administration) moves its classes' projects and usage the same way.
 			gpuSvc.OnClassRenamed = renameClass
 			wsSvc.SetGPUClasses(func(ctx context.Context) ([]workspace.GPUClass, error) {
@@ -268,9 +289,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			})
 		}
 		// The last storage report of the hourly job, so the admins' view is not empty after a restart.
-		if err := wsSvc.LoadStorage(context.Background()); err != nil {
-			log.Warnw("storage reports not loaded", "error", err)
-		}
+		_ = background.Step(log, "load_storage", wsSvc.LoadStorage(context.Background()))
 		wsSvc.SetUsage(st.usage)
 		// Finished project images are checked in their registry, anonymously like a node pulls them; images from Git are built by the GPU part.
 		ociClient := &oci.Client{HTTP: gpu.RetryingClient(30 * time.Second)}
@@ -310,13 +329,9 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		}
 		gpuSvc.SetBases(wsCfg.Bases)
 		// The profiles went into CPU, CPU + GPU-Kernel and GPU on 14.10.2026: stored projects follow once.
-		if err := wsSvc.MigrateProfiles(context.Background()); err != nil {
-			log.Warnw("workspace profiles not migrated", "error", err)
-		}
+		_ = background.Step(log, "migrate_profiles", wsSvc.MigrateProfiles(context.Background()))
 		// Bases have versions since 17.10.2026: every project keeps the version it runs now.
-		if err := wsSvc.MigrateBases(context.Background()); err != nil {
-			log.Warnw("workspace bases not migrated", "error", err)
-		}
+		_ = background.Step(log, "migrate_bases", wsSvc.MigrateBases(context.Background()))
 		// Batch jobs (docs/architektur.md "Batch-Jobs"): the rows in gpu_jobs, the projects' queues per class for the fleet, and what live jobs reserve of the GPU-hours budgets.
 		gpuSvc.SetJobStore(st.jobs)
 		gpuSvc.SetJobQueues(func(ctx context.Context) ([]gpu.JobQueue, error) {
@@ -379,7 +394,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 
 	var verifier webserver.TokenVerifier
 	if cfg.OIDCIssuerURL != "" {
-		v, err := oidcauth.New(oidcauth.Config{IssuerURL: cfg.OIDCIssuerURL, ClientID: cfg.OIDCClientID, JWKSURL: cfg.OIDCJWKSURL}, log)
+		var v *oidcauth.Verifier
+		err := retry.Do(context.Background(), retry.Policy{Total: dbWait, OnRetry: func(attempt int, err error, wait time.Duration) {
+			log.Infow("OIDC provider not reachable yet, trying again", "attempt", attempt, "in", wait.String(), "error", err)
+		}}, func(context.Context) error {
+			var err error
+			v, err = oidcauth.New(oidcauth.Config{IssuerURL: cfg.OIDCIssuerURL, ClientID: cfg.OIDCClientID, JWKSURL: cfg.OIDCJWKSURL}, log)
+			return err
+		})
 		if err != nil {
 			return fmt.Errorf("oidc: %w", err)
 		}
@@ -483,78 +505,51 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Every background loop runs through package background: a panic is logged and counted (aiaas_background_panics_total) and the loop goes on; a loop of its own package is started again a minute later.
 	if budgets != nil {
-		go budgets.Run(ctx)
+		background.Supervise(ctx, log, "budget_sync", time.Minute, budgets.Run)
 	}
 	if gpuSvc != nil {
 		// Workspace usage (docs/bauplan.md, Stufe 4 W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.
-		go usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+		background.Supervise(ctx, log, "usage_collector", time.Minute, usage.NewCollector(st.usage, workspaceSource(gpuSvc), bookTo, time.Minute, log).Run)
 		// GPU use per hour: capacity, workspaces, inference pool, queue (docs/bauplan.md 6.10).
 		if gs, ok := st.usage.(usage.GPUStore); ok {
-			go usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Run(ctx)
+			background.Supervise(ctx, log, "gpu_usage_collector", time.Minute, usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Run)
 		}
 		// Research log (internal/research): every minute the GPU cluster's workloads from request to end, pseudonymous; RESEARCH_RETENTION_DAYS=0 switches it off.
 		if cfg.ResearchRetentionDays > 0 {
 			rec := research.NewRecorder(st.research, gpuSvc.ResearchSnapshot, []byte(cfg.ResearchPseudonymKey), time.Duration(cfg.ResearchRetentionDays)*24*time.Hour, time.Minute, log)
 			gpuSvc.SetResearch(rec)
-			go rec.Run(ctx)
+			background.Supervise(ctx, log, "research_recorder", time.Minute, rec.Run)
 			if cfg.ResearchPseudonymKey == "" {
 				log.Infow("research log: no RESEARCH_PSEUDONYM_KEY, the rows name no person")
 			}
 		}
 		// GPU administration: every minute the node labels and the Kueue queues of the classes follow the assignments and the nodes (a node that joins or leaves changes the quota).
 		if gpuSvc.FleetEnabled() {
-			go func() {
-				t := time.NewTicker(time.Minute)
-				defer t.Stop()
-				for {
-					if err := gpuSvc.ReconcileFleet(ctx); err != nil {
-						log.Warnw("gpu fleet reconcile", "error", err)
-					}
-					if err := gpuSvc.ReconcileGapFillers(ctx); err != nil {
-						log.Warnw("gpu gap fillers reconcile", "error", err)
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case <-t.C:
-					}
+			background.Every(ctx, log, "gpu_fleet", time.Minute, true, func(ctx context.Context) {
+				if err := gpuSvc.ReconcileFleet(ctx); err != nil {
+					log.Warnw("gpu fleet reconcile", "error", err)
 				}
-			}()
+				if err := gpuSvc.ReconcileGapFillers(ctx); err != nil {
+					log.Warnw("gpu gap fillers reconcile", "error", err)
+				}
+			})
 		}
 		// Batch jobs: every minute the rows of gpu_jobs follow the cluster (admitted, running, evicted, ended with its output), and the files pods of the jobs are cleaned up.
 		if gpuSvc.JobsEnabled() {
-			go func() {
-				t := time.NewTicker(time.Minute)
-				defer t.Stop()
-				for {
-					if err := gpuSvc.SyncJobs(ctx); err != nil {
-						log.Warnw("batch jobs sync", "error", err)
-					}
-					gpuSvc.SweepFilesPods(ctx)
-					select {
-					case <-ctx.Done():
-						return
-					case <-t.C:
-					}
+			background.Every(ctx, log, "batch_jobs", time.Minute, true, func(ctx context.Context) {
+				if err := gpuSvc.SyncJobs(ctx); err != nil {
+					log.Warnw("batch jobs sync", "error", err)
 				}
-			}()
+				gpuSvc.SweepFilesPods(ctx)
+			})
 		}
-		// Budgets (W4): every five minutes, end the servers of people whose budget in the server's project is used up.
-		go func() {
-			t := time.NewTicker(5 * time.Minute)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-				}
-				pods, err := gpuSvc.WorkspacePods(ctx)
-				if err != nil {
-					log.Warnw("budget: listing workspaces failed", "error", err)
-					continue
-				}
+		// Every five minutes: budgets (W4) end the servers of people whose budget in the server's project is used up, storage is purged, and the project images, bases and credential secrets follow. Only the first two need the list of workspace pods; when it cannot be read, the rest still runs.
+		background.Every(ctx, log, "five_minutes", 5*time.Minute, false, func(ctx context.Context) {
+			if pods, err := gpuSvc.WorkspacePods(ctx); err != nil {
+				log.Warnw("budget: listing workspaces failed, budgets and storage wait for the next round", "error", err)
+			} else {
 				var running []workspace.RunningServer
 				for _, p := range pods {
 					if p.Running {
@@ -565,29 +560,29 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 					return gpuSvc.EndServer(ctx, person, server, research.EndBudget)
 				}, log)
 				purgeStorage(ctx, gpuSvc, wsSvc, pods, log)
-				// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
-				if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
-					log.Warnw("project images: rebuild on new base", "error", err)
-				}
-				// Versions of the bases at their end of life: their projects move to the successor.
-				if err := wsSvc.RetireBases(ctx); err != nil {
-					log.Warnw("bases: end of life", "error", err)
-				}
-				// The projects' pull and Git secrets, also after a restart or a secret deleted by hand.
-				if err := wsSvc.SyncCredentialSecrets(ctx); err != nil {
-					log.Warnw("credentials: secrets", "error", err)
-				}
-				// Finished project images: a moved tag is offered at the project (or taken, if it updates itself); before the prepull, which leaves out images whose registry does not answer.
-				if err := wsSvc.CheckProjectImages(ctx); err != nil {
-					log.Warnw("project images: checking the tags", "error", err)
-				}
-				if images, err := wsSvc.PrepullImages(ctx); err != nil {
-					log.Warnw("project images: listing projects failed", "error", err)
-				} else if err := gpuSvc.EnsurePrepull(ctx, images); err != nil {
-					log.Warnw("project images: prepull", "error", err)
-				}
 			}
-		}()
+			// Project images (docs/bauplan.md 10.12): rebuilt on a new notebook-base, and kept on the nodes.
+			if err := gpuSvc.RebaseProjectImages(ctx); err != nil {
+				log.Warnw("project images: rebuild on new base", "error", err)
+			}
+			// Versions of the bases at their end of life: their projects move to the successor.
+			if err := wsSvc.RetireBases(ctx); err != nil {
+				log.Warnw("bases: end of life", "error", err)
+			}
+			// The projects' pull and Git secrets, also after a restart or a secret deleted by hand.
+			if err := wsSvc.SyncCredentialSecrets(ctx); err != nil {
+				log.Warnw("credentials: secrets", "error", err)
+			}
+			// Finished project images: a moved tag is offered at the project (or taken, if it updates itself); before the prepull, which leaves out images whose registry does not answer.
+			if err := wsSvc.CheckProjectImages(ctx); err != nil {
+				log.Warnw("project images: checking the tags", "error", err)
+			}
+			if images, err := wsSvc.PrepullImages(ctx); err != nil {
+				log.Warnw("project images: listing projects failed", "error", err)
+			} else if err := gpuSvc.EnsurePrepull(ctx, images); err != nil {
+				log.Warnw("project images: prepull", "error", err)
+			}
+		})
 		// Images of environments that are gone, deleted from Harbor's project envs (docs/todo.md image_cleanup): one sweep against the environments and projects, which covers every way an environment goes; a failed delete is tried again at the next pass.
 		if cfg.ImageCleanup.Enabled && cfg.GPU.Registry != "" {
 			ic := cfg.ImageCleanup
@@ -598,9 +593,14 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				log.Warnw("image cleanup: no Harbor robot account (HARBOR_CLEANUP_USER), staying a dry run")
 				ic.DryRun = true
 			}
-			go gpuSvc.NewImageCleanup(harbor, ic, wsSvc.ReferencedImages).Run(ctx, 5*time.Minute)
+			cleanup := gpuSvc.NewImageCleanup(harbor, ic, wsSvc.ReferencedImages)
+			background.Supervise(ctx, log, "image_cleanup", time.Minute, func(ctx context.Context) { cleanup.Run(ctx, 5*time.Minute) })
 		}
 	}
+	// The startup listener gives the API's address back to the real one.
+	stopCtx, stopStarting := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = starting.Shutdown(stopCtx)
+	stopStarting()
 	errCh := make(chan error, len(servers))
 	for _, hs := range servers {
 		go func(hs *http.Server) {
