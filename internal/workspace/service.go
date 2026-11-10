@@ -384,8 +384,9 @@ func (s *Service) validate(p *Project) error {
 		p.Limits.GPUsPerPerson = c
 	}
 	for _, b := range p.Budgets {
-		if !slices.Contains([]string{"server_hours", "vcpu_hours", "ram_gb_hours", "gpu_hours"}, b.Unit) ||
-			!slices.Contains([]string{"24h", "7d", "30d", "total"}, b.Window) || b.Amount < 0 {
+		_, unit := units[b.Unit]
+		_, window := windows[b.Window]
+		if !unit || !window || b.Amount < 0 {
 			return invalid("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster 24h, 7d, 30d oder total; Menge nicht negativ.")
 		}
 	}

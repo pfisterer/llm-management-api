@@ -2,12 +2,13 @@ package workspace
 
 import (
 	"context"
-	"github.com/pfisterer/llm-management-api/internal/usage"
 	"maps"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/usage"
 )
 
 // TreeBudget is a project's share of a budget in the budget tree: an amount per window for the whole project; 0 = no cap.
@@ -176,7 +177,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	p.NoWorkspaces = !tp.Workspaces
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
-		if !slices.Contains([]string{"24h", "7d", "30d"}, b.Window) {
+		if !windows[b.Window].tree {
 			return TreeStatus{}, invalid("Budget aus dem Baum mit Fenster %q: der Budgetbaum vergibt Mengen je 24h, 7d oder 30d.", b.Window)
 		}
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})

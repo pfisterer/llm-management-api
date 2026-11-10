@@ -25,39 +25,73 @@ type BudgetStatus struct {
 	Exhausted bool    `json:"exhausted"`
 }
 
-// windowStart is the first day a window counts. Usage is booked per UTC day, so the windows are calendar days: 24h = today, 7d and 30d including today, total = since the project was created.
-func windowStart(window string, now time.Time, created time.Time) time.Time {
-	today := usage.Day(now)
-	switch window {
-	case "24h":
-		return usage.LimitWindowStart(now, 1)
-	case "7d":
-		return usage.LimitWindowStart(now, 7)
-	case "30d":
-		return usage.LimitWindowStart(now, 30)
-	default:
-		if created.IsZero() {
-			return today.AddDate(-3, 0, 0)
-		}
-		return usage.Day(created)
-	}
+// unitDef is a unit of budgets: its name for people and what a usage row adds to it.
+type unitDef struct {
+	label  string
+	amount func(usage.Row) float64
 }
 
-func amountOf(r usage.Row, b Budget) float64 {
-	switch b.Unit {
-	case "server_hours":
-		return r.ServerHours
-	case "vcpu_hours":
-		return r.VCPUHours
-	case "ram_gb_hours":
-		return r.RAMGBHours
-	case "gpu_hours":
-		if b.GPUClass != "" && r.GPUClass != b.GPUClass {
-			return 0
-		}
-		return r.GPUHours
+// units are the units of workspace budgets (Budget.Unit); a unit not listed counts nothing.
+var units = map[string]unitDef{
+	"server_hours": {"Workspace-Stunden", func(r usage.Row) float64 { return r.ServerHours }},
+	"vcpu_hours":   {"vCPU-Stunden", func(r usage.Row) float64 { return r.VCPUHours }},
+	"ram_gb_hours": {"RAM-GB-Stunden", func(r usage.Row) float64 { return r.RAMGBHours }},
+	"gpu_hours":    {"GPU-Stunden", func(r usage.Row) float64 { return r.GPUHours }},
+}
+
+// windowDef is a window of budgets: its name for people, its length in days (0 = since the project was created) and whether the budget tree gives amounts per it.
+type windowDef struct {
+	label string
+	days  int
+	tree  bool
+}
+
+// windows are the windows of workspace budgets (Budget.Window). The tree gives amounts per 24h, 7d or 30d only, never one for a project's whole term (decided 10.11.2026); a window not listed counts like total.
+var windows = map[string]windowDef{
+	"24h":   {"heute", 1, true},
+	"7d":    {"in 7 Tagen", 7, true},
+	"30d":   {"in 30 Tagen", 30, true},
+	"total": {"insgesamt", 0, false},
+}
+
+// windowStart is the first day a window counts. Usage is booked per UTC day, so the windows are calendar days: 24h = today, 7d and 30d including today (usage.LimitWindowStart), total = since the project was created.
+func windowStart(window string, now time.Time, created time.Time) time.Time {
+	if w := windows[window]; w.days > 0 {
+		return usage.LimitWindowStart(now, w.days)
 	}
-	return 0
+	if created.IsZero() {
+		return usage.Day(now).AddDate(-3, 0, 0)
+	}
+	return usage.Day(created)
+}
+
+// earliestStart is the first day any of the budgets counts, at the latest today: from there the usage rows are read once for all of them.
+func earliestStart(budgets []Budget, now, created time.Time) time.Time {
+	earliest := usage.Day(now)
+	for _, b := range budgets {
+		if w := windowStart(b.Window, now, created); w.Before(earliest) {
+			earliest = w
+		}
+	}
+	return earliest
+}
+
+// coversClass tells whether the budget counts GPUs of class: one of GPU hours counts its class only, when it names one.
+func (b Budget) coversClass(class string) bool {
+	return b.Unit != "gpu_hours" || b.GPUClass == "" || b.GPUClass == class
+}
+
+// usedIn is what the rows of project from the day from on add to b; of person only, for a budget per person. BudgetStatus (starts, jobs, Enforce) and the metrics both count with it.
+func usedIn(rows []usage.Row, project string, from time.Time, b Budget, person string) float64 {
+	amount := units[b.Unit].amount
+	var used float64
+	for _, r := range rows {
+		if r.Project != project || r.Day.Before(from) || (b.PerPerson && !strings.EqualFold(r.Person, person)) || amount == nil || !b.coversClass(r.GPUClass) {
+			continue
+		}
+		used += amount(r)
+	}
+	return used
 }
 
 // SetUsage turns on budgets: CheckStart refuses a start whose budget is used up, BudgetStatus reports them.
@@ -84,13 +118,7 @@ func (s *Service) BudgetStatus(ctx context.Context, p Project, person string) ([
 		return out, nil
 	}
 	now := s.now()
-	earliest := now
-	for _, b := range p.Budgets {
-		if w := windowStart(b.Window, now, p.CreatedAt); w.Before(earliest) {
-			earliest = w
-		}
-	}
-	rows, err := s.usage.Range(ctx, earliest, usage.Day(now))
+	rows, err := s.usage.Range(ctx, earliestStart(p.Budgets, now, p.CreatedAt), usage.Day(now))
 	if err != nil {
 		return nil, err
 	}
@@ -101,14 +129,7 @@ func (s *Service) BudgetStatus(ctx context.Context, p Project, person string) ([
 		}
 	}
 	for _, b := range p.Budgets {
-		from := windowStart(b.Window, now, p.CreatedAt)
-		st := BudgetStatus{Budget: b}
-		for _, r := range rows {
-			if r.Project != p.Slug || r.Day.Before(from) || (b.PerPerson && !strings.EqualFold(r.Person, person)) {
-				continue
-			}
-			st.Used += amountOf(r, b)
-		}
+		st := BudgetStatus{Budget: b, Used: usedIn(rows, p.Slug, windowStart(b.Window, now, p.CreatedAt), b, person)}
 		st.Reserved = reserved(rs, person, b)
 		st.Exhausted = b.Amount > 0 && st.Used+st.Reserved >= b.Amount
 		out = append(out, st)
@@ -165,9 +186,6 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 	}
 }
 
-var unitNames = map[string]string{"server_hours": "Workspace-Stunden", "vcpu_hours": "vCPU-Stunden", "ram_gb_hours": "RAM-GB-Stunden", "gpu_hours": "GPU-Stunden"}
-var windowNames = map[string]string{"24h": "heute", "7d": "in 7 Tagen", "30d": "in 30 Tagen", "total": "insgesamt"}
-
 // reservedNote names what jobs reserve of a budget, for the reasons; empty when nothing is reserved.
 func reservedNote(b BudgetStatus) string {
 	if b.Reserved <= 0 {
@@ -177,7 +195,7 @@ func reservedNote(b BudgetStatus) string {
 }
 
 func describe(b Budget) string {
-	unit := unitNames[b.Unit]
+	unit := units[b.Unit].label
 	if b.Unit == "gpu_hours" && b.GPUClass != "" {
 		unit += " (" + b.GPUClass + ")"
 	}
@@ -185,7 +203,7 @@ func describe(b Budget) string {
 	if b.PerPerson {
 		who = "pro Person"
 	}
-	return fmt.Sprintf("%s %s %s %s", num(b.Amount), unit, windowNames[b.Window], who)
+	return fmt.Sprintf("%s %s %s %s", num(b.Amount), unit, windows[b.Window].label, who)
 }
 
 // num writes a number for people: one decimal, two below 1 (job reservations are often fractions of an hour).

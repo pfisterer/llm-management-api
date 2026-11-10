@@ -190,12 +190,7 @@ func (s *Service) writeBudgets(ctx context.Context, w *promtext.Writer, active [
 		}
 		for i := range budgets {
 			b := &budgets[i]
-			from := windowStart(b.window, now, created[b.project].CreatedAt)
-			for _, r := range rows {
-				if r.Project == b.project && !r.Day.Before(from) {
-					b.used += amountOf(r, Budget{Unit: b.unit, GPUClass: b.class})
-				}
-			}
+			b.used = usedIn(rows, b.project, windowStart(b.window, now, created[b.project].CreatedAt), Budget{Unit: b.unit, GPUClass: b.class, Window: b.window}, "")
 		}
 	}
 	labels := func(b projectBudget) []string {

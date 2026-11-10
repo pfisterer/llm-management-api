@@ -19,24 +19,28 @@ const maxUsageSpan = 1098 * 24 * time.Hour
 // usagePeriod reads from and to (YYYY-MM-DD, both included); default: the last 30 finished days (usage.ReportPeriod), unlike a limit's 30d, which counts today.
 func usagePeriod(c *gin.Context) (time.Time, time.Time, bool) {
 	from, to := usage.ReportPeriod(time.Now(), 30)
-	parse := func(name string, dst *time.Time) bool {
-		v := c.Query(name)
+	return parsePeriod(c, from, to, maxUsageSpan, "drei Jahre")
+}
+
+// parsePeriod reads the query parameters from and to (YYYY-MM-DD, both included) over the defaults; a period longer than max (named so in the answer) or the wrong way round is refused with 400.
+func parsePeriod(c *gin.Context, from, to time.Time, max time.Duration, maxName string) (time.Time, time.Time, bool) {
+	for _, q := range []struct {
+		name string
+		dst  *time.Time
+	}{{"from", &from}, {"to", &to}} {
+		v := c.Query(q.name)
 		if v == "" {
-			return true
+			continue
 		}
 		t, err := time.Parse("2006-01-02", v)
 		if err != nil {
-			abort(c, http.StatusBadRequest, "invalid", name+" ist kein Datum (JJJJ-MM-TT).")
-			return false
+			abort(c, http.StatusBadRequest, "invalid", q.name+" ist kein Datum (JJJJ-MM-TT).")
+			return time.Time{}, time.Time{}, false
 		}
-		*dst = t
-		return true
+		*q.dst = t
 	}
-	if !parse("from", &from) || !parse("to", &to) {
-		return time.Time{}, time.Time{}, false
-	}
-	if to.Before(from) || to.Sub(from) > maxUsageSpan {
-		abort(c, http.StatusBadRequest, "invalid", "Zeitraum ungültig (from nach to oder länger als drei Jahre).")
+	if to.Before(from) || to.Sub(from) > max {
+		abort(c, http.StatusBadRequest, "invalid", "Zeitraum ungültig (from nach to oder länger als "+maxName+").")
 		return time.Time{}, time.Time{}, false
 	}
 	return from, to, true
@@ -479,19 +483,8 @@ func (s *Server) getGPUHours(c *gin.Context) {
 		return
 	}
 	today := usage.Day(time.Now())
-	from, to := today.AddDate(0, 0, -6), today
-	for name, dst := range map[string]*time.Time{"from": &from, "to": &to} {
-		if v := c.Query(name); v != "" {
-			t, err := time.Parse("2006-01-02", v)
-			if err != nil {
-				abort(c, http.StatusBadRequest, "invalid", name+" ist kein Datum (JJJJ-MM-TT).")
-				return
-			}
-			*dst = t
-		}
-	}
-	if to.Before(from) || to.Sub(from) > usage.GPUHourRetention {
-		abort(c, http.StatusBadRequest, "invalid", "Zeitraum ungültig (from nach to oder länger als 365 Tage).")
+	from, to, ok := parsePeriod(c, today.AddDate(0, 0, -6), today, usage.GPUHourRetention, "365 Tage")
+	if !ok {
 		return
 	}
 	var keep func(usage.GPUHourPerson) bool

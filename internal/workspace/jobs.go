@@ -68,7 +68,7 @@ func reserved(rs []Reservation, person string, b Budget) float64 {
 	}
 	var sum float64
 	for _, r := range rs {
-		if (b.GPUClass != "" && r.GPUClass != b.GPUClass) || (b.PerPerson && !strings.EqualFold(r.Person, person)) {
+		if !b.coversClass(r.GPUClass) || (b.PerPerson && !strings.EqualFold(r.Person, person)) {
 			continue
 		}
 		sum += r.GPUHours
@@ -144,7 +144,7 @@ func (s *Service) CheckJob(ctx context.Context, tokens []string, r JobRequest) (
 	}
 	need := float64(max(r.GPUs, 1)) * g.MaxHours
 	for _, b := range st {
-		if b.Unit == "gpu_hours" && (b.GPUClass == "" || b.GPUClass == g.GPUClass) && b.Amount > 0 && b.Used+b.Reserved+need > b.Amount+1e-9 {
+		if b.Unit == "gpu_hours" && b.coversClass(g.GPUClass) && b.Amount > 0 && b.Used+b.Reserved+need > b.Amount+1e-9 {
 			return JobGrant{}, refuse("Budget im Projekt „%s“ reicht nicht: %s. Genutzt %s, für laufende und wartende Jobs vorgemerkt %s, dieser Job bräuchte bis zu %s.", p.Name, describe(b.Budget), num(b.Used), num(b.Reserved), num(need))
 		}
 		if b.Exhausted {

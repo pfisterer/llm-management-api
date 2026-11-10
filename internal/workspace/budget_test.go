@@ -76,3 +76,44 @@ func TestBudgets(t *testing.T) {
 }
 
 func near(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
+
+// The windows are calendar days in UTC, across month and year boundaries; total without a creation date reaches three years back.
+func TestWindowStart(t *testing.T) {
+	d := func(y int, m time.Month, day int) time.Time { return time.Date(y, m, day, 0, 0, 0, 0, time.UTC) }
+	now := time.Date(2027, 1, 2, 23, 59, 0, 0, time.UTC)
+	created := time.Date(2026, 11, 3, 15, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		window string
+		want   time.Time
+	}{
+		{"24h", d(2027, 1, 2)},
+		{"7d", d(2026, 12, 27)},
+		{"30d", d(2026, 12, 4)},
+		{"total", d(2026, 11, 3)},
+		{"unknown", d(2026, 11, 3)},
+	} {
+		if got := windowStart(tc.window, now, created); !got.Equal(tc.want) {
+			t.Errorf("%s: %v, want %v", tc.window, got, tc.want)
+		}
+	}
+	if got := windowStart("total", now, time.Time{}); !got.Equal(d(2024, 1, 2)) {
+		t.Errorf("total without creation: %v", got)
+	}
+}
+
+// The texts of budgets for people stay as they are (they appear in refusals and in Enforce's log).
+func TestDescribeGolden(t *testing.T) {
+	for _, tc := range []struct {
+		b    Budget
+		want string
+	}{
+		{Budget{Unit: "vcpu_hours", Window: "30d", Amount: 40, PerPerson: true}, "40 vCPU-Stunden in 30 Tagen pro Person"},
+		{Budget{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "7d", Amount: 2.5}, "2.5 GPU-Stunden (l4-3q) in 7 Tagen für das ganze Projekt"},
+		{Budget{Unit: "server_hours", Window: "24h", Amount: 0.25}, "0.25 Workspace-Stunden heute für das ganze Projekt"},
+		{Budget{Unit: "ram_gb_hours", Window: "total", Amount: 1000}, "1000 RAM-GB-Stunden insgesamt für das ganze Projekt"},
+	} {
+		if got := describe(tc.b); got != tc.want {
+			t.Errorf("describe(%+v) = %q, want %q", tc.b, got, tc.want)
+		}
+	}
+}
