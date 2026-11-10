@@ -406,31 +406,6 @@ func (s *Service) knownProfiles(profiles []string) []string {
 	return out
 }
 
-// MigrateProfiles brings the stored projects to the current profiles once at start (knownProfiles); a project that had TensorFlow but not PyTorch gets the TensorFlow base.
-func (s *Service) MigrateProfiles(ctx context.Context) error {
-	list, err := s.store.List(ctx)
-	if err != nil {
-		return err
-	}
-	for _, p := range list {
-		profiles := s.knownProfiles(p.Profiles)
-		base := p.ImageBase
-		if base == "" && slices.Contains(p.Profiles, "tensorflow") && !slices.Contains(p.Profiles, "pytorch") {
-			if _, ok := s.base("tensorflow"); ok {
-				base = "tensorflow"
-			}
-		}
-		if slices.Equal(profiles, p.Profiles) && base == p.ImageBase {
-			continue
-		}
-		p.Profiles, p.ImageBase, p.UpdatedBy = profiles, base, "profile-migration"
-		if err := s.store.Update(ctx, &p); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // base is a version of a base of the catalogue by its id; "" is the default version, the id of a family (from before versions) its default or else first current version.
 func (s *Service) base(id string) (Base, bool) {
 	for _, b := range s.cfg.Bases {

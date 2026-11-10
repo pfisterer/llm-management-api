@@ -370,23 +370,6 @@ func TestSplitProfileNeedsDerivedImage(t *testing.T) {
 	}
 }
 
-func TestMigrateProfiles(t *testing.T) {
-	ctx := context.Background()
-	s := service()
-	st := s.store
-	_ = st.Create(ctx, &Project{Slug: "tf", Profiles: []string{"cpu", "tensorflow", "cpu-gpukernel"}})
-	_ = st.Create(ctx, &Project{Slug: "both", Profiles: []string{"pytorch", "tensorflow", "git-cpu"}})
-	if err := s.MigrateProfiles(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if p, _ := s.Get(ctx, "tf"); !slices.Equal(p.Profiles, []string{"cpu", "gpu", SplitProfile}) || p.ImageBase != "tensorflow" {
-		t.Errorf("tf: %+v", p)
-	}
-	if p, _ := s.Get(ctx, "both"); !slices.Equal(p.Profiles, []string{"gpu", "cpu"}) || p.ImageBase != "" {
-		t.Errorf("both: %+v", p)
-	}
-}
-
 func TestProjectImageFromGit(t *testing.T) {
 	ctx := context.Background()
 	s := service()

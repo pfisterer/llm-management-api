@@ -109,10 +109,6 @@ func stores(ctx context.Context, cfg Config, log *zap.SugaredLogger) (allStores,
 	if err != nil {
 		return allStores{}, fmt.Errorf("postgres: %w", err)
 	}
-	// The access rules are gone (roles come from ADMIN_TOKENS and FLEET_ADMIN_TOKENS, LLM limits from the projects of the budget tree): their table goes too.
-	if m := db.Migrator(); m.HasTable("access_rules") {
-		_ = background.Step(log, "drop_access_rules", m.DropTable("access_rules"))
-	}
 	fs, err := fleet.NewGormStore(db)
 	if err != nil {
 		return allStores{}, err
@@ -328,8 +324,6 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 		}
 		gpuSvc.SetBases(wsCfg.Bases)
-		// The profiles went into CPU, CPU + GPU-Kernel and GPU on 14.10.2026: stored projects follow once.
-		_ = background.Step(log, "migrate_profiles", wsSvc.MigrateProfiles(context.Background()))
 		// Bases have versions since 17.10.2026: every project keeps the version it runs now.
 		_ = background.Step(log, "migrate_bases", wsSvc.MigrateBases(context.Background()))
 		// Batch jobs (docs/architektur.md "Batch-Jobs"): the rows in gpu_jobs, the projects' queues per class for the fleet, and what live jobs reserve of the GPU-hours budgets.
