@@ -227,7 +227,7 @@ func (s *Server) getModelAliases(c *gin.Context) {
 	}
 	v, err := s.aliases.Get(c.Request.Context(), granted)
 	if err != nil {
-		s.upstreamError(c, "model aliases", err)
+		s.fail(c, gatewayErrors, "model aliases", err)
 		return
 	}
 	c.JSON(http.StatusOK, v)

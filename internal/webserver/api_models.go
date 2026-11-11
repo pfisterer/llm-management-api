@@ -21,7 +21,7 @@ import (
 func (s *Server) getModelCatalog(c *gin.Context) {
 	cat, err := s.gpu.ModelCatalog(c.Request.Context())
 	if err != nil {
-		s.internalError(c, "model catalogue", err)
+		s.fail(c, internalErrors, "model catalogue", err)
 		return
 	}
 	c.JSON(http.StatusOK, cat)

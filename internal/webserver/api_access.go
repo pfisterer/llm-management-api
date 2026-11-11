@@ -76,7 +76,3 @@ func (s *Server) me(ctx context.Context, cl Caller, projects int) MeResponse {
 	return resp
 }
 
-func (s *Server) internalError(c *gin.Context, what string, err error) {
-	s.log.Errorw(what+" failed", "error", err)
-	abort(c, http.StatusInternalServerError, "internal", "Interner Fehler.")
-}

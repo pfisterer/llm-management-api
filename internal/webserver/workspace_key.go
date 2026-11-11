@@ -25,6 +25,8 @@ type keyFailure struct {
 	err       error
 }
 
+func (f *keyFailure) Error() string { return f.msg }
+
 // workspaceKey is the person's key for the workspaces and batch jobs of proj, whose LLM tokens it draws from chosen by llmProjectFor: the choice (a slug, gpu.NoLLM, or empty), the project's setting default_llm_project, the project's own LLM tokens, the person's first LLM project. The caller has checked that the person is a member of proj. A response with an empty Key and a Reason means definitely no key; a keyFailure that it could not be found out. sub is the person's Keycloak sub when known; without it the person is looked up by e-mail.
 func (k keySource) workspaceKey(ctx context.Context, email, sub string, tokens []string, proj workspace.Project, chosen string) (WorkspaceKeyResponse, *keyFailure) {
 	chosen = strings.TrimSpace(chosen)

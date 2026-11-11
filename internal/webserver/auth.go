@@ -136,10 +136,7 @@ func (s *Server) withCaller(c *gin.Context) {
 func (s *Server) keyPerson(c *gin.Context) (keys.Person, bool) {
 	p, fail := s.keyPersonFor(c.Request.Context(), caller(c))
 	if fail != nil {
-		if fail.err != nil {
-			s.log.Errorw("subject lookup failed", "error", fail.err)
-		}
-		abort(c, fail.status, fail.code, fail.msg)
+		s.fail(c, gatewayErrors, "subject lookup", fail)
 		return keys.Person{}, false
 	}
 	return p, true

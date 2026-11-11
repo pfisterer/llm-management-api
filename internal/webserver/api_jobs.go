@@ -93,11 +93,6 @@ func agentEnv(baseURL string, models []string, limits map[string]ModelLimit) map
 		"CLAUDE_CODE_SUBAGENT_MODEL": agent, "CLAUDE_CODE_MAX_CONTEXT_TOKENS": strconv.Itoa(maxIn + maxOut), "CLAUDE_CODE_MAX_OUTPUT_TOKENS": strconv.Itoa(maxOut), "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"}
 }
 
-// jobKeyFailure is a key that could not be found out for a job whose LLM project was chosen.
-type jobKeyFailure struct{ *keyFailure }
-
-func (e jobKeyFailure) Error() string { return e.msg }
-
 // keyReasons are the reasons of workspaceKey for no key, for people.
 var keyReasons = map[string]string{
 	"the chosen LLM project is none of the person's projects with LLM tokens": "Das gewählte LLM-Projekt ist keines der eigenen Projekte mit LLM-Tokens.",
@@ -166,7 +161,8 @@ func jobLLMKey(ctx context.Context, ws *workspace.Service, k *jobKeys, a jobActo
 	got, fail := k.workspaceKey(ctx, a.person, a.sub, a.tokens, proj, chosen)
 	switch {
 	case fail != nil && chosen != "":
-		return jobKeyFailure{fail}
+		// A key that could not be found out for a job whose LLM project was chosen: an error status with the key's text (classify).
+		return fail
 	case fail != nil:
 		return nil
 	case got.Key == "" && chosen != "":
@@ -244,29 +240,6 @@ func (s *Server) jobKeys() *jobKeys {
 	return k
 }
 
-func (s *Server) jobError(c *gin.Context, what string, err error) {
-	var refusal *workspace.Refusal
-	var inv *workspace.Invalid
-	var refused *gpu.JobRefused
-	var keyFail jobKeyFailure
-	switch {
-	case errors.As(err, &keyFail):
-		s.log.Errorw("batch job "+what+": llm key", "error", keyFail.err)
-		abort(c, keyFail.status, keyFail.code, keyFail.msg)
-	case errors.As(err, &inv):
-		abort(c, http.StatusBadRequest, "invalid", inv.Reason)
-	case errors.As(err, &refusal):
-		abort(c, http.StatusConflict, "refused", refusal.Reason)
-	case errors.As(err, &refused):
-		abort(c, http.StatusBadRequest, "invalid", refused.Reason)
-	case errors.Is(err, gpu.ErrNotFound):
-		abort(c, http.StatusNotFound, "not_found", "Job nicht gefunden.")
-	default:
-		s.log.Errorw("batch job "+what, "error", err)
-		abort(c, http.StatusBadGateway, "gpu_cluster", "GPU-Cluster gerade nicht erreichbar.")
-	}
-}
-
 // listJobs godoc
 //
 //	@ID				listGPUJobs
@@ -282,7 +255,7 @@ func (s *Server) jobError(c *gin.Context, what string, err error) {
 func (s *Server) listJobs(c *gin.Context) {
 	jobs, err := listJobsFor(c.Request.Context(), s.ws, s.gpu, s.jobActor(c), c.Query("project"))
 	if err != nil {
-		s.jobError(c, "list", err)
+		s.fail(c, jobErrors, "list", err)
 		return
 	}
 	c.JSON(http.StatusOK, jobs)
@@ -310,7 +283,7 @@ func (s *Server) submitJob(c *gin.Context) {
 	}
 	j, err := submitJob(c.Request.Context(), s.ws, s.gpu, s.jobKeys(), s.jobActor(c), req)
 	if err != nil {
-		s.jobError(c, "submit", err)
+		s.fail(c, jobErrors, "submit", err)
 		return
 	}
 	c.JSON(http.StatusCreated, j)
@@ -331,7 +304,7 @@ func (s *Server) submitJob(c *gin.Context) {
 func (s *Server) getJob(c *gin.Context) {
 	j, err := visibleJob(c.Request.Context(), s.ws, s.gpu, s.jobActor(c), c.Param("id"))
 	if err != nil {
-		s.jobError(c, "get", err)
+		s.fail(c, jobErrors, "get", err)
 		return
 	}
 	c.JSON(http.StatusOK, j)
@@ -354,13 +327,13 @@ func (s *Server) getJobLog(c *gin.Context) {
 	ctx := c.Request.Context()
 	j, err := visibleJob(ctx, s.ws, s.gpu, s.jobActor(c), c.Param("id"))
 	if err != nil {
-		s.jobError(c, "log", err)
+		s.fail(c, jobErrors, "log", err)
 		return
 	}
 	lines, _ := strconv.Atoi(c.DefaultQuery("lines", "200"))
 	log, err := s.gpu.JobLog(ctx, j.ID, min(max(lines, 1), 5000))
 	if err != nil {
-		s.jobError(c, "log", err)
+		s.fail(c, jobErrors, "log", err)
 		return
 	}
 	c.JSON(http.StatusOK, JobLogResponse{Log: log})
@@ -383,12 +356,12 @@ func (s *Server) cancelJob(c *gin.Context) {
 	a := s.jobActor(c)
 	j, err := visibleJob(ctx, s.ws, s.gpu, a, c.Param("id"))
 	if err != nil {
-		s.jobError(c, "cancel", err)
+		s.fail(c, jobErrors, "cancel", err)
 		return
 	}
 	j, err = s.gpu.CancelJob(ctx, j.ID, a.person)
 	if err != nil {
-		s.jobError(c, "cancel", err)
+		s.fail(c, jobErrors, "cancel", err)
 		return
 	}
 	c.JSON(http.StatusOK, j)
@@ -410,7 +383,7 @@ func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
 	a := s.jobActor(c)
 	j, err := visibleJob(ctx, s.ws, s.gpu, a, c.Param("id"))
 	if err != nil {
-		s.jobError(c, "files", err)
+		s.fail(c, jobErrors, "files", err)
 		return gpu.Job{}, "", false
 	}
 	root := jobFilesRoot(ctx, s.ws, a, j)
@@ -455,7 +428,7 @@ func (s *Server) listJobFiles(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		s.jobError(c, "files", err)
+		s.fail(c, jobErrors, "files", err)
 		return
 	}
 	c.JSON(http.StatusOK, list)
@@ -492,7 +465,7 @@ func (s *Server) downloadJobFile(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		s.jobError(c, "file", err)
+		s.fail(c, jobErrors, "file", err)
 		return
 	}
 	defer body.Close()
@@ -538,13 +511,13 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 	project := c.Query("project")
 	mine, err := s.ws.ForPerson(ctx, a.tokens, a.person, false)
 	if err != nil {
-		s.jobError(c, "upload", err)
+		s.fail(c, jobErrors, "upload", err)
 		return
 	}
 	hps := hubProjects(ctx, s.ws, mine)
 	i := slices.IndexFunc(hps, func(p HubProject) bool { return p.Slug == project })
 	if i < 0 {
-		s.jobError(c, "upload", &workspace.Refusal{Reason: "Kein aktives Projekt " + project + " mit Workspace-Zugang."})
+		s.fail(c, jobErrors, "upload", &workspace.Refusal{Reason: "Kein aktives Projekt " + project + " mit Workspace-Zugang."})
 		return
 	}
 	sharedRO := hps[i].SharedReadOnly
@@ -557,7 +530,7 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		s.jobError(c, "upload", err)
+		s.fail(c, jobErrors, "upload", err)
 		return
 	}
 	c.JSON(http.StatusCreated, f)

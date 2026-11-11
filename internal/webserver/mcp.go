@@ -3,7 +3,6 @@ package webserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -236,11 +235,11 @@ func (s *Server) registerLLMTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		p, fail := s.keyPersonFor(ctx, cl.Caller)
 		if fail != nil {
-			return nil, keys.Usage{}, s.mcpKeyFailure("LLM usage", fail)
+			return nil, keys.Usage{}, s.mcpFail(gatewayErrors, "LLM usage", fail)
 		}
 		u, err := s.keys.Usage(ctx, p, g)
 		if err != nil {
-			return nil, keys.Usage{}, s.mcpError("LLM usage", err)
+			return nil, keys.Usage{}, s.mcpFail(gatewayErrors, "LLM usage", err)
 		}
 		s.nameWorkspaceKeys(ctx, u.Keys)
 		return nil, u, nil
@@ -263,7 +262,7 @@ func (s *Server) registerLLMTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		v, err := s.aliases.Get(ctx, granted)
 		if err != nil {
-			return nil, ModelAliasesResponse{}, s.mcpError("LLM models", err)
+			return nil, ModelAliasesResponse{}, s.mcpFail(gatewayErrors, "LLM models", err)
 		}
 		return nil, v, nil
 	})
@@ -276,7 +275,7 @@ func (s *Server) registerWorkspaceTools(srv *mcp.Server, cl mcpCaller) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mcpProjectList, error) {
 		mine, err := s.ws.ForPerson(ctx, cl.Tokens, cl.Email, false)
 		if err != nil {
-			return nil, mcpProjectList{}, s.mcpError("projects", err)
+			return nil, mcpProjectList{}, s.mcpFail(internalErrors, "projects", err)
 		}
 		out := mcpProjectList{Projects: []mcpProject{}}
 		for _, m := range mine {
@@ -300,8 +299,8 @@ func (s *Server) registerWorkspaceTools(srv *mcp.Server, cl mcpCaller) {
 		if cl.admin() && in.Project == "" {
 			return s.mcpUsageReport(ctx, in.mcpPeriodInput, nil)
 		}
-		if err := s.mcpManager(ctx, cl, in.Project); err != nil {
-			return nil, usage.Report{}, err
+		if err := s.manager(ctx, cl.Caller, in.Project); err != nil {
+			return nil, usage.Report{}, s.mcpFail(projectErrors, "workspace project", err)
 		}
 		return s.mcpUsageReport(ctx, in.mcpPeriodInput, func(r usage.Row) bool { return r.Project == in.Project })
 	})
@@ -316,34 +315,16 @@ func (s *Server) mcpUsageReport(ctx context.Context, in mcpPeriodInput, keep usa
 	}
 	rep, err := usage.BuildReport(ctx, s.usage, from, to, keep)
 	if err != nil {
-		return nil, usage.Report{}, s.mcpError("workspace usage", err)
+		return nil, usage.Report{}, s.mcpFail(internalErrors, "workspace usage", err)
 	}
 	return nil, rep, nil
 }
 
-// mcpManager is Server.manager without gin: admins pass; others need a project they manage, and an unknown project or one they have no part in is answered like REST (404: nobody learns which projects exist).
-func (s *Server) mcpManager(ctx context.Context, cl mcpCaller, slug string) error {
-	if cl.admin() {
-		return nil
-	}
-	if slug == "" {
-		return errors.New("Projekt fehlt.")
-	}
-	ok, err := s.ws.MayManage(ctx, cl.Tokens, false, slug)
-	if err != nil {
-		return s.mcpError("project", err)
-	}
-	if !ok {
-		return errors.New("Nur für Admins und die Verwaltung des Projekts.")
-	}
-	return nil
-}
-
-// mcpWorkspaceAccess is requireWorkspace without gin: the caller's projects, or the refusal for somebody without one (admins pass, they manage the projects).
+// mcpWorkspaceAccess is requireWorkspace for the tools: the caller's projects, or the refusal of workspaceAccess for somebody without one.
 func (s *Server) mcpWorkspaceAccess(ctx context.Context, cl mcpCaller) ([]workspace.Mine, error) {
 	mine := s.projectsOf(ctx, cl.Caller)
-	if !cl.admin() && len(mine) == 0 {
-		return nil, errors.New("Kein Zugang zu Workspaces (kein Projekt).")
+	if err := workspaceAccess(cl.Caller, func() []workspace.Mine { return mine }); err != nil {
+		return nil, s.mcpFail(projectErrors, "workspace access", err)
 	}
 	return mine, nil
 }
@@ -358,7 +339,7 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		servers, err := s.gpu.Servers(ctx, cl.Email)
 		if err != nil {
-			return nil, mcpServerList{}, s.mcpError("servers", err)
+			return nil, mcpServerList{}, s.mcpFail(gpuErrors, "servers", err)
 		}
 		if servers == nil {
 			servers = []gpu.Server{}
@@ -379,7 +360,7 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		p, err := s.gpu.ServerProgress(ctx, cl.Email, name)
 		if err != nil {
-			return nil, gpu.Progress{}, s.mcpError("server progress", err)
+			return nil, gpu.Progress{}, s.mcpFail(gpuErrors, "server progress", err)
 		}
 		return nil, p, nil
 	})
@@ -414,7 +395,7 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		s.log.Infow("MCP start_server", "actor", cl.actorEmail(), "user", cl.Email, "project", in.Project, "profile", in.Profile)
 		srv, err := s.gpu.StartServer(ctx, cl.Email, o)
 		if err != nil {
-			return nil, gpu.Server{}, s.mcpError("start server", err)
+			return nil, gpu.Server{}, s.mcpFail(gpuErrors, "start server", err)
 		}
 		return nil, srv, nil
 	})
@@ -432,7 +413,7 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		s.log.Infow("MCP stop_server", "actor", cl.actorEmail(), "user", cl.Email, "server", name)
 		if err := s.gpu.StopServer(ctx, cl.Email, name); err != nil {
-			return nil, mcpDone{}, s.mcpError("stop server", err)
+			return nil, mcpDone{}, s.mcpFail(gpuErrors, "stop server", err)
 		}
 		return nil, mcpDone{Done: true, Message: "Der Server wird beendet."}, nil
 	})
@@ -456,7 +437,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobListInput) (*mcp.CallToolResult, mcpJobList, error) {
 		jobs, err := listJobsFor(ctx, s.ws, s.gpu, a, in.Project)
 		if err != nil {
-			return nil, mcpJobList{}, s.mcpError("jobs", err)
+			return nil, mcpJobList{}, s.mcpFail(jobErrors, "list", err)
 		}
 		if jobs == nil {
 			jobs = []gpu.Job{}
@@ -470,7 +451,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobInput) (*mcp.CallToolResult, gpu.Job, error) {
 		j, err := visibleJob(ctx, s.ws, s.gpu, a, in.ID)
 		if err != nil {
-			return nil, gpu.Job{}, s.mcpError("job", err)
+			return nil, gpu.Job{}, s.mcpFail(jobErrors, "get", err)
 		}
 		return nil, j, nil
 	})
@@ -481,7 +462,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobLogInput) (*mcp.CallToolResult, JobLogResponse, error) {
 		j, err := visibleJob(ctx, s.ws, s.gpu, a, in.ID)
 		if err != nil {
-			return nil, JobLogResponse{}, s.mcpError("job log", err)
+			return nil, JobLogResponse{}, s.mcpFail(jobErrors, "log", err)
 		}
 		lines := in.Lines
 		if lines == 0 {
@@ -489,7 +470,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		log, err := s.gpu.JobLog(ctx, j.ID, min(max(lines, 1), 5000))
 		if err != nil {
-			return nil, JobLogResponse{}, s.mcpError("job log", err)
+			return nil, JobLogResponse{}, s.mcpFail(jobErrors, "log", err)
 		}
 		return nil, JobLogResponse{Log: log}, nil
 	})
@@ -500,7 +481,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobFilesInput) (*mcp.CallToolResult, gpu.JobFiles, error) {
 		j, err := visibleJob(ctx, s.ws, s.gpu, a, in.ID)
 		if err != nil {
-			return nil, gpu.JobFiles{}, s.mcpError("job files", err)
+			return nil, gpu.JobFiles{}, s.mcpFail(jobErrors, "files", err)
 		}
 		root := jobFilesRoot(ctx, s.ws, a, j)
 		p := in.Path
@@ -520,7 +501,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 			return nil, gpu.JobFiles{}, errors.New("Ordner nicht gefunden.")
 		}
 		if err != nil {
-			return nil, gpu.JobFiles{}, s.mcpError("job files", err)
+			return nil, gpu.JobFiles{}, s.mcpFail(jobErrors, "files", err)
 		}
 		return nil, list, nil
 	})
@@ -539,7 +520,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 		// The input is the REST request field for field (mcp_input_drift_test.go holds them together), so it converts.
 		j, err := submitJob(ctx, s.ws, s.gpu, s.jobKeys(), a, SubmitJobRequest(in))
 		if err != nil {
-			return nil, gpu.Job{}, s.mcpError("submit job", err)
+			return nil, gpu.Job{}, s.mcpFail(jobErrors, "submit", err)
 		}
 		return nil, j, nil
 	})
@@ -550,12 +531,12 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobInput) (*mcp.CallToolResult, gpu.Job, error) {
 		j, err := visibleJob(ctx, s.ws, s.gpu, a, in.ID)
 		if err != nil {
-			return nil, gpu.Job{}, s.mcpError("cancel job", err)
+			return nil, gpu.Job{}, s.mcpFail(jobErrors, "cancel", err)
 		}
 		s.log.Infow("MCP cancel_job", "actor", cl.actorEmail(), "user", cl.Email, "job", j.ID)
 		j, err = s.gpu.CancelJob(ctx, j.ID, a.person)
 		if err != nil {
-			return nil, gpu.Job{}, s.mcpError("cancel job", err)
+			return nil, gpu.Job{}, s.mcpFail(jobErrors, "cancel", err)
 		}
 		return nil, j, nil
 	})
@@ -567,39 +548,4 @@ func (c mcpCaller) actorEmail() string {
 		return c.Actor
 	}
 	return c.Email
-}
-
-// mcpError is what a tool reports of an error, with the texts the REST mappers answer with (workspaceError, jobError, gpuError, upstreamError): a refusal's reason, the hub's message, "nicht gefunden"; what REST answers with 5xx is logged with what and named without its detail.
-func (s *Server) mcpError(what string, err error) error {
-	var refusal *workspace.Refusal
-	var inv *workspace.Invalid
-	var refused *gpu.JobRefused
-	var he *gpu.HubError
-	var keyFail jobKeyFailure
-	switch {
-	case errors.As(err, &keyFail):
-		return s.mcpKeyFailure(what, keyFail.keyFailure)
-	case errors.As(err, &inv):
-		return errors.New(inv.Reason)
-	case errors.As(err, &refusal):
-		return errors.New(refusal.Reason)
-	case errors.As(err, &refused):
-		return errors.New(refused.Reason)
-	case errors.Is(err, gpu.ErrNotFound), errors.Is(err, workspace.ErrNotFound):
-		return fmt.Errorf("%s: nicht gefunden, oder nicht für diese Person sichtbar", what)
-	case errors.Is(err, gpu.ErrInvalidRepo), errors.Is(err, gpu.ErrRefNotFound):
-		return err
-	case errors.As(err, &he) && he.Status < 500:
-		return errors.New(he.Message)
-	}
-	s.log.Errorw("MCP "+what+" failed", "error", err)
-	return fmt.Errorf("%s: gerade nicht möglich (interner Fehler oder ein Dienst nicht erreichbar)", what)
-}
-
-// mcpKeyFailure reports a key that could not be had: its message for people, the detail in the log.
-func (s *Server) mcpKeyFailure(what string, fail *keyFailure) error {
-	if fail.err != nil {
-		s.log.Errorw("MCP "+what+": llm key", "error", fail.err)
-	}
-	return errors.New(fail.msg)
 }

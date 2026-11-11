@@ -2,7 +2,6 @@ package webserver
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"regexp"
 	"slices"
@@ -14,33 +13,24 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
-// requireWorkspace aborts unless the caller may use workspaces: a member of an active project, or an admin (who manages the projects).
+// requireWorkspace aborts unless the caller may use workspaces (workspaceAccess).
 func (s *Server) requireWorkspace(c *gin.Context) {
-	if !caller(c).Role.AtLeast(access.RoleAdmin) && len(s.myProjects(c)) == 0 {
-		abort(c, http.StatusForbidden, "forbidden", "Kein Zugang zu Workspaces (kein Projekt).")
+	if s.fail(c, projectErrors, "workspace access", workspaceAccess(caller(c), func() []workspace.Mine { return s.myProjects(c) })) {
 		return
 	}
 	c.Next()
 }
 
+// workspaceAccess is the one place for who may use workspaces, for REST (requireWorkspace) and MCP alike: a member of an active project, or an admin (who manages the projects); else an apiError 403. mine are the caller's active projects, asked only for somebody who is no admin.
+func workspaceAccess(cl Caller, mine func() []workspace.Mine) error {
+	if cl.Role.AtLeast(access.RoleAdmin) || len(mine()) > 0 {
+		return nil
+	}
+	return &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: "Kein Zugang zu Workspaces (kein Projekt)."}
+}
+
 // BuildLogResponse is the tail of a project image's build log.
 type BuildLogResponse = workspace.BuildLog
-
-func (s *Server) gpuError(c *gin.Context, what string, err error) {
-	var he *gpu.HubError
-	switch {
-	case errors.Is(err, gpu.ErrNotFound):
-		abort(c, http.StatusNotFound, "not_found", "Nicht gefunden.")
-	case errors.Is(err, gpu.ErrInvalidRepo), errors.Is(err, gpu.ErrRefNotFound):
-		abort(c, http.StatusBadRequest, "invalid", err.Error())
-	case errors.As(err, &he) && he.Status < 500:
-		// JupyterHub refused, e.g. GPU quota exhausted: its message is meant for people.
-		abort(c, http.StatusConflict, "hub_refused", he.Message)
-	default:
-		s.log.Errorw(what+" failed", "error", err)
-		abort(c, http.StatusBadGateway, "gpu_cluster", "GPU-Cluster gerade nicht erreichbar.")
-	}
-}
 
 // listServers godoc
 //
@@ -55,7 +45,7 @@ func (s *Server) gpuError(c *gin.Context, what string, err error) {
 func (s *Server) listServers(c *gin.Context) {
 	servers, err := s.gpu.Servers(c.Request.Context(), caller(c).Email)
 	if err != nil {
-		s.gpuError(c, "list servers", err)
+		s.fail(c, gpuErrors, "list servers", err)
 		return
 	}
 	c.JSON(http.StatusOK, servers)
@@ -79,7 +69,7 @@ func (s *Server) stopServer(c *gin.Context) {
 		name = ""
 	}
 	if err := s.gpu.StopServer(c.Request.Context(), caller(c).Email, name); err != nil {
-		s.gpuError(c, "stop server", err)
+		s.fail(c, gpuErrors, "stop server", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -112,7 +102,7 @@ func (s *Server) getServerProgress(c *gin.Context) {
 	}
 	p, err := s.gpu.ServerProgress(c.Request.Context(), caller(c).Email, name)
 	if err != nil {
-		s.gpuError(c, "server progress", err)
+		s.fail(c, gpuErrors, "server progress", err)
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -192,7 +182,7 @@ func (s *Server) startServer(c *gin.Context) {
 	}
 	srv, err := s.gpu.StartServer(c.Request.Context(), caller(c).Email, o)
 	if err != nil {
-		s.gpuError(c, "start server", err)
+		s.fail(c, gpuErrors, "start server", err)
 		return
 	}
 	c.JSON(http.StatusAccepted, srv)

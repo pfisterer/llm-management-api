@@ -107,7 +107,7 @@ func (s *Server) listAPITokens(c *gin.Context) {
 	subject := tokenSubject(c)
 	records, err := s.tokens.Service.List(c.Request.Context(), subject)
 	if err != nil {
-		s.internalError(c, "list api tokens", err)
+		s.fail(c, internalErrors, "list api tokens", err)
 		return
 	}
 	out := make([]APIToken, 0, len(records))
@@ -167,7 +167,7 @@ func (s *Server) createAPIToken(c *gin.Context) {
 	defer s.tokens.issue.Unlock()
 	existing, err := s.tokens.Service.List(c.Request.Context(), subject)
 	if err != nil {
-		s.internalError(c, "list api tokens", err)
+		s.fail(c, internalErrors, "list api tokens", err)
 		return
 	}
 	if len(existing) >= s.tokens.MaxPerUser {
@@ -182,7 +182,7 @@ func (s *Server) createAPIToken(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		s.internalError(c, "issue api token", err)
+		s.fail(c, internalErrors, "issue api token", err)
 		return
 	}
 	s.log.Infow("api token created", "subject", subject, "id", issued.ID, "read_only", issued.ReadOnly, "expires_at", issued.ExpiresAt, "actor", cl.Actor)
@@ -231,7 +231,7 @@ func (s *Server) deleteAPIToken(c *gin.Context) {
 		// Not found and not yours give the same answer, so the response cannot be used to discover which IDs exist.
 		abort(c, http.StatusNotFound, "not_found", "Token nicht gefunden.")
 	case err != nil:
-		s.internalError(c, "revoke api token", err)
+		s.fail(c, internalErrors, "revoke api token", err)
 	default:
 		s.log.Infow("api token revoked", "subject", subject, "id", id, "actor", caller(c).Actor)
 		c.Status(http.StatusNoContent)

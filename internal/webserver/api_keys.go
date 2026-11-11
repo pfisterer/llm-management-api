@@ -71,7 +71,7 @@ func (s *Server) getUsage(c *gin.Context) {
 	}
 	u, err := s.keys.Usage(c.Request.Context(), p, g)
 	if err != nil {
-		s.upstreamError(c, "usage", err)
+		s.fail(c, gatewayErrors, "usage", err)
 		return
 	}
 	s.nameWorkspaceKeys(c.Request.Context(), u.Keys)
@@ -110,7 +110,7 @@ func (s *Server) listKeys(c *gin.Context) {
 	}
 	u, err := s.keys.Usage(c.Request.Context(), p, g)
 	if err != nil {
-		s.upstreamError(c, "list keys", err)
+		s.fail(c, gatewayErrors, "list keys", err)
 		return
 	}
 	s.nameWorkspaceKeys(c.Request.Context(), u.Keys)
@@ -152,7 +152,7 @@ func (s *Server) createKey(c *gin.Context) {
 	case errors.Is(err, keys.ErrDuplicate):
 		abort(c, http.StatusConflict, "duplicate", "Diese Bezeichnung ist schon für einen anderen eigenen Key vergeben.")
 	case err != nil:
-		s.upstreamError(c, "create key", err)
+		s.fail(c, gatewayErrors, "create key", err)
 	default:
 		c.JSON(http.StatusCreated, CreateKeyResponse{Key: secret, Name: v.Name, Project: v.Project, ProjectName: v.ProjectName})
 	}
@@ -187,7 +187,7 @@ func (s *Server) setDefaultProject(c *gin.Context) {
 	case errors.Is(err, keys.ErrNotEligible):
 		notEligible(c)
 	case err != nil:
-		s.upstreamError(c, "set default project", err)
+		s.fail(c, gatewayErrors, "set default project", err)
 	default:
 		c.JSON(http.StatusOK, DefaultProjectResponse{Project: pool.Slug, ProjectName: pool.Name})
 	}
@@ -213,13 +213,8 @@ func (s *Server) deleteKey(c *gin.Context) {
 	case errors.Is(err, keys.ErrNotFound):
 		abort(c, http.StatusNotFound, "not_found", "API Key nicht gefunden.")
 	case err != nil:
-		s.upstreamError(c, "delete key", err)
+		s.fail(c, gatewayErrors, "delete key", err)
 	default:
 		c.Status(http.StatusNoContent)
 	}
-}
-
-func (s *Server) upstreamError(c *gin.Context, what string, err error) {
-	s.log.Errorw(what+" failed", "error", err)
-	abort(c, http.StatusBadGateway, "litellm", "Das Gateway ist gerade nicht erreichbar.")
 }

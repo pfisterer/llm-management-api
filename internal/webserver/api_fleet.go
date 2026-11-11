@@ -76,7 +76,7 @@ func LiteLLMHealth(lite *litellm.Client) fleet.HealthSource {
 func (s *Server) getFleet(c *gin.Context) {
 	v, err := s.fleet.View(c.Request.Context(), s.health, s.material)
 	if err != nil {
-		s.internalError(c, "fleet view", err)
+		s.fail(c, internalErrors, "fleet view", err)
 		return
 	}
 	c.JSON(http.StatusOK, v)
@@ -100,7 +100,7 @@ func (s *Server) getFleetInference(c *gin.Context) {
 	}
 	v, err := s.gpu.InferencePool(c.Request.Context())
 	if err != nil {
-		s.internalError(c, "inference pool", err)
+		s.fail(c, internalErrors, "inference pool", err)
 		return
 	}
 	c.JSON(http.StatusOK, v)
@@ -118,7 +118,7 @@ func (s *Server) getFleetInference(c *gin.Context) {
 func (s *Server) getFleetCSV(c *gin.Context) {
 	b, err := s.fleet.CSV(c.Request.Context())
 	if err != nil {
-		s.internalError(c, "fleet csv", err)
+		s.fail(c, internalErrors, "fleet csv", err)
 		return
 	}
 	c.Header("Content-Disposition", `attachment; filename="llm-flotte.csv"`)
@@ -193,7 +193,7 @@ func (s *Server) getFleetPackage(c *gin.Context) {
 //	@Router			/v1/fleet/package [delete]
 func (s *Server) deleteFleetPackage(c *gin.Context) {
 	if err := s.material.DeletePackages(); err != nil {
-		s.internalError(c, "delete package", err)
+		s.fail(c, internalErrors, "delete package", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -249,7 +249,7 @@ func (s *Server) setBlocked(c *gin.Context, blocked bool) {
 		return
 	}
 	if err != nil {
-		s.internalError(c, "block machine", err)
+		s.fail(c, internalErrors, "block machine", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -301,7 +301,7 @@ func (s *Server) setFleetModel(c *gin.Context) {
 	case errors.Is(err, fleet.ErrRegistry):
 		abort(c, http.StatusBadGateway, "registry", "Das Ollama-Register ist nicht erreichbar, die Größe des Modells lässt sich nicht prüfen. Später erneut versuchen.")
 	case err != nil:
-		s.internalError(c, "set fleet model", err)
+		s.fail(c, internalErrors, "set fleet model", err)
 	default:
 		c.JSON(http.StatusOK, FleetModelResponse{Changed: n})
 	}
@@ -325,7 +325,7 @@ func (s *Server) forgetMachine(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		s.internalError(c, "forget machine", err)
+		s.fail(c, internalErrors, "forget machine", err)
 		return
 	}
 	c.Status(http.StatusNoContent)

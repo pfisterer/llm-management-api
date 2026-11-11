@@ -77,7 +77,7 @@ func (s *Server) getWorkspaceUsage(c *gin.Context) {
 			s.workspaceUsage(c, nil)
 			return
 		}
-	} else if !s.manager(c, project) {
+	} else if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), project)) {
 		return
 	}
 	s.workspaceUsage(c, func(r usage.Row) bool { return r.Project == project })
@@ -108,7 +108,7 @@ func (s *Server) workspaceUsage(c *gin.Context, keep usage.Filter) {
 	}
 	rep, err := usage.BuildReport(c.Request.Context(), s.usage, from, to, keep)
 	if err != nil {
-		s.internalError(c, "workspace usage", err)
+		s.fail(c, internalErrors, "workspace usage", err)
 		return
 	}
 	c.JSON(http.StatusOK, rep)
@@ -172,7 +172,7 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 	if c.Query("all") == "true" && cl.Role.AtLeast(access.RoleAdmin) {
 		list, err := s.ws.ForPerson(c.Request.Context(), cl.Tokens, cl.Email, true)
 		if err != nil {
-			s.internalError(c, "workspace projects", err)
+			s.fail(c, internalErrors, "workspace projects", err)
 			return
 		}
 		c.JSON(http.StatusOK, list)
@@ -210,35 +210,32 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 	}
 	p.Slug = c.Param("slug")
 	admin := cl.Role.AtLeast(access.RoleAdmin)
-	if !admin && !s.manager(c, p.Slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), cl, p.Slug)) {
 		return
 	}
 	out, err := s.ws.Update(c.Request.Context(), p, cl.Email, admin)
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
 }
 
-// manager lets admins and the project's managers through, the one place for this rule (decided 10.11.2026): no project given is 400; a project that does not exist, or in which the caller has no part, is 404, so nobody learns which projects exist; a member who may not manage it gets 403.
-func (s *Server) manager(c *gin.Context, slug string) bool {
-	cl := caller(c)
+// manager lets admins and the project's managers through, the one place for this rule (decided 10.11.2026), for REST and MCP alike: no project given is 400; a project that does not exist, or in which the caller has no part, is 404, so nobody learns which projects exist; a member who may not manage it gets 403. The answer is an apiError, an error of the projects classified as projectErrors.
+func (s *Server) manager(ctx context.Context, cl Caller, slug string) error {
 	if cl.Role.AtLeast(access.RoleAdmin) {
-		return true
+		return nil
 	}
 	if slug == "" {
-		abort(c, http.StatusBadRequest, "invalid", "Projekt fehlt.")
-		return false
+		return &apiError{Status: http.StatusBadRequest, Code: "invalid", Msg: "Projekt fehlt."}
 	}
-	ok, err := s.ws.MayManage(c.Request.Context(), cl.Tokens, false, slug)
-	if s.workspaceError(c, err) {
-		return false
+	ok, err := s.ws.MayManage(ctx, cl.Tokens, false, slug)
+	if err != nil {
+		return s.classify(projectErrors, "workspace project", err)
 	}
 	if !ok {
-		abort(c, http.StatusForbidden, "forbidden", "Nur für Admins und die Verwaltung des Projekts.")
-		return false
+		return &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: "Nur für Admins und die Verwaltung des Projekts."}
 	}
-	return true
+	return nil
 }
 
 // rebuildProjectImage godoc
@@ -256,11 +253,11 @@ func (s *Server) manager(c *gin.Context, slug string) bool {
 //	@Router			/v1/workspaces/projects/{slug}/image/rebuild [post]
 func (s *Server) rebuildProjectImage(c *gin.Context) {
 	slug := c.Param("slug")
-	if !s.manager(c, slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
 	}
 	b, err := s.ws.RebuildProjectImage(c.Request.Context(), slug)
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	c.JSON(http.StatusOK, b)
@@ -281,11 +278,11 @@ func (s *Server) rebuildProjectImage(c *gin.Context) {
 //	@Router			/v1/workspaces/projects/{slug}/image/update [post]
 func (s *Server) updateProjectImage(c *gin.Context) {
 	slug := c.Param("slug")
-	if !s.manager(c, slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
 	}
 	p, err := s.ws.UpdateProjectImage(c.Request.Context(), slug, caller(c).Email)
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -312,11 +309,11 @@ type CredentialRequest struct {
 //	@Router			/v1/workspaces/projects/{slug}/credentials [get]
 func (s *Server) listProjectCredentials(c *gin.Context) {
 	slug := c.Param("slug")
-	if !s.manager(c, slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
 	}
 	list, err := s.ws.Credentials(c.Request.Context(), slug)
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	c.JSON(http.StatusOK, list)
@@ -339,7 +336,7 @@ func (s *Server) listProjectCredentials(c *gin.Context) {
 //	@Router			/v1/workspaces/projects/{slug}/credentials [put]
 func (s *Server) setProjectCredential(c *gin.Context) {
 	slug := c.Param("slug")
-	if !s.manager(c, slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
 	}
 	var req CredentialRequest
@@ -347,11 +344,11 @@ func (s *Server) setProjectCredential(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Host, Benutzername und Token angeben."})
 		return
 	}
-	if s.workspaceError(c, s.ws.SetCredential(c.Request.Context(), slug, req.Host, req.Username, req.Token, caller(c).Email)) {
+	if s.fail(c, projectErrors, "workspace project", s.ws.SetCredential(c.Request.Context(), slug, req.Host, req.Username, req.Token, caller(c).Email)) {
 		return
 	}
 	list, err := s.ws.Credentials(c.Request.Context(), slug)
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	c.JSON(http.StatusOK, list)
@@ -371,10 +368,10 @@ func (s *Server) setProjectCredential(c *gin.Context) {
 //	@Router			/v1/workspaces/projects/{slug}/credentials/{host} [delete]
 func (s *Server) deleteProjectCredential(c *gin.Context) {
 	slug := c.Param("slug")
-	if !s.manager(c, slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
 	}
-	if s.workspaceError(c, s.ws.DeleteCredential(c.Request.Context(), slug, c.Param("host"))) {
+	if s.fail(c, projectErrors, "workspace project", s.ws.DeleteCredential(c.Request.Context(), slug, c.Param("host"))) {
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -394,14 +391,14 @@ func (s *Server) deleteProjectCredential(c *gin.Context) {
 //	@Router			/v1/workspaces/projects/{slug}/image/log [get]
 func (s *Server) getProjectImageLog(c *gin.Context) {
 	slug := c.Param("slug")
-	if !s.manager(c, slug) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
 	}
 	bl, err := s.ws.ProjectImageLog(c.Request.Context(), slug)
 	if errors.Is(err, gpu.ErrNotFound) {
 		err = workspace.ErrNotFound
 	}
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	c.JSON(http.StatusOK, bl)
@@ -420,29 +417,10 @@ func (s *Server) getProjectImageLog(c *gin.Context) {
 //	@Failure		404	{object}	ErrorResponse
 //	@Router			/v1/workspaces/projects/{slug} [delete]
 func (s *Server) deleteWorkspaceProject(c *gin.Context) {
-	if s.workspaceError(c, s.ws.Delete(c.Request.Context(), c.Param("slug"))) {
+	if s.fail(c, projectErrors, "workspace project", s.ws.Delete(c.Request.Context(), c.Param("slug"))) {
 		return
 	}
 	c.Status(http.StatusNoContent)
-}
-
-func (s *Server) workspaceError(c *gin.Context, err error) bool {
-	var r *workspace.Refusal
-	var inv *workspace.Invalid
-	switch {
-	case err == nil:
-		return false
-	case errors.As(err, &inv):
-		abort(c, http.StatusBadRequest, "invalid", inv.Reason)
-	case errors.As(err, &r):
-		// A refusal by the project's rules is 409 here as for batch jobs (decided 10.11.2026).
-		abort(c, http.StatusConflict, "refused", r.Reason)
-	case errors.Is(err, workspace.ErrNotFound):
-		abort(c, http.StatusNotFound, "not_found", "Projekt nicht gefunden.")
-	default:
-		s.internalError(c, "workspace project", err)
-	}
-	return true
 }
 
 // getWorkspaceStorage godoc
@@ -490,7 +468,7 @@ func (s *Server) getGPUHours(c *gin.Context) {
 	cl := caller(c)
 	project := c.Query("project")
 	admin := cl.Role.AtLeast(access.RoleAdmin)
-	if !admin && !s.manager(c, project) {
+	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), cl, project)) {
 		return
 	}
 	today := usage.Day(time.Now())

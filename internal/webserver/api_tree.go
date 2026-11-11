@@ -34,7 +34,7 @@ func (s *Server) requireTreeToken(c *gin.Context) {
 func (s *Server) listTreeProjects(c *gin.Context) {
 	list, err := s.ws.TreeProjects(c.Request.Context())
 	if err != nil {
-		s.internalError(c, "tree projects", err)
+		s.fail(c, internalErrors, "tree projects", err)
 		return
 	}
 	c.JSON(http.StatusOK, list)
@@ -62,7 +62,7 @@ func (s *Server) putTreeProject(c *gin.Context) {
 		return
 	}
 	st, err := s.ws.UpsertFromTree(c.Request.Context(), c.Param("node"), tp)
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	s.treeChanged()
@@ -87,7 +87,7 @@ func (s *Server) deleteTreeProject(c *gin.Context) {
 		abort(c, http.StatusNotFound, "not_found", "Projekt nicht gefunden.")
 		return
 	}
-	if s.workspaceError(c, err) {
+	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
 	s.treeChanged()
