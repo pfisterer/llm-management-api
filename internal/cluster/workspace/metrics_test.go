@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 )
 
 func TestStartCounter(t *testing.T) {

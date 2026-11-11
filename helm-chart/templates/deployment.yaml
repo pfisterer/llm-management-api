@@ -59,11 +59,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: ["ALL"]}
             seccompProfile: {type: RuntimeDefault}
+          # /readyz: the database answers (the identity provider is reported, not required); /healthz: the process serves. /health stays for anything else that asks it.
           readinessProbe:
-            httpGet: {path: /health, port: http}
+            httpGet: {path: /readyz, port: http}
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /health, port: http}
+            httpGet: {path: /healthz, port: http}
             initialDelaySeconds: 10
             periodSeconds: 30
           resources:

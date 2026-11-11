@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/cloud-self-service-golib/httpx"
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
@@ -85,12 +86,14 @@ type allStores struct {
 	tokens   *token.Service
 	research research.Store
 	jobs     gpu.JobStore
+	// db is the connection, for the readiness check; nil in memory.
+	db *gorm.DB
 }
 
 // stores opens the fleet, classification, GPU, usage and project stores on one connection. It waits up to dbWait for Postgres: since the NetworkPolicies a new pod is let through only a moment after it starts. Creating or migrating a table is fatal; the rest of the startup is not (background.Step).
 func stores(ctx context.Context, cfg Config, log *zap.SugaredLogger) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore(), gpu.NewMemoryJobStore()}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore(), gpu.NewMemoryJobStore(), nil}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -157,16 +160,20 @@ func stores(ctx context.Context, cfg Config, log *zap.SugaredLogger) (allStores,
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs, js}, nil
+	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs, js, db}, nil
 }
 
 // dbWait is how long the service waits for Postgres and the OIDC provider at startup before it gives up (decided 10.11.2026).
 const dbWait = 60 * time.Second
 
-// startupServer answers on the API's address while the service starts: /health (and everything else) with 503 "starting", so the probes see a pod that is alive but not ready instead of a refused connection.
+// startupServer answers on the API's address while the service starts: /healthz with 200 and everything else (/readyz, /health) with 503 "starting", so the probes see a pod that is alive but not ready instead of a refused connection.
 func startupServer(addr string, log *zap.SugaredLogger) *http.Server {
 	hs := &http.Server{Addr: addr, ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/healthz" {
+			_, _ = w.Write([]byte(`{"status":"starting"}`))
+			return
+		}
 		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"status":"starting"}`))
@@ -380,20 +387,30 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		}
 	}
 
+	// The probes: /healthz (alive) and /readyz (the database answers; the identity provider's keys are reported but do not take the pod out, since API tokens work without it).
+	probes := &ginweb.Health{}
+	if st.db != nil {
+		probes.AddCheck("database", func(ctx context.Context) error {
+			sqlDB, err := st.db.DB()
+			if err != nil {
+				return err
+			}
+			return sqlDB.PingContext(ctx)
+		})
+	}
 	var verifier webserver.TokenVerifier
 	if cfg.OIDCIssuerURL != "" {
-		var v *oidcauth.Verifier
-		err := retry.Do(context.Background(), retry.Policy{Total: dbWait, OnRetry: func(attempt int, err error, wait time.Duration) {
-			log.Infow("OIDC provider not reachable yet, trying again", "attempt", attempt, "in", wait.String(), "error", err)
-		}}, func(context.Context) error {
-			var err error
-			v, err = oidcauth.New(oidcauth.Config{IssuerURL: cfg.OIDCIssuerURL, ClientID: cfg.OIDCClientID, JWKSURL: cfg.OIDCJWKSURL}, log)
-			return err
-		})
+		v, err := oidcauth.NewWithRetry(context.Background(), oidcauth.Config{IssuerURL: cfg.OIDCIssuerURL, ClientID: cfg.OIDCClientID, JWKSURL: cfg.OIDCJWKSURL}, log, retry.Policy{Total: dbWait})
 		if err != nil {
 			return fmt.Errorf("oidc: %w", err)
 		}
 		verifier = v
+		probes.AddDegraded("oidc_keys", func(context.Context) error {
+			if v.KeysUnavailable() {
+				return errors.New(v.LastKeyFetchError())
+			}
+			return nil
+		})
 	} else {
 		log.Warnw("no OIDC issuer configured: requests without a bearer are the dev user (development mode)", "dev_user", cfg.DevAuthUser)
 	}
@@ -426,6 +443,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Gateway:      cfg.LiteLLMGatewayURL,
 		AdminUIURL:   cfg.AdminUIURL,
 		Verifier:     verifier,
+		Probes:       probes,
 		Access:       accessSvc,
 		Keys:         keySvc,
 		Quota:        quota,

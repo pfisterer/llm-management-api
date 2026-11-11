@@ -1,0 +1,14 @@
+# Watches the shared library, so a fix released there does not sit unnoticed until someone happens to look (modelled on openstack-management-api's file).
+#
+# Deliberately narrowed to the one dependency with `allow`: a blanket gomod watch would open pull requests for every transitive module, and a stream of noise is read exactly as carefully as no notification at all. Widening it is one line, once someone wants it.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: github.com/pfisterer/cloud-self-service-golib
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 1

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/platform/background"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 )
 
 // Image cleanup in Harbor (docs/todo.md image_cleanup): one periodic sweep compares the artifacts in the Harbor project of the environments (envs) with the images still referred to, and deletes the rest. It covers every way an environment goes (a project deleted by an admin or by the budget tree after its grace days, a rebuild that forgets the older build, a crash between both) and old leftovers, so no deletion path has to call Harbor itself, and a failed delete is simply tried again at the next pass.

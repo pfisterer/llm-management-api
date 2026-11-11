@@ -36,6 +36,17 @@ func TestStartupServerAnswersNotReady(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "starting") {
 		t.Fatalf("got %d %s, want 503 starting", resp.StatusCode, body)
 	}
+	// Alive while starting: the liveness probe must not restart a pod that waits for Postgres; readiness is 503.
+	for path, want := range map[string]int{"/healthz": http.StatusOK, "/readyz": http.StatusServiceUnavailable} {
+		resp, err := http.Get("http://" + addr + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("%s while starting: %d, want %d", path, resp.StatusCode, want)
+		}
+	}
 	if err := hs.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}

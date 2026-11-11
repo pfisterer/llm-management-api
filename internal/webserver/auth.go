@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
+	"github.com/pfisterer/cloud-self-service-golib/credential"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
-	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
@@ -46,54 +46,53 @@ const callerKey = "llm.caller"
 // API token: a bearer with the prefix aiaas_ is looked up in the token store and is its owner, by e-mail address; what the owner may do is resolved per request like for a sign-in (withCaller), so a token never holds more than its owner has now.
 // Development: a request without a bearer is the dev user (DEV_AUTH_USER), nothing is verified; other people are reached with X-Act-As, as in production.
 //
+// Which case a credential is (none, an API token, an ID token, rejected, the provider away) is decided by golib's credential.Resolve, the same in every service; the answers here are this service's.
+//
 // Every successful path records whether the credential is read-only (ginweb.SetReadOnly): RejectWritesForReadOnlyTokens refuses a write on a request where nobody did.
 func (s *Server) authenticate(c *gin.Context) (Identity, bool) {
-	if s.devMode && c.GetHeader("Authorization") == "" {
+	header := c.GetHeader("Authorization")
+	if s.devMode && header == "" {
 		ginweb.SetReadOnly(c, false)
 		return Identity{Email: s.devUser, Subject: "dev-" + s.devUser}, true
 	}
-	raw, ok := authn.CutBearerPrefix(c.GetHeader("Authorization"))
-	if ok && s.tokens != nil && s.tokens.Service.Owns(raw) {
-		return s.authenticateToken(c, raw)
+	var tokens credential.Tokens
+	if s.tokens != nil {
+		tokens = s.tokens.Service
 	}
-	if !ok || s.verifier == nil {
+	p, err := credential.Resolve(c.Request.Context(), header, tokens, s.verifier)
+	switch {
+	case err == nil:
+	case errors.Is(err, credential.ErrMissing), errors.Is(err, credential.ErrNoVerifier):
 		abort(c, http.StatusUnauthorized, "unauthenticated", "Anmeldung erforderlich.")
 		return Identity{}, false
-	}
-	claims, err := s.verifier.Verify(c.Request.Context(), raw)
-	if err != nil {
-		if errors.Is(err, oidcauth.ErrKeysUnavailable) {
-			abort(c, http.StatusServiceUnavailable, "auth_unavailable", "Anmeldedienst gerade nicht erreichbar.")
-			return Identity{}, false
-		}
-		s.log.Infow("token rejected", "error", err)
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Anmeldung ungültig oder abgelaufen.")
+	case errors.Is(err, credential.ErrKeysUnavailable):
+		abort(c, http.StatusServiceUnavailable, "auth_unavailable", "Anmeldedienst gerade nicht erreichbar.")
 		return Identity{}, false
-	}
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
-	if email == "" || claims.Subject == "" {
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Das Token enthält keine E-Mail-Adresse.")
-		return Identity{}, false
-	}
-	ginweb.SetReadOnly(c, false)
-	return Identity{Email: email, Subject: claims.Subject}, true
-}
-
-// authenticateToken resolves an API token. Expired, revoked and unknown tokens are one answer (the library makes an expired token absent), so the response does not tell which.
-func (s *Server) authenticateToken(c *gin.Context, raw string) (Identity, bool) {
-	rec, err := s.tokens.Service.Lookup(c.Request.Context(), raw)
-	if errors.Is(err, token.ErrNotFound) {
+	case errors.Is(err, token.ErrNotFound):
+		// Expired, revoked and unknown tokens are one answer (the library makes an expired token absent), so the response does not tell which.
 		s.log.Infow("api token rejected")
 		abort(c, http.StatusUnauthorized, "unauthenticated", "API-Token ungültig, abgelaufen oder gelöscht.")
 		return Identity{}, false
-	}
-	if err != nil {
+	case errors.Is(err, credential.ErrRejected):
+		s.log.Infow("token rejected", "error", err)
+		abort(c, http.StatusUnauthorized, "unauthenticated", "Anmeldung ungültig oder abgelaufen.")
+		return Identity{}, false
+	default:
 		s.log.Errorw("api token lookup failed", "error", err)
 		abort(c, http.StatusInternalServerError, "internal", "Interner Fehler.")
 		return Identity{}, false
 	}
-	ginweb.SetReadOnly(c, rec.ReadOnly)
-	return Identity{Email: strings.ToLower(strings.TrimSpace(rec.Subject)), ViaAPIToken: true, TokenID: rec.ID}, true
+	if p.ViaAPIToken() {
+		ginweb.SetReadOnly(c, p.ReadOnly)
+		return Identity{Email: strings.ToLower(strings.TrimSpace(p.Token.Subject)), ViaAPIToken: true, TokenID: p.Token.ID}, true
+	}
+	email := strings.ToLower(strings.TrimSpace(p.Claims.Email))
+	if email == "" || p.Claims.Subject == "" {
+		abort(c, http.StatusUnauthorized, "unauthenticated", "Das Token enthält keine E-Mail-Adresse.")
+		return Identity{}, false
+	}
+	ginweb.SetReadOnly(c, false)
+	return Identity{Email: email, Subject: p.Claims.Subject}, true
 }
 
 // withCaller authenticates and resolves the caller's tokens and role, and the person an admin acts for (X-Act-As). It does NOT require any role beyond being signed in: /me must answer people without projects too.

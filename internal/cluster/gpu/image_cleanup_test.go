@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 	"go.uber.org/zap"
 )
 

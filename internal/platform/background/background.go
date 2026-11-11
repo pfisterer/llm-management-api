@@ -5,14 +5,13 @@ package background
 
 import (
 	"context"
-	"fmt"
 	"maps"
-	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
+	"github.com/pfisterer/cloud-self-service-golib/loop"
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"go.uber.org/zap"
 )
 
@@ -50,17 +49,6 @@ func WriteMetrics(w *promtext.Writer) {
 	}
 }
 
-// guard runs fn and turns a panic into a log line and a count for loop.
-func guard(log *zap.SugaredLogger, loop string, fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			Panics.Inc(loop)
-			log.Errorw("background loop panicked, going on at its next tick", "loop", loop, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
-		}
-	}()
-	fn()
-}
-
 // Schedule says when a loop ticks.
 type Schedule struct {
 	// Interval is the time between two ticks.
@@ -71,32 +59,17 @@ type Schedule struct {
 	Nudge <-chan struct{}
 }
 
-// Run runs fn by s until ctx ends. A panic in fn is recovered, logged and counted, and the next tick runs as usual.
-func Run(ctx context.Context, log *zap.SugaredLogger, loop string, s Schedule, fn func(ctx context.Context)) {
-	Panics.Init(loop)
-	go func() {
-		t := time.NewTicker(s.Interval)
-		defer t.Stop()
-		if s.First > 0 {
-			first := time.NewTimer(s.First)
-			select {
-			case <-ctx.Done():
-				first.Stop()
-				return
-			case <-first.C:
-			}
-			t.Reset(s.Interval)
-		}
-		for {
-			guard(log, loop, func() { fn(ctx) })
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			case <-s.Nudge:
-			}
-		}
-	}()
+// Run runs fn by s until ctx ends, in a goroutine of its own (golib's loop.Run). A panic in fn is recovered, logged and counted, and the next tick runs as usual.
+func Run(ctx context.Context, log *zap.SugaredLogger, name string, s Schedule, fn func(ctx context.Context)) {
+	Panics.Init(name)
+	var nudges []<-chan struct{}
+	if s.Nudge != nil {
+		nudges = []<-chan struct{}{s.Nudge}
+	}
+	go loop.Run(ctx, loop.Schedule{Interval: s.Interval, First: s.First, Nudges: nudges}, func(ctx context.Context) error {
+		fn(ctx)
+		return nil
+	}, loop.Options{Name: name, Log: log, OnPanic: func(any, []byte) { Panics.Inc(name) }})
 }
 
 // Every runs fn every interval until ctx ends: right away first if now is true, else first after one interval.

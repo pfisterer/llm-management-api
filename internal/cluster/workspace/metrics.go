@@ -6,8 +6,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 )
 
 // Metrics of the projects for the service's /metrics (webserver.MetricsRouter): the start decisions, counted as they happen, and what the database says about the projects, their budgets, storage and bases, computed when asked (the caller caches it briefly).

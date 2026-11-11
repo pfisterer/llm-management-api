@@ -16,7 +16,9 @@ import (
 
 // Every route of the API is either covered by an MCP tool or left out with a reason an agent's user could read. A new route matches neither and fails the test, which forces the decision; a stale entry (a route that is gone, a tool that is gone) fails it too.
 var mcpRouteCoverage = map[string]mcptest.Route{
-	"GET /health":       {Omitted: "no API: the probes' health check"},
+	"GET /health":       {Omitted: "no API: the former health check, kept for compatibility"},
+	"GET /healthz":      {Omitted: "no API: the liveness probe"},
+	"GET /readyz":       {Omitted: "no API: the readiness probe"},
 	"GET /config.json":  {Omitted: "no API: the UI's version footer"},
 	"GET /swagger.json": {Omitted: "no API: the API description itself"},
 

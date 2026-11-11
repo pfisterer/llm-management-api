@@ -36,6 +36,8 @@ type Options struct {
 	APIURL      string
 	AdminUIURL  string
 	Verifier    TokenVerifier // nil only in development mode
+	// Probes serve /healthz and /readyz; nil = both without checks.
+	Probes *ginweb.Health
 	Access      *access.Service
 	Keys        *keys.Service
 	// Quota decides a person's LLM pools and their limits, from the tree's projects and the configured defaults.
@@ -87,6 +89,7 @@ type Server struct {
 	gpu      *gpu.Service
 	usage    usage.Store
 	ws       *workspace.Service
+	probes *ginweb.Health
 	// tokens is nil without an API token service.
 	tokens *apiTokens
 	log    *zap.SugaredLogger
@@ -97,9 +100,33 @@ func New(o Options) *Server {
 	if o.Tokens.Service != nil {
 		tokens = &apiTokens{TokenOptions: o.Tokens}
 	}
-	return &Server{tokens: tokens, devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
+	probes := o.Probes
+	if probes == nil {
+		probes = &ginweb.Health{}
+	}
+	return &Server{probes: probes, tokens: tokens, devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
 		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, master: o.MasterKey, gateway: o.Gateway, treeTok: o.TreeToken, onTree: o.OnTreeChange,
 		fleet: o.Fleet, health: o.Health, material: o.Material, aliases: o.Aliases, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
+}
+
+// MaxRequestBodyBytes bounds a request body on the API's listener (ginweb.LimitRequestBody: 413 where the request announces more, a failed read where it does not). The largest JSON body, a project with its settings or a batch job, is a few kilobytes.
+const MaxRequestBodyBytes = 1 << 20
+
+// largeBodyRoutes may send more than MaxRequestBodyBytes and bound their bodies themselves: an upload into the home for a batch job (uploadJobFile, up to gpu.JobFileMaxBytes, Content-Length required).
+var largeBodyRoutes = map[string]bool{
+	http.MethodPut + " /v1/gpu/files": true,
+}
+
+// limitBody is ginweb.LimitRequestBody for every route but largeBodyRoutes.
+func limitBody() gin.HandlerFunc {
+	limit := ginweb.LimitRequestBody(MaxRequestBodyBytes)
+	return func(c *gin.Context) {
+		if largeBodyRoutes[c.Request.Method+" "+c.FullPath()] {
+			c.Next()
+			return
+		}
+		limit(c)
+	}
 }
 
 // Router builds the gin engine with all routes.
@@ -109,9 +136,11 @@ func (s *Server) Router() *gin.Engine {
 	}
 	r := gin.New()
 	// Writes from another origin are refused for every route (the self-service UI reaches this API through its BFF, same origin for the browser). The UI's origin is trusted for browsers that send no Sec-Fetch-Site, since the BFF rewrites Host on the way here.
-	r.Use(gin.Recovery(), s.requestLog(), ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{TrustedOrigins: originOf(s.adminUI), DevMode: s.devMode, Log: s.log}))
+	r.Use(gin.Recovery(), s.requestLog(), ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{TrustedOrigins: originOf(s.adminUI), DevMode: s.devMode, Log: s.log}), limitBody())
 
+	// /health stays for what still asks it (older probes, the ingress); the probes use /healthz (alive) and /readyz (ready: the checks of Probes).
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	s.probes.Mount(r)
 	r.GET("/config.json", s.getConfig)
 	r.GET("/swagger.json", func(c *gin.Context) { c.Data(http.StatusOK, "application/json", []byte(s.swagger)) })
 
@@ -243,7 +272,7 @@ func (s *Server) requestLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		if c.Request.URL.Path == "/health" {
+		if p := c.Request.URL.Path; p == "/health" || p == "/healthz" || p == "/readyz" {
 			return
 		}
 		fields := []any{"method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "ms", time.Since(start).Milliseconds()}

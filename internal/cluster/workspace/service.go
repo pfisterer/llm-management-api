@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 )
 
 // Profile is one entry of JupyterHub's profile list, as far as projects need it. GPU: its servers or kernels use a GPU, of the class chosen at the start.

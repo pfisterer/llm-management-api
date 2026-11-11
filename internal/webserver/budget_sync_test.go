@@ -10,10 +10,10 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
 )
 

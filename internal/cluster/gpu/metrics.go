@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 )
 
 // WorkspaceMetrics renders what the cluster says about the workspaces for the service's /metrics: the running and waiting servers and GPU kernels by profile and GPU class, the GPUs they hold, how long starts took, the project image builds and the prepull. Rendered when asked (the caller caches it briefly); one listing of the workspace pods, one read of the builds.

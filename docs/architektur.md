@@ -11,10 +11,9 @@ Stand: 11.11.2026. Die Architektur der ganzen Plattform (Cluster, Netz, LiteLLM,
 ```
 internal/
   app.go, config.go, adapters.go   Package app: Konfiguration laden, Dienste verdrahten, Listener und Hintergrundschleifen starten; adapters.go bildet zwischen gpu, workspace und usage ab
-  platform/                        Technische Bausteine ohne Fachwissen; dürfen nur platform importieren (HTTP-Client mit Wiederholung und JSON-Request-Helfer: golib httpx)
-    background/                    Hintergrundschleifen (Every, Run, Schedule) mit Panikschutz und Metrik, Startschritte (Step)
+  platform/                        Technische Bausteine ohne Fachwissen; dürfen nur platform importieren (HTTP-Client mit Wiederholung und JSON-Request-Helfer: golib httpx; Prometheus-Textformat: golib promtext)
+    background/                    Hintergrundschleifen (Every, Run, Schedule) über golib loop.Run mit Panikschutz und Metrik, Startschritte (Step)
     oci/                           OCI-Registry- und Harbor-Client: Manifeste, Labels, Architekturen, Scan-Übersicht, Artefakte auflisten und löschen
-    promtext/                      Prometheus-Textformat von Hand (Writer, CounterVec, Cache) statt einer Client-Bibliothek
     ttlcache/                      Generischer TTL-Cache für Schlüssel (Map) und Einzelwerte (Value)
   access/                          Identität und Rollen: wer eine Person ist (Tokens aus dem Role-Provider), welche Rolle sie hat (ADMIN_TOKENS, FLEET_ADMIN_TOKENS)
   roleprovider/                    Client des role-provider-service (api/ ist generiert) und ein Mock für die Entwicklung
@@ -36,7 +35,7 @@ internal/
 
 Die Schichten von unten nach oben: `platform` → `access`, `roleprovider` → Fachbereiche `llm/*`, `cluster/*` → `webserver` → `app` (`internal/`) und `cmd`. Ein Paket darf nur Pakete seiner eigenen oder einer tieferen Schicht importieren. Im Einzelnen:
 
-- `platform/*` importiert aus `internal/` nur `platform/*` (heute: `background` → `promtext` → `ttlcache`).
+- `platform/*` importiert aus `internal/` nur `platform/*` (heute keiner: `background` nutzt golib `loop` und `promtext`).
 - `access` und `roleprovider` importieren höchstens `platform/*`.
 - Die Fachbereiche importieren `platform/*`, `access`, `roleprovider` und einander, nie `webserver` oder `app`. Erlaubte Richtungen heute: `gpu` → `workspace`, `research`, `usage`; `workspace` → `usage`; `keys` → `litellm`, `usage` (nur das 30-Tage-Fenster `usage.LLMWindow`). Innerhalb der Fachbereiche gibt es keine Zyklen; `llm` hängt nur über `keys` → `usage` an `cluster`.
 - `webserver` importiert alles darunter, nie `app`.

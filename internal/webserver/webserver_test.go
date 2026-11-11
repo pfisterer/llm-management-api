@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
@@ -586,6 +587,32 @@ func TestManagerRule(t *testing.T) {
 	} {
 		if code, body := do(t, h, "GET", tc.path, tc.user, nil); code != tc.want {
 			t.Errorf("%s %s: %d %s, want %d", tc.user, tc.path, code, body, tc.want)
+		}
+	}
+}
+
+// TestBodyLimit: the API refuses a body over MaxRequestBodyBytes, except on the upload into the home, which bounds its own.
+func TestBodyLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(limitBody())
+	r.POST("/v1/gpu/jobs", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	r.PUT("/v1/gpu/files", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	for _, tc := range []struct {
+		method, path string
+		size         int64
+		want         int
+	}{
+		{http.MethodPost, "/v1/gpu/jobs", MaxRequestBodyBytes, http.StatusNoContent},
+		{http.MethodPost, "/v1/gpu/jobs", MaxRequestBodyBytes + 1, http.StatusRequestEntityTooLarge},
+		{http.MethodPut, "/v1/gpu/files", 3 << 30, http.StatusNoContent},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, http.NoBody)
+		req.ContentLength = tc.size
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Errorf("%s %s with %d bytes: %d, want %d", tc.method, tc.path, tc.size, w.Code, tc.want)
 		}
 	}
 }
