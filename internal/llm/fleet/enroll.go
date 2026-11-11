@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 )
 
 var (

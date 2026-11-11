@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 )
 
 // Client is a minimal JSON client for the endpoints this service needs.

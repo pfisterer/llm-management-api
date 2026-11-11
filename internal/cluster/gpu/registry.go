@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 )

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
 )
 
 // gitRefs is what a Git server advertises: ref name -> commit, plus the

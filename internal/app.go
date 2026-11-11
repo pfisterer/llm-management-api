@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/cloud-self-service-golib/retry"
@@ -30,7 +31,6 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
 	"github.com/pfisterer/llm-management-api/internal/platform/background"
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"

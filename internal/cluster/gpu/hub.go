@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 )
 
 // hub talks to JupyterHub's REST API with the token of the hub service

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 )
 
 // WorkspaceKey is the LiteLLM key a person's workspace servers in one project use (VS Code's chat, OPENAI_API_KEY in notebooks). Derived like the chat key (HMAC of user id and project under the master key), so the hub gets the same key on every start and nothing is stored; a key deleted in the key list comes back on the next start.

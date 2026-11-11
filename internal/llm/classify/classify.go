@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 	"github.com/pfisterer/cloud-self-service-golib/retry"
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
 	"go.uber.org/zap"
 )
 

@@ -11,9 +11,8 @@ Stand: 11.11.2026. Die Architektur der ganzen Plattform (Cluster, Netz, LiteLLM,
 ```
 internal/
   app.go, config.go, adapters.go   Package app: Konfiguration laden, Dienste verdrahten, Listener und Hintergrundschleifen starten; adapters.go bildet zwischen gpu, workspace und usage ab
-  platform/                        Technische Bausteine ohne Fachwissen; dürfen nur platform importieren
+  platform/                        Technische Bausteine ohne Fachwissen; dürfen nur platform importieren (HTTP-Client mit Wiederholung und JSON-Request-Helfer: golib httpx)
     background/                    Hintergrundschleifen (Every, Run, Schedule) mit Panikschutz und Metrik, Startschritte (Step)
-    httpx/                         HTTP-Client mit Wiederholung (RetryingClient) und ein JSON-Request-Helfer (Do, StatusError) unter allen Clients
     oci/                           OCI-Registry- und Harbor-Client: Manifeste, Labels, Architekturen, Scan-Übersicht, Artefakte auflisten und löschen
     promtext/                      Prometheus-Textformat von Hand (Writer, CounterVec, Cache) statt einer Client-Bibliothek
     ttlcache/                      Generischer TTL-Cache für Schlüssel (Map) und Einzelwerte (Value)

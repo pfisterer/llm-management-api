@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 )
 
 // Harbor is Harbor's v2 API for one registry host, as far as the image cleanup needs it: list a project's repositories and their artifacts, delete artifacts and repositories. Auth is a robot account (nil = anonymously, which lists a public project but deletes nothing).
