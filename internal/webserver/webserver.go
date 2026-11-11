@@ -119,6 +119,9 @@ func (s *Server) Router() *gin.Engine {
 	v1 := r.Group("/v1", ginweb.DisableCaching(), s.withCaller, ginweb.RejectWritesForReadOnlyTokens(s.log))
 	v1.GET("/me", s.getMe)
 
+	// MCP (mcp.go): the same authentication as /v1 and the same services behind the tools; not RejectWritesForReadOnlyTokens, since every MCP call is a POST and the tool says whether it writes (mcpserve.AddTool).
+	s.registerMCP(r.Group("/mcp", ginweb.DisableCaching(), s.withCaller))
+
 	// Personal API tokens for this management API — not the LLM keys below, which are for the OpenAI-compatible API.
 	if s.tokens != nil {
 		v1.GET("/tokens", s.listAPITokens)

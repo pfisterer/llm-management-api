@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -24,26 +25,33 @@ func usagePeriod(c *gin.Context) (time.Time, time.Time, bool) {
 
 // parsePeriod reads the query parameters from and to (YYYY-MM-DD, both included) over the defaults; a period longer than max (named so in the answer) or the wrong way round is refused with 400.
 func parsePeriod(c *gin.Context, from, to time.Time, max time.Duration, maxName string) (time.Time, time.Time, bool) {
+	from, to, msg := periodOf(c.Query("from"), c.Query("to"), from, to, max, maxName)
+	if msg != "" {
+		abort(c, http.StatusBadRequest, "invalid", msg)
+		return time.Time{}, time.Time{}, false
+	}
+	return from, to, true
+}
+
+// periodOf is parsePeriod without gin, for the REST reports and the MCP tools alike: fromQ and toQ (YYYY-MM-DD, empty = the default) over the defaults; the message names what is wrong, empty when nothing is.
+func periodOf(fromQ, toQ string, from, to time.Time, max time.Duration, maxName string) (time.Time, time.Time, string) {
 	for _, q := range []struct {
-		name string
-		dst  *time.Time
-	}{{"from", &from}, {"to", &to}} {
-		v := c.Query(q.name)
-		if v == "" {
+		name, value string
+		dst         *time.Time
+	}{{"from", fromQ, &from}, {"to", toQ, &to}} {
+		if q.value == "" {
 			continue
 		}
-		t, err := time.Parse("2006-01-02", v)
+		t, err := time.Parse("2006-01-02", q.value)
 		if err != nil {
-			abort(c, http.StatusBadRequest, "invalid", q.name+" ist kein Datum (JJJJ-MM-TT).")
-			return time.Time{}, time.Time{}, false
+			return time.Time{}, time.Time{}, q.name + " ist kein Datum (JJJJ-MM-TT)."
 		}
 		*q.dst = t
 	}
 	if to.Before(from) || to.Sub(from) > max {
-		abort(c, http.StatusBadRequest, "invalid", "Zeitraum ungültig (from nach to oder länger als "+maxName+").")
-		return time.Time{}, time.Time{}, false
+		return time.Time{}, time.Time{}, "Zeitraum ungültig (from nach to oder länger als " + maxName + ")."
 	}
-	return from, to, true
+	return from, to, ""
 }
 
 // getWorkspaceUsage godoc
@@ -111,15 +119,21 @@ func (s *Server) myProjects(c *gin.Context) []workspace.Mine {
 	if v, ok := c.Get("workspace-projects"); ok {
 		return v.([]workspace.Mine)
 	}
+	mine := s.projectsOf(c.Request.Context(), caller(c))
+	c.Set("workspace-projects", mine)
+	return mine
+}
+
+// projectsOf is myProjects without gin, for the REST handlers and the MCP tools alike: the caller's active projects, none when they cannot be read (logged).
+func (s *Server) projectsOf(ctx context.Context, cl Caller) []workspace.Mine {
 	if s.ws == nil {
 		return nil
 	}
-	mine, err := s.ws.ForPerson(c.Request.Context(), caller(c).Tokens, caller(c).Email, false)
+	mine, err := s.ws.ForPerson(ctx, cl.Tokens, cl.Email, false)
 	if err != nil {
 		s.log.Warnw("workspace projects", "error", err)
-		mine = nil
+		return nil
 	}
-	c.Set("workspace-projects", mine)
 	return mine
 }
 

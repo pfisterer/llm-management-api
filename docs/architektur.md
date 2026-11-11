@@ -29,7 +29,7 @@ internal/
     gpu/                           Der Cluster selbst: JupyterHub-Client, handgeschriebener Kubernetes-REST-Client, Server und GPU-Kernel, Batch-Jobs und Files-Pods, GPU-Verwaltung (Pools, Tiers, Kueue), Inferenz-Pool, Modellkatalog, Projekt-Image-Builds, Image-Cleanup
     usage/                         Nutzung der Workspaces: Minuten-Sampling zu Tageszeilen (vCPU-h, RAM-GB-h, GPU-h, Home-GB), GPU-Stunden, Berichte, Fensterregeln (24h, 7d, 30d)
     research/                      Forschungslog: eine Zeile je Pod des GPU-Clusters von der Anforderung bis zum Ende, pseudonym
-  webserver/                       gin-Routen der Verwaltungs-API (/v1), Tree-API, Machine-API, Chat-Exchange, Hub-Listener, Admin-Login, Metriken
+  webserver/                       gin-Routen der Verwaltungs-API (/v1), Tree-API, Machine-API, Chat-Exchange, Hub-Listener, Admin-Login, Metriken, MCP-Endpunkt (/mcp, `mcp.go`: dieselbe Authentifizierung wie /v1, Werkzeuge rufen dieselben Funktionen wie die REST-Handler)
   generated_docs/                  Generiert (swag), nicht eingecheckt: swagger.json und VERSION als Go-Embeds
 ```
 

@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -133,14 +134,25 @@ func (s *Server) withCaller(c *gin.Context) {
 
 // keyPerson is whom the caller's keys belong to. Acting on somebody's behalf or with an API token (which knows only the e-mail address), their Keycloak sub comes from LiteLLM; a person who has never used the LLM themself has none yet, and keys cannot be bound to them (development falls back to the dev sub, so the seed's people can be tried out).
 func (s *Server) keyPerson(c *gin.Context) (keys.Person, bool) {
-	cl := caller(c)
-	if cl.Actor == "" && cl.Subject != "" {
-		return keys.Person{Subject: cl.Subject, Email: cl.Email}, true
-	}
-	sub, found, err := s.keys.SubjectOf(c.Request.Context(), cl.Email)
-	if err != nil {
-		s.upstreamError(c, "subject lookup", err)
+	p, fail := s.keyPersonFor(c.Request.Context(), caller(c))
+	if fail != nil {
+		if fail.err != nil {
+			s.log.Errorw("subject lookup failed", "error", fail.err)
+		}
+		abort(c, fail.status, fail.code, fail.msg)
 		return keys.Person{}, false
+	}
+	return p, true
+}
+
+// keyPersonFor is keyPerson without gin, for the REST handlers and the MCP tools alike: the person, or the refusal (as keyPerson answers it: 502 with LiteLLM's error, 409 for a person the LLM service does not know yet).
+func (s *Server) keyPersonFor(ctx context.Context, cl Caller) (keys.Person, *keyFailure) {
+	if cl.Actor == "" && cl.Subject != "" {
+		return keys.Person{Subject: cl.Subject, Email: cl.Email}, nil
+	}
+	sub, found, err := s.keys.SubjectOf(ctx, cl.Email)
+	if err != nil {
+		return keys.Person{}, &keyFailure{http.StatusBadGateway, "litellm", "Das Gateway ist gerade nicht erreichbar.", err}
 	}
 	if !found {
 		if !s.devMode {
@@ -148,12 +160,11 @@ func (s *Server) keyPerson(c *gin.Context) (keys.Person, bool) {
 			if cl.Actor == "" {
 				msg = "Mit einem API-Token sind LLM-Keys erst möglich, nachdem sich die Person einmal angemeldet und die LLM-Seite geöffnet hat."
 			}
-			abort(c, http.StatusConflict, "person_unknown", msg)
-			return keys.Person{}, false
+			return keys.Person{}, &keyFailure{http.StatusConflict, "person_unknown", msg, nil}
 		}
 		sub = "dev-" + cl.Email
 	}
-	return keys.Person{Subject: sub, Email: cl.Email}, true
+	return keys.Person{Subject: sub, Email: cl.Email}, nil
 }
 
 // require aborts unless the caller holds at least the given role. The UI hides

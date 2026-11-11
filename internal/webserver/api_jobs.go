@@ -211,12 +211,25 @@ func visibleJob(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jo
 }
 
 func (s *Server) jobActor(c *gin.Context) jobActor {
-	cl := caller(c)
+	return jobActorOf(caller(c))
+}
+
+// jobActorOf is the caller as the jobs see them, for the REST handlers and the MCP tools alike; the sub only when they act as themself.
+func jobActorOf(cl Caller) jobActor {
 	a := jobActor{person: cl.Email, tokens: cl.Tokens, admin: cl.Role.AtLeast(access.RoleAdmin)}
 	if cl.Actor == "" {
 		a.sub = cl.Subject
 	}
 	return a
+}
+
+// listJobsFor are the jobs the actor sees: without project their own, with project their own there, or all of the project when they manage it.
+func listJobsFor(ctx context.Context, ws *workspace.Service, g *gpu.Service, a jobActor, project string) ([]gpu.Job, error) {
+	f := gpu.JobFilter{Project: project, Person: a.person}
+	if f.Project != "" && mayManage(ctx, ws, a, f.Project) {
+		f.Person = ""
+	}
+	return g.Jobs(ctx, f)
 }
 
 // jobKeys is how the server makes jobs' LLM keys; nil without keys or master key.
@@ -267,13 +280,7 @@ func (s *Server) jobError(c *gin.Context, what string, err error) {
 //	@Failure		502		{object}	ErrorResponse
 //	@Router			/v1/gpu/jobs [get]
 func (s *Server) listJobs(c *gin.Context) {
-	ctx := c.Request.Context()
-	a := s.jobActor(c)
-	f := gpu.JobFilter{Project: c.Query("project"), Person: a.person}
-	if f.Project != "" && mayManage(ctx, s.ws, a, f.Project) {
-		f.Person = ""
-	}
-	jobs, err := s.gpu.Jobs(ctx, f)
+	jobs, err := listJobsFor(c.Request.Context(), s.ws, s.gpu, s.jobActor(c), c.Query("project"))
 	if err != nil {
 		s.jobError(c, "list", err)
 		return

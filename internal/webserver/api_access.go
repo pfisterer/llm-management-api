@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -39,7 +40,15 @@ type MeResponse struct {
 //	@Failure		401	{object}	ErrorResponse
 //	@Router			/v1/me [get]
 func (s *Server) getMe(c *gin.Context) {
-	cl := caller(c)
+	projects := 0
+	if s.gpu != nil {
+		projects = len(s.myProjects(c))
+	}
+	c.JSON(http.StatusOK, s.me(c.Request.Context(), caller(c), projects))
+}
+
+// me describes the caller, for the REST route and the MCP tool alike; projects is the number of their active workspace projects (0 without the GPU part).
+func (s *Server) me(ctx context.Context, cl Caller, projects int) MeResponse {
 	resp := MeResponse{Email: cl.Email, Role: cl.Role, MayActAs: cl.MayActAs}
 	if cl.Actor != "" {
 		resp.ActingAs = cl.Email
@@ -48,7 +57,7 @@ func (s *Server) getMe(c *gin.Context) {
 		resp.AdminUIURL = s.adminUI
 	}
 	if s.ws != nil {
-		if pools, status, _ := s.quota.PoolsFor(c.Request.Context(), cl.Tokens); status == 0 {
+		if pools, status, _ := s.quota.PoolsFor(ctx, cl.Tokens); status == 0 {
 			for _, p := range pools {
 				resp.LLMMTokens += p.MTokens
 			}
@@ -59,12 +68,12 @@ func (s *Server) getMe(c *gin.Context) {
 		resp.APIURL = s.apiURL
 	}
 	if s.gpu != nil {
-		resp.WorkspaceProjects = len(s.myProjects(c))
+		resp.WorkspaceProjects = projects
 		if resp.WorkspaceProjects > 0 {
 			resp.JupyterURL = s.gpu.JupyterURL()
 		}
 	}
-	c.JSON(http.StatusOK, resp)
+	return resp
 }
 
 func (s *Server) internalError(c *gin.Context, what string, err error) {

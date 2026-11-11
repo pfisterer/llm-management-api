@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -136,9 +137,12 @@ type StartOptionsResponse struct {
 //	@Success	200	{object}	StartOptionsResponse
 //	@Router		/v1/gpu/start-options [get]
 func (s *Server) getStartOptions(c *gin.Context) {
-	ctx := c.Request.Context()
-	mine := s.myProjects(c)
-	llm := llmProjects(ctx, s.quota, caller(c).Tokens)
+	c.JSON(http.StatusOK, s.startOptionsOf(c.Request.Context(), s.myProjects(c), caller(c).Tokens))
+}
+
+// startOptionsOf is what a start may choose, for the REST route and the MCP tool alike: mine are the caller's active projects, tokens theirs for the LLM pools.
+func (s *Server) startOptionsOf(ctx context.Context, mine []workspace.Mine, tokens []string) StartOptionsResponse {
+	llm := llmProjects(ctx, s.quota, tokens)
 	projects := hubProjects(ctx, s.ws, mine)
 	for i, m := range mine {
 		// What a start without a choice gets (the same rule as the hub's workspace key): the start page preselects it.
@@ -149,7 +153,7 @@ func (s *Server) getStartOptions(c *gin.Context) {
 			p.LLMDefault = gpu.NoLLM
 		}
 	}
-	c.JSON(http.StatusOK, StartOptionsResponse{Projects: projects, Profiles: s.ws.Catalog(ctx).Profiles, LLMProjects: llm})
+	return StartOptionsResponse{Projects: projects, Profiles: s.ws.Catalog(ctx).Profiles, LLMProjects: llm}
 }
 
 // StartServerRequest chooses a project, a profile and, for a profile with a GPU, a GPU class (optional when the project has only one).
@@ -196,8 +200,13 @@ func (s *Server) startServer(c *gin.Context) {
 
 // startOptions checks a start against the caller's projects, as the start page offers it; the hub checks the limits.
 func (s *Server) startOptions(c *gin.Context, req StartServerRequest) (gpu.StartOptions, string) {
+	return s.startOptionsFor(c.Request.Context(), s.myProjects(c), caller(c).Tokens, req)
+}
+
+// startOptionsFor is startOptions without gin, for the REST route and the MCP tool alike: mine are the caller's active projects, tokens theirs for the LLM pools; the message says what is wrong with the request, empty when nothing is.
+func (s *Server) startOptionsFor(ctx context.Context, mine []workspace.Mine, tokens []string, req StartServerRequest) (gpu.StartOptions, string) {
 	var project *workspace.Mine
-	for _, m := range s.myProjects(c) {
+	for _, m := range mine {
 		if m.Slug == req.Project {
 			project = &m
 		}
@@ -210,12 +219,12 @@ func (s *Server) startOptions(c *gin.Context, req StartServerRequest) (gpu.Start
 	}
 	o := gpu.StartOptions{Project: req.Project, Profile: req.Profile, LLMProject: req.LLMProject}
 	if o.LLMProject != "" && o.LLMProject != gpu.NoLLM {
-		if _, ok := llmProjectFor(llmProjects(c.Request.Context(), s.quota, caller(c).Tokens), o.LLMProject, "", ""); !ok {
+		if _, ok := llmProjectFor(llmProjects(ctx, s.quota, tokens), o.LLMProject, "", ""); !ok {
 			return gpu.StartOptions{}, "Dieses LLM-Projekt steht nicht zur Wahl."
 		}
 	}
 	usesGPU := false
-	for _, p := range s.ws.Catalog(c.Request.Context()).Profiles {
+	for _, p := range s.ws.Catalog(ctx).Profiles {
 		if p.Slug == req.Profile {
 			usesGPU = p.GPU
 		}
