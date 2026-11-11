@@ -62,13 +62,14 @@ func TestReleaseColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Exec("DROP TABLE IF EXISTS workspace_projects")
-	s, err := NewGormStore(db)
+	_, err = NewGormStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	db.Exec("ALTER TABLE workspace_projects DROP COLUMN release_times, DROP COLUMN release_max, DROP COLUMN tree_release")
 	db.Exec("INSERT INTO workspace_projects (slug, name) VALUES ('alt', 'alt')")
-	if s, err = NewGormStore(db); err != nil {
+	s, err := NewGormStore(db)
+	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

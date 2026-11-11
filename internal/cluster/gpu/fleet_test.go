@@ -159,7 +159,6 @@ func TestReconcileFleet(t *testing.T) {
 	if err := s.AssignNode(ctx, NodeAssignment{Node: "gpu-2", Pool: "general", Tier: "medium"}); err != nil {
 		t.Fatal(err)
 	}
-	writes := k.writes
 	if err := s.ReconcileFleet(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +170,7 @@ func TestReconcileFleet(t *testing.T) {
 		t.Errorf("classes: %+v", classes)
 	}
 	// Nothing changed: nothing is written.
-	writes = k.writes
+	writes := k.writes
 	_ = s.ReconcileFleet(ctx)
 	if k.writes != writes {
 		t.Errorf("unchanged objects rewritten: %d writes", k.writes-writes)
