@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
@@ -249,16 +250,23 @@ func (s *Server) jobKeys() *jobKeys {
 //	@Produce		json
 //	@Security		BearerAuth
 //	@Param			project	query		string	false	"project slug"
-//	@Success		200		{array}		gpu.Job
+//	@Param			limit	query		int		false	"page size; default 100, at most 500"
+//	@Param			offset	query		int		false	"how many entries to skip"
+//	@Success		200		{object}	Page{items=[]gpu.Job}
+//	@Failure		400		{object}	ErrorResponse
 //	@Failure		502		{object}	ErrorResponse
 //	@Router			/v1/gpu/jobs [get]
 func (s *Server) listJobs(c *gin.Context) {
+	r, ok := pageRequest(c)
+	if !ok {
+		return
+	}
 	jobs, err := listJobsFor(c.Request.Context(), s.ws, s.gpu, s.jobActor(c), c.Query("project"))
 	if err != nil {
 		s.fail(c, jobErrors, "list", err)
 		return
 	}
-	c.JSON(http.StatusOK, jobs)
+	c.JSON(http.StatusOK, page.Of(jobs, r))
 }
 
 // submitJob godoc

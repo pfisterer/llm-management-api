@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/calendar"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"go.uber.org/zap"
 )
@@ -77,10 +78,10 @@ func TestBudgets(t *testing.T) {
 
 func near(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
 
-// The windows are calendar days in UTC, across month and year boundaries; total without a creation date reaches three years back.
+// The windows are calendar days in Europe/Berlin, across month and year boundaries; total without a creation date reaches three years back.
 func TestWindowStart(t *testing.T) {
 	d := func(y int, m time.Month, day int) time.Time { return time.Date(y, m, day, 0, 0, 0, 0, time.UTC) }
-	now := time.Date(2027, 1, 2, 23, 59, 0, 0, time.UTC)
+	now := time.Date(2027, 1, 2, 22, 59, 0, 0, time.UTC) // 23:59 on 2 January in Berlin
 	created := time.Date(2026, 11, 3, 15, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		window string
@@ -98,6 +99,40 @@ func TestWindowStart(t *testing.T) {
 	}
 	if got := windowStart("total", now, time.Time{}); !got.Equal(d(2024, 1, 2)) {
 		t.Errorf("total without creation: %v", got)
+	}
+}
+
+// A window turns over at midnight in Berlin, not at midnight UTC: an hour earlier in winter, two in summer, and on the days summer time begins and ends as well.
+func TestWindowStartAtBerlinMidnight(t *testing.T) {
+	d := func(y int, m time.Month, day int) time.Time { return time.Date(y, m, day, 0, 0, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		name   string
+		now    time.Time
+		window string
+		want   time.Time
+	}{
+		{"winter, 23:59 in Berlin", time.Date(2026, 11, 11, 22, 59, 59, 0, time.UTC), "24h", d(2026, 11, 11)},
+		{"winter, midnight in Berlin", time.Date(2026, 11, 11, 23, 0, 0, 0, time.UTC), "24h", d(2026, 11, 12)},
+		{"summer, midnight in Berlin", time.Date(2026, 7, 1, 22, 0, 0, 0, time.UTC), "24h", d(2026, 7, 2)},
+		{"summer, 23:59 in Berlin", time.Date(2026, 7, 1, 21, 59, 59, 0, time.UTC), "24h", d(2026, 7, 1)},
+		{"the 25-hour day of the autumn change, its last minute", time.Date(2026, 10, 25, 22, 59, 0, 0, time.UTC), "24h", d(2026, 10, 25)},
+		{"the day after the autumn change, 7d", time.Date(2026, 10, 25, 23, 0, 0, 0, time.UTC), "7d", d(2026, 10, 20)},
+		{"the 23-hour day of the spring change, its last minute", time.Date(2027, 3, 28, 21, 59, 0, 0, time.UTC), "24h", d(2027, 3, 28)},
+		{"the day after the spring change, 30d", time.Date(2027, 3, 28, 22, 0, 0, 0, time.UTC), "30d", d(2027, 2, 28)},
+	} {
+		if got := windowStart(tc.window, tc.now, time.Time{}); !got.Equal(tc.want) {
+			t.Errorf("%s: %s starts %v, want %v", tc.name, tc.window, got, tc.want)
+		}
+	}
+}
+
+// The windows are golib calendar's: every one of them is known here, and the budget tree gets all but total.
+func TestWindowsAreCalendars(t *testing.T) {
+	for _, w := range calendar.Windows() {
+		def, ok := windows[w.Name]
+		if !ok || def.Days != w.Days || def.tree != (w.Name != calendar.WindowTotal) {
+			t.Errorf("window %s: %+v, %v", w.Name, def, ok)
+		}
 	}
 }
 

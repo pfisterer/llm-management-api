@@ -207,7 +207,7 @@ class JobCommands(unittest.TestCase):
             patcher = mock.patch.object(_config, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.requests, self.lists = [], []
+        self.requests, self.lists, self.queries = [], [], []
 
         def job(id, state, **more):
             return {"id": id, "name": id, "project": "t-kurs", "state": state, "gpu_class": "general-large", "max_hours": 1, **more}
@@ -219,7 +219,10 @@ class JobCommands(unittest.TestCase):
                 self.submitted = body
                 return httpx.Response(201, json=job("j-0000000001", "queued", guaranteed=not body.get("preemptible")))
             if request.url.path == "/v1/gpu/jobs":
-                return httpx.Response(200, json=self.lists.pop(0) if len(self.lists) > 1 else self.lists[0])
+                self.queries.append(dict(request.url.params))
+                jobs = self.lists.pop(0) if len(self.lists) > 1 else self.lists[0]
+                limit, offset = int(request.url.params.get("limit", 100)), int(request.url.params.get("offset", 0))
+                return httpx.Response(200, json={"items": jobs[offset:offset + limit], "total": len(jobs), "limit": limit, "offset": offset})
             if request.url.path.startswith("/v1/gpu/jobs/"):
                 return httpx.Response(200, json=job(request.url.path.rsplit("/", 1)[1], "succeeded", result="accuracy 0.83"))
             return httpx.Response(404, json={"error": "?"})
@@ -278,6 +281,14 @@ class JobCommands(unittest.TestCase):
         self.assertIn("→ loss 0.1", out)
         self.assertIn("Exit-Code 1", lines[-1])
         self.assertIn("Keine wartenden", err)
+
+    def test_list_pages_through(self):
+        """job list --all reads every page of the paged list, not only the first."""
+        self.lists = [[self.job(f"j-{i:04}", "succeeded") for i in range(1203)]]
+        code, out, err = self.run_cli("job", "list", "--all")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(out.splitlines()), 1203)
+        self.assertEqual([q.get("offset") for q in self.queries], ["0", "500", "1000"])
 
 
 if __name__ == "__main__":

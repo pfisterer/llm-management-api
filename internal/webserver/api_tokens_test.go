@@ -113,7 +113,7 @@ func TestAPITokenLifecycle(t *testing.T) {
 
 	code, body := call(t, h, "GET", "/v1/tokens", "oidc:student@dhbw.de", "", nil)
 	var list APITokensResponse
-	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 1 || list.Tokens[0].TokenString != "" || list.Tokens[0].Description != "nightly report" || list.Tokens[0].LastUsedAt == nil {
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Items) != 1 || list.Items[0].TokenString != "" || list.Items[0].Description != "nightly report" || list.Items[0].LastUsedAt == nil {
 		t.Fatalf("list after use: %d %s", code, body)
 	}
 	if bytes.Contains(body, []byte(tok.TokenString)) {
@@ -194,7 +194,7 @@ func TestAPITokenActAs(t *testing.T) {
 	}
 	code, body := call(t, h, "GET", "/v1/tokens", "oidc:chef@dhbw.de", "student@dhbw.de", nil)
 	var list APITokensResponse
-	if _ = json.Unmarshal(body, &list); code != 200 || len(list.Tokens) != 1 || list.Tokens[0].ID != student.ID {
+	if _ = json.Unmarshal(body, &list); code != 200 || len(list.Items) != 1 || list.Items[0].ID != student.ID {
 		t.Fatalf("listing on behalf: %d %s", code, body)
 	}
 	if code, _ := call(t, h, "DELETE", fmt.Sprintf("/v1/tokens/%d", student.ID), "oidc:chef@dhbw.de", "student@dhbw.de", nil); code != http.StatusNoContent {
@@ -211,7 +211,7 @@ func TestAPITokenWrongOwner(t *testing.T) {
 	chef := issue(t, h, "chef@dhbw.de", CreateAPITokenRequest{})
 	code, body := call(t, h, "GET", "/v1/tokens", "oidc:student@dhbw.de", "", nil)
 	var list APITokensResponse
-	if _ = json.Unmarshal(body, &list); code != 200 || len(list.Tokens) != 0 {
+	if _ = json.Unmarshal(body, &list); code != 200 || len(list.Items) != 0 {
 		t.Fatalf("the student sees: %d %s", code, body)
 	}
 	if code, _ := call(t, h, "DELETE", fmt.Sprintf("/v1/tokens/%d", chef.ID), "oidc:student@dhbw.de", "", nil); code != http.StatusNotFound {
@@ -348,12 +348,12 @@ func TestAPITokenOnBehalf(t *testing.T) {
 	}
 	code, body = call(t, h, "GET", "/v1/tokens", "oidc:student@dhbw.de", "", nil)
 	var list APITokensResponse
-	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 2 || list.Tokens[0].CreatedBy != "chef@dhbw.de" || list.Tokens[1].CreatedBy != "" {
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Items) != 2 || list.Items[0].CreatedBy != "chef@dhbw.de" || list.Items[1].CreatedBy != "" {
 		t.Fatalf("the person's list: %d %s", code, body)
 	}
 	// None of it is the admin's.
 	code, body = call(t, h, "GET", "/v1/tokens", "oidc:chef@dhbw.de", "", nil)
-	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 0 {
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Items) != 0 {
 		t.Fatalf("the admin's own list: %d %s", code, body)
 	}
 
@@ -407,7 +407,7 @@ func TestAPITokenOnBehalfOnlyAdmins(t *testing.T) {
 	}
 	code, body := call(t, h, "GET", "/v1/tokens", "oidc:chef@dhbw.de", "", nil)
 	var list APITokensResponse
-	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Tokens) != 0 {
+	if _ = json.Unmarshal(body, &list); code != http.StatusOK || len(list.Items) != 0 {
 		t.Fatalf("the admin's list after the attempts: %d %s", code, body)
 	}
 }

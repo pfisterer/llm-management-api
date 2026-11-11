@@ -8,50 +8,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/calendar"
+	"github.com/pfisterer/cloud-self-service-golib/ginweb"
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
-// maxUsageSpan is the longest period a report may cover (three years, like the "lifetime" view of the cloud projects' report).
-const maxUsageSpan = 1098 * 24 * time.Hour
-
-// usagePeriod reads from and to (YYYY-MM-DD, both included); default: the last 30 finished days (usage.ReportPeriod), unlike a limit's 30d, which counts today.
-func usagePeriod(c *gin.Context) (time.Time, time.Time, bool) {
-	from, to := usage.ReportPeriod(time.Now(), 30)
-	return parsePeriod(c, from, to, maxUsageSpan, "drei Jahre")
-}
-
-// parsePeriod reads the query parameters from and to (YYYY-MM-DD, both included) over the defaults; a period longer than max (named so in the answer) or the wrong way round is refused with 400.
-func parsePeriod(c *gin.Context, from, to time.Time, max time.Duration, maxName string) (time.Time, time.Time, bool) {
-	from, to, msg := periodOf(c.Query("from"), c.Query("to"), from, to, max, maxName)
-	if msg != "" {
-		abort(c, http.StatusBadRequest, "invalid", msg)
-		return time.Time{}, time.Time{}, false
-	}
-	return from, to, true
-}
-
-// periodOf is parsePeriod without gin, for the REST reports and the MCP tools alike: fromQ and toQ (YYYY-MM-DD, empty = the default) over the defaults; the message names what is wrong, empty when nothing is.
-func periodOf(fromQ, toQ string, from, to time.Time, max time.Duration, maxName string) (time.Time, time.Time, string) {
-	for _, q := range []struct {
-		name, value string
-		dst         *time.Time
-	}{{"from", fromQ, &from}, {"to", toQ, &to}} {
-		if q.value == "" {
-			continue
-		}
-		t, err := time.Parse("2006-01-02", q.value)
-		if err != nil {
-			return time.Time{}, time.Time{}, q.name + " ist kein Datum (JJJJ-MM-TT)."
-		}
-		*q.dst = t
-	}
-	if to.Before(from) || to.Sub(from) > max {
-		return time.Time{}, time.Time{}, "Zeitraum ungültig (from nach to oder länger als " + maxName + ")."
-	}
-	return from, to, ""
+// usagePeriod reads from and to (YYYY-MM-DD, both included) by usage.Reports (golib calendar, the same rule as openstack-management-api's reports): by default the last 30 finished days in Europe/Berlin, unlike a limit's 30d, which counts today; only to = the 30 days ending there; at most usage.MaxReportDays. A period the rule refuses is answered with 400.
+func usagePeriod(c *gin.Context) (calendar.Period, bool) {
+	return ginweb.Period(c, usage.Reports, time.Now())
 }
 
 // getWorkspaceUsage godoc
@@ -102,11 +70,11 @@ func (s *Server) getMyWorkspaceUsage(c *gin.Context) {
 }
 
 func (s *Server) workspaceUsage(c *gin.Context, keep usage.Filter) {
-	from, to, ok := usagePeriod(c)
+	p, ok := usagePeriod(c)
 	if !ok {
 		return
 	}
-	rep, err := usage.BuildReport(c.Request.Context(), s.usage, from, to, keep)
+	rep, err := usage.BuildReport(c.Request.Context(), s.usage, p.From.AsUTC(), p.To.AsUTC(), keep)
 	if err != nil {
 		s.fail(c, internalErrors, "workspace usage", err)
 		return
@@ -165,9 +133,16 @@ func (s *Server) getWorkspaceCatalog(c *gin.Context) {
 //	@Produce		json
 //	@Security		BearerAuth
 //	@Param			all	query		bool	false	"every project (admins)"
-//	@Success		200	{array}		workspace.Mine
+//	@Param			limit	query		int		false	"page size; default 100, at most 500"
+//	@Param			offset	query		int		false	"how many entries to skip"
+//	@Success		200	{object}	Page{items=[]workspace.Mine}
+//	@Failure		400	{object}	ErrorResponse
 //	@Router			/v1/workspaces/projects [get]
 func (s *Server) listWorkspaceProjects(c *gin.Context) {
+	r, ok := pageRequest(c)
+	if !ok {
+		return
+	}
 	cl := caller(c)
 	if c.Query("all") == "true" && cl.Role.AtLeast(access.RoleAdmin) {
 		list, err := s.ws.ForPerson(c.Request.Context(), cl.Tokens, cl.Email, true)
@@ -175,14 +150,10 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 			s.fail(c, internalErrors, "workspace projects", err)
 			return
 		}
-		c.JSON(http.StatusOK, list)
+		c.JSON(http.StatusOK, page.Of(list, r))
 		return
 	}
-	mine := s.myProjects(c)
-	if mine == nil {
-		mine = []workspace.Mine{}
-	}
-	c.JSON(http.StatusOK, mine)
+	c.JSON(http.StatusOK, page.Of(s.myProjects(c), r))
 }
 
 // updateWorkspaceProject godoc
@@ -304,10 +275,17 @@ type CredentialRequest struct {
 //	@Produce		json
 //	@Security		BearerAuth
 //	@Param			slug	path		string	true	"short name"
-//	@Success		200		{array}		workspace.CredentialInfo
+//	@Param			limit	query		int		false	"page size; default 100, at most 500"
+//	@Param			offset	query		int		false	"how many entries to skip"
+//	@Success		200		{object}	Page{items=[]workspace.CredentialInfo}
+//	@Failure		400		{object}	ErrorResponse
 //	@Failure		403		{object}	ErrorResponse
 //	@Router			/v1/workspaces/projects/{slug}/credentials [get]
 func (s *Server) listProjectCredentials(c *gin.Context) {
+	r, ok := pageRequest(c)
+	if !ok {
+		return
+	}
 	slug := c.Param("slug")
 	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), caller(c), slug)) {
 		return
@@ -316,21 +294,21 @@ func (s *Server) listProjectCredentials(c *gin.Context) {
 	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
-	c.JSON(http.StatusOK, list)
+	c.JSON(http.StatusOK, page.Of(list, r))
 }
 
 // setProjectCredential godoc
 //
 //	@ID				setProjectCredential
 //	@Summary		Set a project's access to a host
-//	@Description	User name and token for a private Git repository or registry on this host (GitHub: classic token with repo and read:packages; GitLab: deploy token with read_repository and read_registry; Forgejo: token with read:repository and read:package). Replaces the host's previous access. The project's servers get it as pull secret and for the material's checkout.
+//	@Description	User name and token for a private Git repository or registry on this host (GitHub: classic token with repo and read:packages; GitLab: deploy token with read_repository and read_registry; Forgejo: token with read:repository and read:package). Replaces the host's previous access. The project's servers get it as pull secret and for the material's checkout. Answers with the first page of the project's accesses, as GET answers it.
 //	@Tags			workspaces
 //	@Accept			json
 //	@Produce		json
 //	@Security		BearerAuth
 //	@Param			slug	path		string				true	"short name"
 //	@Param			body	body		CredentialRequest	true	"access"
-//	@Success		200		{array}		workspace.CredentialInfo
+//	@Success		200		{object}	Page{items=[]workspace.CredentialInfo}
 //	@Failure		400		{object}	ErrorResponse
 //	@Failure		403		{object}	ErrorResponse
 //	@Router			/v1/workspaces/projects/{slug}/credentials [put]
@@ -351,7 +329,7 @@ func (s *Server) setProjectCredential(c *gin.Context) {
 	if s.fail(c, projectErrors, "workspace project", err) {
 		return
 	}
-	c.JSON(http.StatusOK, list)
+	c.JSON(http.StatusOK, page.Of(list, page.Request{}))
 }
 
 // deleteProjectCredential godoc
@@ -448,7 +426,7 @@ func (s *Server) getWorkspaceStorage(c *gin.Context) {
 //
 //	@ID				getGPUHours
 //	@Summary		GPU use per hour
-//	@Description	How full the GPUs were in each hour (UTC), sampled every minute: per GPU class the capacity, what workspaces and the inference pool held and how many pods waited (admins only), and per person, project and profile the GPU-hours held and the hours waited. Default period: the last 7 days including today; at most 365 days back (older hours are deleted). Admins see everything or one project; a project's managers see their project's people only.
+//	@Description	How full the GPUs were in each hour (UTC hours; the period's days are days in Europe/Berlin), sampled every minute: per GPU class the capacity, what workspaces and the inference pool held and how many pods waited (admins only), and per person, project and profile the GPU-hours held and the hours waited. Default period: the last 7 days including today; at most 365 days back (older hours are deleted). Admins see everything or one project; a project's managers see their project's people only.
 //	@Tags			workspaces
 //	@Produce		json
 //	@Security		BearerAuth
@@ -471,8 +449,7 @@ func (s *Server) getGPUHours(c *gin.Context) {
 	if s.fail(c, projectErrors, "workspace project", s.manager(c.Request.Context(), cl, project)) {
 		return
 	}
-	today := usage.Day(time.Now())
-	from, to, ok := parsePeriod(c, today.AddDate(0, 0, -6), today, usage.GPUHourRetention, "365 Tage")
+	p, ok := ginweb.Period(c, usage.GPUHourReports, time.Now())
 	if !ok {
 		return
 	}
@@ -480,7 +457,7 @@ func (s *Server) getGPUHours(c *gin.Context) {
 	if project != "" {
 		keep = func(p usage.GPUHourPerson) bool { return p.Project == project }
 	}
-	r, err := usage.BuildGPUReport(c.Request.Context(), gs, from, to.AddDate(0, 0, 1), keep, admin && project == "")
+	r, err := usage.BuildGPUReport(c.Request.Context(), gs, p.Start(), p.End(), keep, admin && project == "")
 	if err != nil {
 		s.log.Errorw("gpu hours failed", "error", err)
 		abort(c, http.StatusInternalServerError, "internal", "Stundenwerte konnten nicht gelesen werden.")

@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/cloud-self-service-golib/mcpserve"
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
@@ -107,6 +108,8 @@ func toMCPProject(m workspace.Mine) mcpProject {
 
 type mcpProjectList struct {
 	Projects []mcpProject `json:"projects"`
+	// Total travels along so a model can tell "that is all of them" from "there is more behind this page" (golib page.Input).
+	Total int `json:"total"`
 }
 
 // mcpStartOptions is StartOptionsResponse as a start chooses from it, without the hub's internals (secret names, material, release times).
@@ -138,10 +141,12 @@ func toMCPStartOptions(o StartOptionsResponse) mcpStartOptions {
 
 type mcpServerList struct {
 	Servers []gpu.Server `json:"servers"`
+	Total   int          `json:"total"`
 }
 
 type mcpJobList struct {
-	Jobs []gpu.Job `json:"jobs"`
+	Jobs  []gpu.Job `json:"jobs"`
+	Total int       `json:"total"`
 }
 
 // mcpDone is the answer of a tool that has nothing to return but that it did it.
@@ -154,8 +159,8 @@ type mcpDone struct {
 // Package-level so mcp_input_drift_test.go can reflect over them.
 
 type mcpPeriodInput struct {
-	From string `json:"from,omitempty" jsonschema:"first day YYYY-MM-DD; default: 30 days ago"`
-	To   string `json:"to,omitempty" jsonschema:"last day YYYY-MM-DD, included; default: yesterday (the last finished day)"`
+	From string `json:"from,omitempty" jsonschema:"first day YYYY-MM-DD; default: 30 days before to, so the period is 30 days long"`
+	To   string `json:"to,omitempty" jsonschema:"last day YYYY-MM-DD, included; default: yesterday (the last finished day); days are calendar days in Europe/Berlin"`
 }
 
 type mcpProjectPeriodInput struct {
@@ -176,6 +181,7 @@ type mcpStartServerInput struct {
 
 type mcpJobListInput struct {
 	Project string `json:"project,omitempty" jsonschema:"only this project: the caller's jobs there, or all of the project for its managers and admins; empty = the caller's own jobs everywhere"`
+	page.Input
 }
 
 type mcpJobInput struct {
@@ -266,14 +272,15 @@ func (s *Server) registerLLMTools(srv *mcp.Server, cl mcpCaller) {
 func (s *Server) registerWorkspaceTools(srv *mcp.Server, cl mcpCaller) {
 	mcpserve.AddTool(srv, cl, false, &mcp.Tool{
 		Name:        "list_my_projects",
-		Description: "The caller's active workspace projects with their role in each, the allowed profiles and GPU classes, the limits per person, the budgets with what is used and reserved (an exhausted budget stops starts and jobs), the LLM tokens, storage and end. Projects come from the budget tree of the DHBW Cloud; nobody gets one here.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mcpProjectList, error) {
+		Description: "The caller's active workspace projects with their role in each, the allowed profiles and GPU classes, the limits per person, the budgets with what is used and reserved (an exhausted budget stops starts and jobs), the LLM tokens, storage and end. Projects come from the budget tree of the DHBW Cloud; nobody gets one here. Paged: limit and offset, total says how many there are.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in page.Input) (*mcp.CallToolResult, mcpProjectList, error) {
 		mine, err := s.ws.ForPerson(ctx, cl.Tokens, cl.Email, false)
 		if err != nil {
 			return nil, mcpProjectList{}, s.mcpFail(internalErrors, "projects", err)
 		}
-		out := mcpProjectList{Projects: []mcpProject{}}
-		for _, m := range mine {
+		p := page.Of(mine, in.Request())
+		out := mcpProjectList{Projects: []mcpProject{}, Total: p.Total}
+		for _, m := range p.Items {
 			out.Projects = append(out.Projects, toMCPProject(m))
 		}
 		return nil, out, nil
@@ -303,12 +310,11 @@ func (s *Server) registerWorkspaceTools(srv *mcp.Server, cl mcpCaller) {
 
 // mcpUsageReport is workspaceUsage without gin: the report over the period, the caller's defaults as the REST route's.
 func (s *Server) mcpUsageReport(ctx context.Context, in mcpPeriodInput, keep usage.Filter) (*mcp.CallToolResult, usage.Report, error) {
-	defFrom, defTo := usage.ReportPeriod(time.Now(), 30)
-	from, to, msg := periodOf(in.From, in.To, defFrom, defTo, maxUsageSpan, "drei Jahre")
-	if msg != "" {
-		return nil, usage.Report{}, errors.New(msg)
+	p, err := usage.Reports.Parse(in.From, in.To, time.Now())
+	if err != nil {
+		return nil, usage.Report{}, err
 	}
-	rep, err := usage.BuildReport(ctx, s.usage, from, to, keep)
+	rep, err := usage.BuildReport(ctx, s.usage, p.From.AsUTC(), p.To.AsUTC(), keep)
 	if err != nil {
 		return nil, usage.Report{}, s.mcpFail(internalErrors, "workspace usage", err)
 	}
@@ -327,8 +333,8 @@ func (s *Server) mcpWorkspaceAccess(ctx context.Context, cl mcpCaller) ([]worksp
 func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 	mcpserve.AddTool(srv, cl, false, &mcp.Tool{
 		Name:        "list_my_servers",
-		Description: "The caller's JupyterHub servers (workspaces): name, whether ready or still starting (pending), URL, profile, project, image, when started and last active. The default server has an empty name.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mcpServerList, error) {
+		Description: "The caller's JupyterHub servers (workspaces): name, whether ready or still starting (pending), URL, profile, project, image, when started and last active. The default server has an empty name. Paged: limit and offset, total says how many there are.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in page.Input) (*mcp.CallToolResult, mcpServerList, error) {
 		if _, err := s.mcpWorkspaceAccess(ctx, cl); err != nil {
 			return nil, mcpServerList{}, err
 		}
@@ -336,10 +342,8 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		if err != nil {
 			return nil, mcpServerList{}, s.mcpFail(gpuErrors, "servers", err)
 		}
-		if servers == nil {
-			servers = []gpu.Server{}
-		}
-		return nil, mcpServerList{Servers: servers}, nil
+		p := page.Of(servers, in.Request())
+		return nil, mcpServerList{Servers: p.Items, Total: p.Total}, nil
 	})
 
 	mcpserve.AddTool(srv, cl, false, &mcp.Tool{
@@ -428,16 +432,14 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 
 	mcpserve.AddTool(srv, cl, false, &mcp.Tool{
 		Name:        "list_my_jobs",
-		Description: "The caller's batch jobs, newest first, a waiting one with its place in its queue; with project the caller's jobs there, or all of the project for its managers and admins. A job's state is queued, running, succeeded, failed or cancelled; result is what it reported in its last RESULT line.",
+		Description: "The caller's batch jobs, newest first, a waiting one with its place in its queue; with project the caller's jobs there, or all of the project for its managers and admins. A job's state is queued, running, succeeded, failed or cancelled; result is what it reported in its last RESULT line. Paged: limit and offset, total says how many there are.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobListInput) (*mcp.CallToolResult, mcpJobList, error) {
 		jobs, err := listJobsFor(ctx, s.ws, s.gpu, a, in.Project)
 		if err != nil {
 			return nil, mcpJobList{}, s.mcpFail(jobErrors, "list", err)
 		}
-		if jobs == nil {
-			jobs = []gpu.Job{}
-		}
-		return nil, mcpJobList{Jobs: jobs}, nil
+		p := page.Of(jobs, in.Request())
+		return nil, mcpJobList{Jobs: p.Items, Total: p.Total}, nil
 	})
 
 	mcpserve.AddTool(srv, cl, false, &mcp.Tool{

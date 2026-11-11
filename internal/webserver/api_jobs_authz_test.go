@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
@@ -273,8 +274,8 @@ func TestJobRightsRead(t *testing.T) {
 				}
 				continue
 			}
-			var jobs []gpu.Job
-			if _ = json.Unmarshal(body, &jobs); code != ok || len(jobs) != l.want {
+			var jobs page.Page[gpu.Job]
+			if _ = json.Unmarshal(body, &jobs); code != ok || len(jobs.Items) != l.want || jobs.Total != l.want {
 				t.Errorf("%s: list %s: want %d jobs, got %d %s", a.name, l.path, l.want, code, body)
 			}
 		}

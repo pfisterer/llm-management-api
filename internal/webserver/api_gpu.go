@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
@@ -39,16 +40,23 @@ type BuildLogResponse = workspace.BuildLog
 //	@Tags		gpu
 //	@Produce	json
 //	@Security	BearerAuth
-//	@Success	200	{array}		gpu.Server
+//	@Param			limit	query		int		false	"page size; default 100, at most 500"
+//	@Param			offset	query		int		false	"how many entries to skip"
+//	@Success	200	{object}	Page{items=[]gpu.Server}
+//	@Failure	400	{object}	ErrorResponse
 //	@Failure	502	{object}	ErrorResponse
 //	@Router		/v1/gpu/servers [get]
 func (s *Server) listServers(c *gin.Context) {
+	r, ok := pageRequest(c)
+	if !ok {
+		return
+	}
 	servers, err := s.gpu.Servers(c.Request.Context(), caller(c).Email)
 	if err != nil {
 		s.fail(c, gpuErrors, "list servers", err)
 		return
 	}
-	c.JSON(http.StatusOK, servers)
+	c.JSON(http.StatusOK, page.Of(servers, r))
 }
 
 // stopServer godoc

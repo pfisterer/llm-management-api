@@ -193,7 +193,7 @@ func (c *GPUCollector) Start(ctx context.Context) {
 	})
 }
 
-// GPUReport is the hourly GPU use of a period: per class and hour (admins only), and per person (for a project's managers only its rows).
+// GPUReport is the hourly GPU use of a period: per class and hour (admins only), and per person (for a project's managers only its rows). From is the first instant of the period's first day in Europe/Berlin, To the first instant after its last day.
 type GPUReport struct {
 	From   time.Time       `json:"from"`
 	To     time.Time       `json:"to"`

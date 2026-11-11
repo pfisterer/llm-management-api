@@ -80,6 +80,21 @@ def _row(j):
     return f"{d.get('id', ''):13} {d.get('name', '')[:24]:24} {state:28} {d.get('gpu_hours', 0):6.2f} h  {what[:60]}"
 
 
+PAGE = 500  # the largest page the service gives (golib page.MaxLimit)
+
+
+def _all(op, **kwargs):
+    """Every entry of a paged list ({items, total, limit, offset}): asks page after page until total is reached."""
+    items, offset = [], 0
+    while True:
+        page = _check(op.sync_detailed(limit=PAGE, offset=offset, **kwargs))
+        batch = list(page.items or [])
+        items.extend(batch)
+        offset += len(batch)
+        if not batch or offset >= page.total:
+            return items
+
+
 def _projects(c):
     """The caller's active projects as dicts (slug, name, gpu_classes, storage_gb, …), from the start options."""
     return [p.to_dict() for p in (_check(get_gpu_start_options.sync_detailed(client=c)).projects or [])]
@@ -127,7 +142,7 @@ def cmd_projects(args):
     projects = _projects(c)
     # The job limits come from the workspace projects, which every member may list; without them they are left out.
     try:
-        limits = {m.slug: m.to_dict().get("limits") or {} for m in _check(list_workspace_projects.sync_detailed(client=c))}
+        limits = {m.slug: m.to_dict().get("limits") or {} for m in _all(list_workspace_projects, client=c)}
     except Failed:
         limits = {}
     for p in projects:
@@ -258,7 +273,7 @@ def cmd_submit(args):
 
 def cmd_list(args):
     c = _config.client()
-    jobs = _check(list_gpu_jobs.sync_detailed(client=c, project=resolve_project(args.project, _projects(c), unknown_ok=True) if args.project else UNSET))
+    jobs = _all(list_gpu_jobs, client=c, project=resolve_project(args.project, _projects(c), unknown_ok=True) if args.project else UNSET)
     if not args.all:
         jobs = [j for j in jobs if j.to_dict().get("state") in ("queued", "running")] or jobs[:10]
     if not jobs:
@@ -334,7 +349,7 @@ def cmd_watch(args):
     project = resolve_project(args.project, _projects(c), unknown_ok=True) if args.project else UNSET
     seen = {}
     while True:
-        jobs = _check(list_gpu_jobs.sync_detailed(client=c, project=project))
+        jobs = _all(list_gpu_jobs, client=c, project=project)
         live = [j for j in jobs if j.to_dict().get("state") in ("queued", "running")]
         # The live ones, and those that ended since the last look.
         for j in jobs:

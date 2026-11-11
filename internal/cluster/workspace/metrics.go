@@ -205,7 +205,7 @@ func (s *Service) writeBudgets(ctx context.Context, w *promtext.Writer, active [
 	for _, b := range budgets {
 		w.Sample("aiaas_workspace_project_budget_limit", b.limit, labels(b)...)
 	}
-	w.Header("aiaas_workspace_project_budget_used", "gauge", "What the whole project used of that budget in its current window (calendar days in UTC: 24h = today, 7d and 30d including today, total = since the project was created).")
+	w.Header("aiaas_workspace_project_budget_used", "gauge", "What the whole project used of that budget in its current window (calendar days in Europe/Berlin: 24h = today, 7d and 30d including today, total = since the project was created).")
 	for _, b := range budgets {
 		w.Sample("aiaas_workspace_project_budget_used", b.used, labels(b)...)
 	}

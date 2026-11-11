@@ -178,7 +178,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
 		if !windows[b.Window].tree {
-			return TreeStatus{}, invalid("Budget aus dem Baum mit Fenster %q: der Budgetbaum vergibt Mengen je 24h, 7d oder 30d.", b.Window)
+			return TreeStatus{}, invalid("Budget aus dem Baum mit Fenster %q: der Budgetbaum vergibt Mengen je %s.", b.Window, strings.Join(treeWindows, ", "))
 		}
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
 	}

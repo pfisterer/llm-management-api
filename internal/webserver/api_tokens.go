@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/llm-management-api/internal/access"
 )
@@ -52,10 +53,8 @@ type APIToken struct {
 	CreatedBy string `json:"created_by" example:"admin@dhbw.de"`
 }
 
-// APITokensResponse is the list returned by GET /v1/tokens.
-type APITokensResponse struct {
-	Tokens []APIToken `json:"tokens"`
-}
+// APITokensResponse is the page of tokens GET /v1/tokens answers with.
+type APITokensResponse = page.Page[APIToken]
 
 // CreateAPITokenRequest is the body of POST /v1/tokens.
 type CreateAPITokenRequest struct {
@@ -100,10 +99,17 @@ func tokenSubject(c *gin.Context) string { return caller(c).Email }
 //	@Tags			tokens
 //	@Produce		json
 //	@Security		BearerAuth
-//	@Success		200	{object}	APITokensResponse
+//	@Param			limit	query		int		false	"page size; default 100, at most 500"
+//	@Param			offset	query		int		false	"how many entries to skip"
+//	@Success		200	{object}	Page{items=[]APIToken}
+//	@Failure		400	{object}	ErrorResponse
 //	@Failure		401	{object}	ErrorResponse
 //	@Router			/v1/tokens [get]
 func (s *Server) listAPITokens(c *gin.Context) {
+	r, ok := pageRequest(c)
+	if !ok {
+		return
+	}
 	subject := tokenSubject(c)
 	records, err := s.tokens.Service.List(c.Request.Context(), subject)
 	if err != nil {
@@ -114,7 +120,7 @@ func (s *Server) listAPITokens(c *gin.Context) {
 	for _, rec := range records {
 		out = append(out, toAPIToken(rec))
 	}
-	c.JSON(http.StatusOK, APITokensResponse{Tokens: out})
+	c.JSON(http.StatusOK, page.Of(out, r))
 }
 
 // createAPIToken godoc

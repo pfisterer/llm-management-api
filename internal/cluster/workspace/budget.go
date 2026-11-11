@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/calendar"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"go.uber.org/zap"
 )
@@ -39,25 +40,28 @@ var units = map[string]unitDef{
 	"gpu_hours":    {"GPU-Stunden", func(r usage.Row) float64 { return r.GPUHours }},
 }
 
-// windowDef is a window of budgets: its name for people, its length in days (0 = since the project was created) and whether the budget tree gives amounts per it.
+// windowDef is a window of budgets (golib calendar: its name for people, its length in days, 0 = since the project was created) and whether the budget tree gives amounts per it.
 type windowDef struct {
-	label string
-	days  int
-	tree  bool
+	calendar.Window
+	tree bool
 }
 
-// windows are the windows of workspace budgets (Budget.Window). The tree gives amounts per 24h, 7d or 30d only, never one for a project's whole term (decided 10.11.2026); a window not listed counts like total.
-var windows = map[string]windowDef{
-	"24h":   {"heute", 1, true},
-	"7d":    {"in 7 Tagen", 7, true},
-	"30d":   {"in 30 Tagen", 30, true},
-	"total": {"insgesamt", 0, false},
-}
+// treeWindows are the windows the budget tree gives amounts per: never one for a project's whole term (decided 10.11.2026, docs/refactoring-audit.md decision 7), so no total. openstack-management-api offers the same subset (common.Windows).
+var treeWindows = calendar.NamesOf(calendar.Only(calendar.Window24h, calendar.Window7d, calendar.Window30d))
 
-// windowStart is the first day a window counts. Usage is booked per UTC day, so the windows are calendar days: 24h = today, 7d and 30d including today (usage.LimitWindowStart), total = since the project was created.
+// windows are the windows of workspace budgets (Budget.Window): every window of golib calendar, so a window is added there for both services at once. A window not listed counts like total.
+var windows = func() map[string]windowDef {
+	out := map[string]windowDef{}
+	for _, w := range calendar.Windows() {
+		out[w.Name] = windowDef{Window: w, tree: slices.Contains(treeWindows, w.Name)}
+	}
+	return out
+}()
+
+// windowStart is the first day a window counts, as the usage rows' day label (usage.Day). Usage is booked per calendar day in Europe/Berlin, so the windows are calendar days there: 24h = today, 7d and 30d including today (calendar.Window.Start), total = since the project was created.
 func windowStart(window string, now time.Time, created time.Time) time.Time {
-	if w := windows[window]; w.days > 0 {
-		return usage.LimitWindowStart(now, w.days)
+	if w := windows[window]; w.Days > 0 {
+		return w.Start(now).AsUTC()
 	}
 	if created.IsZero() {
 		return usage.Day(now).AddDate(-3, 0, 0)
@@ -203,7 +207,7 @@ func describe(b Budget) string {
 	if b.PerPerson {
 		who = "pro Person"
 	}
-	return fmt.Sprintf("%s %s %s %s", num(b.Amount), unit, windows[b.Window].label, who)
+	return fmt.Sprintf("%s %s %s %s", num(b.Amount), unit, windows[b.Window].Label, who)
 }
 
 // num writes a number for people: one decimal, two below 1 (job reservations are often fractions of an hour).

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
 
@@ -100,10 +101,17 @@ func (s *Server) nameWorkspaceKeys(ctx context.Context, views []keys.KeyView) {
 //	@Tags		keys
 //	@Produce	json
 //	@Security	BearerAuth
-//	@Success	200	{array}		keys.KeyView
+//	@Param			limit	query		int		false	"page size; default 100, at most 500"
+//	@Param			offset	query		int		false	"how many entries to skip"
+//	@Success	200	{object}	Page{items=[]keys.KeyView}
+//	@Failure	400	{object}	ErrorResponse
 //	@Failure	403	{object}	ErrorResponse
 //	@Router		/v1/keys [get]
 func (s *Server) listKeys(c *gin.Context) {
+	r, ok := pageRequest(c)
+	if !ok {
+		return
+	}
 	p, g, ok := s.personAndGrant(c)
 	if !ok {
 		return
@@ -114,7 +122,7 @@ func (s *Server) listKeys(c *gin.Context) {
 		return
 	}
 	s.nameWorkspaceKeys(c.Request.Context(), u.Keys)
-	c.JSON(http.StatusOK, u.Keys)
+	c.JSON(http.StatusOK, page.Of(u.Keys, r))
 }
 
 // createKey godoc

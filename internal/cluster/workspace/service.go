@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/calendar"
 	"github.com/pfisterer/cloud-self-service-golib/promtext"
 )
 
@@ -384,7 +385,7 @@ func (s *Service) validate(p *Project) error {
 		_, unit := units[b.Unit]
 		_, window := windows[b.Window]
 		if !unit || !window || b.Amount < 0 {
-			return invalid("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster 24h, 7d, 30d oder total; Menge nicht negativ.")
+			return invalid("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster %s; Menge nicht negativ.", strings.Join(calendar.Names(), ", "))
 		}
 	}
 	return nil
