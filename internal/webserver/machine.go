@@ -1,7 +1,6 @@
 package webserver
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -122,8 +121,7 @@ func MachineRouter(svc *fleet.Service, classifier *classify.Service, log *zap.Su
 // token refuses everything (unconfigured is not open).
 func tokenAuth(expected string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		got, ok := authn.CutBearerPrefix(c.GetHeader("Authorization"))
-		if expected == "" || !ok || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+		if !authn.BearerIs(c.GetHeader("Authorization"), expected) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}

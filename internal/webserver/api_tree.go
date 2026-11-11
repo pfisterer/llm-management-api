@@ -1,7 +1,6 @@
 package webserver
 
 import (
-	"crypto/subtle"
 	"errors"
 	"net/http"
 
@@ -12,8 +11,7 @@ import (
 
 // requireTreeToken lets only the budget tree (resource-management-api) through, by its own token.
 func (s *Server) requireTreeToken(c *gin.Context) {
-	raw, ok := authn.CutBearerPrefix(c.GetHeader("Authorization"))
-	if !ok || s.treeTok == "" || subtle.ConstantTimeCompare([]byte(raw), []byte(s.treeTok)) != 1 {
+	if !authn.BearerIs(c.GetHeader("Authorization"), s.treeTok) {
 		abort(c, http.StatusUnauthorized, "unauthenticated", "Nur für den Budgetbaum.")
 		return
 	}

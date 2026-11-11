@@ -50,17 +50,20 @@ func (f *failing) RoundTrip(*http.Request) (*http.Response, error) {
 
 // A name that does not resolve is tried three times, for any method with a replayable body; a body that cannot be sent again is sent once.
 func TestRetryDNSAttempts(t *testing.T) {
+	if policy.Attempts != 3 || policy.Initial != time.Second || policy.Max != 2*time.Second {
+		t.Fatalf("policy %+v, want three attempts 1 s and 2 s apart", policy)
+	}
 	saved := policy
 	policy.Initial, policy.Max = time.Millisecond, 2*time.Millisecond
 	defer func() { policy = saved }()
 	dnsErr := &net.DNSError{Err: "no such host", Name: "x.invalid", IsNotFound: true}
 	f := &failing{err: dnsErr}
 	c := &http.Client{Transport: retrying{next: f}}
-	if _, err := c.Get("http://x.invalid/"); err == nil || f.calls != attempts {
-		t.Fatalf("GET: %v after %d calls, want %d", err, f.calls, attempts)
+	if _, err := c.Get("http://x.invalid/"); err == nil || f.calls != policy.Attempts {
+		t.Fatalf("GET: %v after %d calls, want %d", err, f.calls, policy.Attempts)
 	}
 	f.calls = 0
-	if _, err := c.Post("http://x.invalid/", "text/plain", strings.NewReader("a")); err == nil || f.calls != attempts {
+	if _, err := c.Post("http://x.invalid/", "text/plain", strings.NewReader("a")); err == nil || f.calls != policy.Attempts {
 		t.Fatalf("POST with a replayable body: %v after %d calls", err, f.calls)
 	}
 	f.calls = 0

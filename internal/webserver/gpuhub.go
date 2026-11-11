@@ -2,7 +2,6 @@ package webserver
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"io"
 	"net"
@@ -472,8 +471,7 @@ func workspaceCaller(o GPUHubOptions) gin.HandlerFunc {
 }
 
 func hubToken(c *gin.Context, token string) bool {
-	raw, ok := authn.CutBearerPrefix(c.GetHeader("Authorization"))
-	if !ok || token == "" || subtle.ConstantTimeCompare([]byte(raw), []byte(token)) != 1 {
+	if !authn.BearerIs(c.GetHeader("Authorization"), token) {
 		abort(c, http.StatusUnauthorized, "unauthenticated", "Token fehlt oder ist falsch.")
 		return false
 	}

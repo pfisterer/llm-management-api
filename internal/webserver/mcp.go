@@ -3,7 +3,6 @@ package webserver
 import (
 	"context"
 	"errors"
-	"net/http"
 	"strings"
 	"time"
 
@@ -38,12 +37,8 @@ func (c mcpCaller) admin() bool { return c.Role.AtLeast(access.RoleAdmin) }
 // registerMCP mounts the MCP endpoint on the group, which carries withCaller and not RejectWritesForReadOnlyTokens; a server per request, built around the caller, so one request's tools cannot run with another's rights.
 func (s *Server) registerMCP(group *gin.RouterGroup) {
 	handler := mcpserve.Handler(func(cl mcpCaller) *mcp.Server { return s.newMCPServer(cl) })
+	// mcpserve.Handler answers an OPTIONS request itself (405, Allow: POST): it is no MCP call, and it does not reach the SDK.
 	group.Any("", func(c *gin.Context) {
-		// An OPTIONS request is no MCP call (MCP clients are no browsers), and it must not reach the SDK's handler.
-		if c.Request.Method == http.MethodOptions {
-			abort(c, http.StatusMethodNotAllowed, "method_not_allowed", "Methode nicht erlaubt.")
-			return
-		}
 		ctx := mcpserve.WithCaller(c.Request.Context(), mcpCaller{Caller: caller(c), readOnly: ginweb.IsReadOnly(c)})
 		handler.ServeHTTP(c.Writer, c.Request.WithContext(ctx))
 	})

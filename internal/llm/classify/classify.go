@@ -317,8 +317,8 @@ func msg(text string) []map[string]string {
 	return []map[string]string{{"role": "user", "content": text}}
 }
 
-// probeRetry is the pause between the attempts of a probe's first call: 20 s each; the attempts (three) are counted by probe, Total does not limit them.
-var probeRetry = retry.Policy{Total: time.Hour, Initial: 20 * time.Second, Max: 20 * time.Second}
+// probeRetry is how a probe's first call is repeated: three attempts, 20 s apart; no time limit of its own, the probe's context is.
+var probeRetry = retry.Policy{Attempts: 3, Total: -1, Initial: 20 * time.Second, Max: 20 * time.Second}
 
 // probe measures a model with calls through the gateway, i.e. against exactly
 // the machine that serves it. Generous time limits: a cold model first loads
@@ -327,13 +327,8 @@ func (s *Service) probe(ctx context.Context, model string) probe {
 	// FIRST CALL: reachability and warm-up, deliberately not measured. Up to
 	// three attempts, because the discovery run creates the model right before,
 	// and the gateway replicas reload their model list only every 30 seconds.
-	attempt := 0
 	err := retry.Do(ctx, probeRetry, func(ctx context.Context) error {
-		attempt++
 		_, err := s.ask(ctx, map[string]any{"model": model, "messages": msg("Antworte mit dem Wort: bereit"), "max_tokens": 8}, 4*time.Minute)
-		if err != nil && attempt == 3 {
-			return retry.Permanent(err)
-		}
 		return err
 	})
 	if err != nil {

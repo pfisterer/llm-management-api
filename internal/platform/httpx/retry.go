@@ -14,10 +14,8 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/retry"
 )
 
-// attempts is how often a request is tried at most; the pauses are 1 s and 2 s (retry.Do doubles from 1 s, at most 2 s).
-const attempts = 3
-
-var policy = retry.Policy{Total: time.Hour, Initial: time.Second, Max: 2 * time.Second} // Total is not the limit: attempts and the request's context are
+// policy tries a request at most three times, 1 s and 2 s apart (retry.Do doubles from 1 s, at most 2 s); no time limit of its own, the request's context and the client's timeout are.
+var policy = retry.Policy{Attempts: 3, Total: -1, Initial: time.Second, Max: 2 * time.Second}
 
 // retrying wraps a transport and repeats a request that failed on the way out (up to three attempts, 1 s and 2 s apart). The DNS servers in front of both clusters have shown short outages ("no such host", "server misbehaving") for names that resolve again a second later; any request is repeated for those. GET and HEAD requests are also repeated after a connection that broke before an answer (TLS handshake timeout, connection reset, EOF): calls from the workspace pods to GitHub and quay.io have failed that way in short bursts (16.10.2026), while the same calls a moment later went through. Only requests without a body or with a replayable body (GetBody) are repeated.
 type retrying struct{ next http.RoundTripper }
@@ -39,7 +37,7 @@ func (r retrying) RoundTrip(req *http.Request) (*http.Response, error) {
 			req.Body = body
 		}
 		resp, last = r.next.RoundTrip(req)
-		if last != nil && (attempt == attempts || !retryable(req, last)) {
+		if last != nil && !retryable(req, last) {
 			return retry.Permanent(last)
 		}
 		return last

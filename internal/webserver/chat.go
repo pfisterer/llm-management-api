@@ -3,7 +3,6 @@ package webserver
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -105,8 +104,7 @@ func (ex *chatExchange) forget(uid string) {
 }
 
 func (ex *chatExchange) serve(w http.ResponseWriter, r *http.Request) {
-	raw, ok := authn.CutBearerPrefix(r.Header.Get("Authorization"))
-	if !ok || ex.o.Token == "" || subtle.ConstantTimeCompare([]byte(raw), []byte(ex.o.Token)) != 1 {
+	if !authn.BearerIs(r.Header.Get("Authorization"), ex.o.Token) {
 		chatError(w, http.StatusUnauthorized, "Token fehlt oder ist falsch.")
 		return
 	}
