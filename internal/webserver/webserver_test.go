@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/pfisterer/llm-management-api/internal/usage"
+	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"io"
 	"math"
 	"net/http"
@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/fleet"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/litellm"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
 

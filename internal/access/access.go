@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/ttlcache"
+	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 )
 
 // Role is what a person may do. Ordered: a higher role includes the lower ones.

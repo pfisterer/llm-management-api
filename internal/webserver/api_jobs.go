@@ -12,9 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
 
 // Batch jobs (docs/architektur.md "Batch-Jobs"): GPU jobs without a workspace, in the project's volume and environment. People see and cancel their own jobs, the project's managers and admins all of the project.

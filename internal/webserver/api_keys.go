@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/pfisterer/llm-management-api/internal/keys"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
 
 // CreateKeyRequest names the new key and the project whose LLM tokens it spends.

@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
 // requireTreeToken lets only the budget tree (resource-management-api) through, by its own token.

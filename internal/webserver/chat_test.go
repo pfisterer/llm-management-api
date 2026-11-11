@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/litellm"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
 

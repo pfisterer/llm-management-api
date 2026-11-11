@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
 // Findings of the rights test of the batch-job API (todo job_submit, security_tests), fixed and kept as regression tests: each asserts the behaviour wanted.

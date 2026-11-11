@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pfisterer/llm-management-api/internal/fleet"
+	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"go.uber.org/zap"
 )
 

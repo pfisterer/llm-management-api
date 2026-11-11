@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
 // A project with a free image cannot start "CPU + GPU kernel" (the start refuses it), so its start options must not offer it.

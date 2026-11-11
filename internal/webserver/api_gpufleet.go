@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 )
 
 // GPUFleetResponse is the GPU administration at a glance: the GPU nodes with their assignment, the pools, the tiers and the classes (pool and tier combinations) with their GPUs.

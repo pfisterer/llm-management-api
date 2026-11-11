@@ -9,8 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/litellm"
-	"github.com/pfisterer/llm-management-api/internal/ttlcache"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 	"go.uber.org/zap"
 )
 

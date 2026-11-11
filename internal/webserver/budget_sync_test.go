@@ -10,11 +10,11 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/litellm"
-	"github.com/pfisterer/llm-management-api/internal/promtext"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
 )
 
 // The pass makes a team per project with the project's tokens (0 for an ended project), deletes the team of a deleted project with its keys, sets every person's budget to 0 (the pools pay), moves a member's keys into their project and takes the keys of somebody without a project out of every team; a user without email is not touched.

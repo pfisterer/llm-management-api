@@ -9,8 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
-	"github.com/pfisterer/llm-management-api/internal/classify"
-	"github.com/pfisterer/llm-management-api/internal/fleet"
+	"github.com/pfisterer/llm-management-api/internal/llm/classify"
+	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"go.uber.org/zap"
 )
 

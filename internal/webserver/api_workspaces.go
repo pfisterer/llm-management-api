@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/usage"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
 // maxUsageSpan is the longest period a report may cover (three years, like the "lifetime" view of the cloud projects' report).

@@ -11,7 +11,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/keys"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
 
 // Identity is who is calling, after authentication.

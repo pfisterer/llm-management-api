@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
 
 // keySource makes the LLM key of a person's workspaces and batch jobs in a project (keys.WorkspaceKey): the keys, the person's LLM pools, and the master key the keys are derived from.

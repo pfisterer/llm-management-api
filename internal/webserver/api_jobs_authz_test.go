@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/token"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/roleprovider"
-	"github.com/pfisterer/llm-management-api/internal/usage"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
 	"go.uber.org/zap"
 )
 

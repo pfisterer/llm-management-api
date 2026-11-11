@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
 
 // LLMQuota decides what a person may use of the LLM, entirely from the budget tree: every project with LLM tokens is one pool shared by its members — no project no access —, with the project's requests and tokens per minute and models for all its members together.

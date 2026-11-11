@@ -9,10 +9,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/background"
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/litellm"
-	"github.com/pfisterer/llm-management-api/internal/promtext"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/platform/background"
+	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 )
 
 // BudgetSync keeps LiteLLM in step with the budget tree: one team per project with the project's LLM tokens as its budget (0 once it ended; deleted with its keys once the project is gone) and its rate limits and models, every person's quota (budget 0, see keys.SyncQuota), and every person's keys in pools they may draw from, with their pool's short-term budget. Without it this only happens when the person asks this service for something (keys, usage, chat): somebody who left a project would go on spending its pool with the keys they made. Runs every Interval and right after the tree changed a project (Nudge).

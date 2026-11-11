@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/pfisterer/llm-management-api/internal/fleet"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/litellm"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
 )
 
 var apiBaseAddr = regexp.MustCompile(`^https?://(\d+\.\d+\.\d+\.\d+):`)

@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/pfisterer/llm-management-api/internal/background"
-	"github.com/pfisterer/llm-management-api/internal/fleet"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/promtext"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
+	"github.com/pfisterer/llm-management-api/internal/platform/background"
+	"github.com/pfisterer/llm-management-api/internal/platform/promtext"
 	"go.uber.org/zap"
 )
 

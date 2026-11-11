@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/research"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/research"
 )
 
 // kernelRoutes: GPU kernel pods for the notebook servers of "CPU + GPU-Kernel" (docs/bauplan.md 6.2). The caller is the server pod at the request's source address with its own hub token (JUPYTERHUB_API_TOKEN, header "Authorization: token …"); it can start, poll and stop only its own kernels, and the pod is built from the server pod, not from the request.

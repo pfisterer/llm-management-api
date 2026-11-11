@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pfisterer/llm-management-api/internal/fleet"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"go.uber.org/zap"
 )
 

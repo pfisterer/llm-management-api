@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"go.uber.org/zap"
 )
 

@@ -1,0 +1,445 @@
+// Package litellm talks to the LiteLLM management API (the "backend" service,
+// not the inference gateway) with the master key.
+package litellm
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/pfisterer/llm-management-api/internal/platform/httpx"
+)
+
+// Client is a minimal JSON client for the endpoints this service needs.
+type Client struct {
+	base string
+	key  string
+	http *http.Client
+}
+
+func New(baseURL, masterKey string, timeout time.Duration) *Client {
+	return &Client{base: strings.TrimRight(baseURL, "/"), key: masterKey, http: &http.Client{Timeout: timeout}}
+}
+
+// Error is a non-2xx answer from LiteLLM.
+type Error struct {
+	Status int
+	Body   string
+}
+
+func (e *Error) Error() string { return fmt.Sprintf("litellm: HTTP %d: %s", e.Status, e.Body) }
+
+// IsStatus reports whether err is a LiteLLM answer with the given status.
+func IsStatus(err error, status int) bool {
+	e, ok := err.(*Error)
+	return ok && e.Status == status
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	h := http.Header{"Authorization": {"Bearer " + c.key}, "Content-Type": {"application/json"}}
+	status, err := httpx.Do(ctx, c.http, httpx.Request{Method: method, URL: c.base + path, Header: h, Body: body, MaxBody: 4 << 20, ErrBody: 4 << 20, EmptyOK: true}, out)
+	var se *httpx.StatusError
+	switch {
+	case errors.As(err, &se):
+		msg := strings.TrimSpace(se.Body)
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return &Error{Status: se.Status, Body: msg}
+	case err != nil && status == 0:
+		return fmt.Errorf("litellm: %w", err)
+	}
+	return err
+}
+
+// UserInfo is the part of /user/info this service reads.
+type UserInfo struct {
+	UserID         string         `json:"user_id"`
+	Email          string         `json:"user_email"`
+	Spend          float64        `json:"spend"`
+	MaxBudget      *float64       `json:"max_budget"`
+	BudgetDuration *string        `json:"budget_duration"`
+	BudgetResetAt  *string        `json:"budget_reset_at"`
+	RPMLimit       *int           `json:"rpm_limit"`
+	TPMLimit       *int           `json:"tpm_limit"`
+	Models         []string       `json:"models"`
+	Metadata       map[string]any `json:"metadata"`
+}
+
+// Key is the part of a key record this service reads.
+type Key struct {
+	Token          string   `json:"token"`
+	Alias          *string  `json:"key_alias"`
+	Spend          float64  `json:"spend"`
+	MaxBudget      *float64 `json:"max_budget"`
+	BudgetDuration *string  `json:"budget_duration"`
+	BudgetResetAt  *string  `json:"budget_reset_at"`
+	// TeamID is the team whose budget the key spends; nil for a personal key.
+	TeamID   *string  `json:"team_id"`
+	RPMLimit *int     `json:"rpm_limit"`
+	TPMLimit *int     `json:"tpm_limit"`
+	Models   []string `json:"models"`
+}
+
+// Team returns the key's team id, "" for a personal key.
+func (k Key) Team() string {
+	if k.TeamID == nil {
+		return ""
+	}
+	return *k.TeamID
+}
+
+type userInfoResponse struct {
+	UserInfo *UserInfo `json:"user_info"`
+	Keys     []Key     `json:"keys"`
+}
+
+// GetUser returns the user and their keys; found=false if LiteLLM does not know them.
+func (c *Client) GetUser(ctx context.Context, userID string) (UserInfo, []Key, bool, error) {
+	var r userInfoResponse
+	err := c.do(ctx, http.MethodGet, "/user/info?user_id="+url.QueryEscape(userID), nil, &r)
+	if IsStatus(err, http.StatusNotFound) {
+		return UserInfo{}, nil, false, nil
+	}
+	if err != nil {
+		return UserInfo{}, nil, false, err
+	}
+	if r.UserInfo == nil || r.UserInfo.UserID == "" {
+		return UserInfo{}, r.Keys, false, nil
+	}
+	return *r.UserInfo, r.Keys, true, nil
+}
+
+// ListUsers returns every user LiteLLM knows, page by page.
+func (c *Client) ListUsers(ctx context.Context) ([]UserInfo, error) {
+	var out []UserInfo
+	for page := 1; ; page++ {
+		var r struct {
+			Users      []UserInfo `json:"users"`
+			TotalPages int        `json:"total_pages"`
+		}
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/user/list?page=%d&page_size=100", page), nil, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r.Users...)
+		if page >= r.TotalPages || len(r.Users) == 0 {
+			return out, nil
+		}
+	}
+}
+
+// Budget is a spending limit per window, in LiteLLM's dollars.
+type Budget struct {
+	MaxBudget      float64
+	BudgetDuration string
+}
+
+// UserQuota is what this service writes onto a user: the budget, and rate limits only where they are > 0. LiteLLM 1.94's /user/update drops null and empty values (_update_internal_user_params), so a user's rate limits and models cannot be cleared through the API, only set.
+type UserQuota struct {
+	Budget
+	RPMLimit int
+	TPMLimit int
+}
+
+func (q UserQuota) merge(body map[string]any) {
+	body["max_budget"] = q.MaxBudget
+	if q.BudgetDuration != "" {
+		body["budget_duration"] = q.BudgetDuration
+	}
+	if q.RPMLimit > 0 {
+		body["rpm_limit"] = q.RPMLimit
+	}
+	if q.TPMLimit > 0 {
+		body["tpm_limit"] = q.TPMLimit
+	}
+}
+
+// NewUser creates a user with quota and metadata, without rate limits or models of the user's own unless q names limits.
+func (c *Client) NewUser(ctx context.Context, userID, email string, q UserQuota, metadata map[string]any) error {
+	// Without auto_create_key LiteLLM makes a nameless key for every new user, whose secret nobody keeps and which counts as one of the person's keys.
+	body := map[string]any{"user_id": userID, "user_email": email, "user_role": "internal_user", "metadata": metadata, "auto_create_key": false}
+	q.merge(body)
+	return c.do(ctx, http.MethodPost, "/user/new", body, nil)
+}
+
+// UpdateUser sets email and metadata, and the quota when q is not nil. Spend is never touched.
+func (c *Client) UpdateUser(ctx context.Context, userID, email string, q *UserQuota, metadata map[string]any) error {
+	body := map[string]any{"user_id": userID, "user_email": email, "metadata": metadata}
+	if q != nil {
+		q.merge(body)
+	}
+	return c.do(ctx, http.MethodPost, "/user/update", body, nil)
+}
+
+// GenerateKey creates a key in a team with a short-term budget and returns its secret value (shown exactly once). The key gets no rate limits and no models of its own: the team's apply (a key's empty model list means every model its team allows).
+func (c *Client) GenerateKey(ctx context.Context, userID, teamID, alias string, b Budget, metadata map[string]any) (string, error) {
+	body := map[string]any{"user_id": userID, "team_id": teamID, "key_alias": alias, "metadata": metadata}
+	mergeBudget(body, b)
+	var r struct {
+		Key string `json:"key"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/key/generate", body, &r); err != nil {
+		return "", err
+	}
+	if r.Key == "" {
+		return "", fmt.Errorf("litellm: /key/generate returned no key")
+	}
+	return r.Key, nil
+}
+
+// GenerateKeyWithValue creates a key whose secret the caller chose. Used for the
+// chat key, which is derived from the person's id and never stored.
+func (c *Client) GenerateKeyWithValue(ctx context.Context, userID, teamID, alias, key string, b Budget, metadata map[string]any) error {
+	body := map[string]any{"user_id": userID, "team_id": teamID, "key_alias": alias, "key": key, "metadata": metadata}
+	mergeBudget(body, b)
+	return c.do(ctx, http.MethodPost, "/key/generate", body, nil)
+}
+
+// KeyInfo returns the key LiteLLM knows by its secret value. Any answer other than success counts as "not found": the caller then creates it, and a real problem shows up there with a proper error.
+func (c *Client) KeyInfo(ctx context.Context, key string) (Key, bool, error) {
+	var r struct {
+		Info *Key `json:"info"`
+	}
+	err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, &r)
+	var le *Error
+	if errors.As(err, &le) {
+		return Key{}, false, nil
+	}
+	if err != nil {
+		return Key{}, false, err
+	}
+	if r.Info == nil {
+		return Key{}, true, nil
+	}
+	return *r.Info, true, nil
+}
+
+// SetKeyTeam moves a key (by token or secret) into a team, or with teamID "" out of every team: LiteLLM 1.94 writes an explicit null (UpdateKeyRequest is dumped with exclude_unset, team_id is a plain nullable column) and checks nothing for it, while a move INTO a team requires the key's user to be a member of that team (validate_key_team_change, even for the master key).
+func (c *Client) SetKeyTeam(ctx context.Context, token, teamID string) error {
+	body := map[string]any{"key": token, "team_id": nil}
+	if teamID != "" {
+		body["team_id"] = teamID
+	}
+	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
+}
+
+// SetKeyBudget writes a key's short-term budget and clears rate limits and models of the key's own, so only its team's apply. LiteLLM 1.94 dumps UpdateKeyRequest with exclude_unset (prepare_key_update_data), so an explicit null clears rpm_limit and tpm_limit, and models [] means every model the team allows (_check_model_access_helper). The budget's window is only sent when it changes: LiteLLM starts a new window with every write that carries one, which would reset what the key spent so far.
+func (c *Client) SetKeyBudget(ctx context.Context, token string, b Budget, windowChanged bool) error {
+	body := map[string]any{"key": token, "rpm_limit": nil, "tpm_limit": nil, "models": []string{}}
+	mergeBudget(body, b)
+	if !windowChanged {
+		delete(body, "budget_duration")
+	}
+	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
+}
+
+// DeleteKeys deletes keys by token (hash).
+func (c *Client) DeleteKeys(ctx context.Context, tokens ...string) error {
+	return c.do(ctx, http.MethodPost, "/key/delete", map[string]any{"keys": tokens}, nil)
+}
+
+// TeamKeys returns the tokens (hashes) of a team's keys. /key/list answers only the tokens without return_full_object, at most 100 per page.
+func (c *Client) TeamKeys(ctx context.Context, teamID string) ([]string, error) {
+	var out []string
+	for page := 1; ; page++ {
+		var r struct {
+			Keys       []string `json:"keys"`
+			TotalPages int      `json:"total_pages"`
+		}
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/key/list?team_id=%s&page=%d&size=100", url.QueryEscape(teamID), page), nil, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r.Keys...)
+		if page >= r.TotalPages || len(r.Keys) == 0 {
+			return out, nil
+		}
+	}
+}
+
+// DeleteTeam deletes a team; a team LiteLLM does not know (404) is no error. LiteLLM 1.94 deletes the team's keys along with it, but only in its database: the key cache keeps them until it expires, so the keys are deleted first with DeleteKeys, which also clears the cache. Both are kept in LiteLLM's tables of deleted teams and keys; the spend logs stay.
+func (c *Client) DeleteTeam(ctx context.Context, teamID string) error {
+	err := c.do(ctx, http.MethodPost, "/team/delete", map[string]any{"team_ids": []string{teamID}}, nil)
+	if IsStatus(err, http.StatusNotFound) {
+		return nil
+	}
+	return err
+}
+
+// Team is the part of a LiteLLM team this service reads.
+type Team struct {
+	TeamID         string         `json:"team_id"`
+	Alias          *string        `json:"team_alias"`
+	Spend          float64        `json:"spend"`
+	MaxBudget      *float64       `json:"max_budget"`
+	BudgetDuration *string        `json:"budget_duration"`
+	BudgetResetAt  *string        `json:"budget_reset_at"`
+	RPMLimit       *int           `json:"rpm_limit"`
+	TPMLimit       *int           `json:"tpm_limit"`
+	Models         []string       `json:"models"`
+	Metadata       map[string]any `json:"metadata"`
+	Members        []TeamMember   `json:"members_with_roles"`
+}
+
+// TeamMember is one entry of a team's members_with_roles.
+type TeamMember struct {
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
+}
+
+// HasMember reports whether the user is a member of the team.
+func (t Team) HasMember(userID string) bool {
+	for _, m := range t.Members {
+		if m.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// GetTeam returns a team; found=false when LiteLLM does not know it. /team/info answers {"team_id", "team_info": {...}, "keys", "team_memberships"}.
+func (c *Client) GetTeam(ctx context.Context, teamID string) (Team, bool, error) {
+	var r struct {
+		TeamInfo *Team `json:"team_info"`
+	}
+	err := c.do(ctx, http.MethodGet, "/team/info?team_id="+url.QueryEscape(teamID), nil, &r)
+	if IsStatus(err, http.StatusNotFound) {
+		return Team{}, false, nil
+	}
+	if err != nil {
+		return Team{}, false, err
+	}
+	if r.TeamInfo == nil || r.TeamInfo.TeamID == "" {
+		return Team{}, false, nil
+	}
+	return *r.TeamInfo, true, nil
+}
+
+// ListTeams returns every team. /team/list answers a bare array in 1.94; an object with "teams" (the paginated /v2 shape) is read as well, so a change of shape does not read as "no teams".
+func (c *Client) ListTeams(ctx context.Context) ([]Team, error) {
+	var raw json.RawMessage
+	if err := c.do(ctx, http.MethodGet, "/team/list", nil, &raw); err != nil {
+		return nil, err
+	}
+	var list []Team
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list, nil
+	}
+	var wrapped struct {
+		Teams *[]Team `json:"teams"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Teams == nil {
+		return nil, fmt.Errorf("litellm: /team/list answered neither a list nor {teams: [...]}")
+	}
+	return *wrapped.Teams, nil
+}
+
+// TeamSpec is what this service sets on a team: the project's budget, rate limits and models, which every key in the team is held to. BudgetDuration "" leaves the team's window (and its reset date) alone on an update: LiteLLM restarts the window whenever budget_duration is sent. RPMLimit or TPMLimit 0 is sent as null (no limit; /team/update dumps with exclude_unset, so null clears).
+type TeamSpec struct {
+	TeamID         string
+	Alias          string
+	MaxBudget      float64
+	BudgetDuration string
+	RPMLimit       int
+	TPMLimit       int
+	Models         []string
+	Metadata       map[string]any
+}
+
+func (t TeamSpec) body() map[string]any {
+	body := map[string]any{"team_id": t.TeamID, "team_alias": t.Alias, "max_budget": t.MaxBudget, "metadata": t.Metadata,
+		"rpm_limit": nil, "tpm_limit": nil, "models": t.Models}
+	if t.Models == nil {
+		body["models"] = []string{}
+	}
+	if t.RPMLimit > 0 {
+		body["rpm_limit"] = t.RPMLimit
+	}
+	if t.TPMLimit > 0 {
+		body["tpm_limit"] = t.TPMLimit
+	}
+	if t.BudgetDuration != "" {
+		body["budget_duration"] = t.BudgetDuration
+	}
+	return body
+}
+
+// NewTeam creates a team without members.
+func (c *Client) NewTeam(ctx context.Context, t TeamSpec) error {
+	return c.do(ctx, http.MethodPost, "/team/new", t.body(), nil)
+}
+
+// UpdateTeam sets alias, budget, rate limits, models and metadata of a team (and its window when BudgetDuration is set). Spend is never touched.
+func (c *Client) UpdateTeam(ctx context.Context, t TeamSpec) error {
+	return c.do(ctx, http.MethodPost, "/team/update", t.body(), nil)
+}
+
+// AddTeamMember adds the user to the team as a plain member; already being one is fine.
+func (c *Client) AddTeamMember(ctx context.Context, teamID, userID string) error {
+	err := c.do(ctx, http.MethodPost, "/team/member_add", map[string]any{"team_id": teamID, "member": map[string]any{"role": "user", "user_id": userID}}, nil)
+	var le *Error
+	if errors.As(err, &le) && le.Status == http.StatusBadRequest && strings.Contains(le.Body, "already in team") {
+		return nil
+	}
+	return err
+}
+
+func mergeBudget(body map[string]any, b Budget) {
+	body["max_budget"] = b.MaxBudget
+	if b.BudgetDuration != "" {
+		body["budget_duration"] = b.BudgetDuration
+	}
+}
+
+// HealthEndpoint is one entry of LiteLLM's /health answer.
+type HealthEndpoint struct {
+	APIBase string `json:"api_base"`
+	Model   string `json:"model"`
+	// ModelID is the deployment the result belongs to (model_info.id); LiteLLM sends it with every endpoint, empty on older versions.
+	ModelID string `json:"model_id"`
+	Error   string `json:"error"`
+}
+
+// Health returns LiteLLM's cached background health check (cheap: with
+// background_health_checks the proxy answers from its cache and does NOT run
+// inference — that coupling is why this may be called per page view).
+func (c *Client) Health(ctx context.Context) (healthy, unhealthy []HealthEndpoint, err error) {
+	var r struct {
+		Healthy   []HealthEndpoint `json:"healthy_endpoints"`
+		Unhealthy []HealthEndpoint `json:"unhealthy_endpoints"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/health", nil, &r); err != nil {
+		return nil, nil, err
+	}
+	return r.Healthy, r.Unhealthy, nil
+}
+
+// Deployment is the part of a /model/info entry this service reads: the public name (an alias or the model's own name), the model behind it and where it runs.
+type Deployment struct {
+	ModelName string `json:"model_name"`
+	Params    struct {
+		Model   string `json:"model"`
+		APIBase string `json:"api_base"`
+	} `json:"litellm_params"`
+	Info struct {
+		ID string `json:"id"`
+		// Set by the discovery job from the deployment's context; 0 = unknown. Numbers, since LiteLLM's model map may bring them as floats.
+		MaxInputTokens  float64 `json:"max_input_tokens"`
+		MaxOutputTokens float64 `json:"max_output_tokens"`
+	} `json:"model_info"`
+}
+
+// ModelInfo returns every deployment of the model list (with the master key: all of them, not only those of a key).
+func (c *Client) ModelInfo(ctx context.Context) ([]Deployment, error) {
+	var r struct {
+		Data []Deployment `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/model/info", nil, &r); err != nil {
+		return nil, err
+	}
+	return r.Data, nil
+}

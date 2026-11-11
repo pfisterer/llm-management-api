@@ -3,9 +3,9 @@ package app
 import (
 	"context"
 
-	"github.com/pfisterer/llm-management-api/internal/gpu"
-	"github.com/pfisterer/llm-management-api/internal/usage"
-	"github.com/pfisterer/llm-management-api/internal/workspace"
+	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
+	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
 // The GPU part (package gpu) knows the cluster, the workspace part (package workspace) the projects, and usage the booking; neither imports the other's view of a pod. The mappings between them live here, in one place, rather than inline in run().

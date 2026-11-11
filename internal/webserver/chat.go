@@ -16,8 +16,8 @@ import (
 
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/llm-management-api/internal/access"
-	"github.com/pfisterer/llm-management-api/internal/keys"
-	"github.com/pfisterer/llm-management-api/internal/ttlcache"
+	"github.com/pfisterer/llm-management-api/internal/llm/keys"
+	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
