@@ -16,7 +16,7 @@ internal/
     oci/                           OCI-Registry- und Harbor-Client: Manifeste, Labels, Architekturen, Scan-Übersicht, Artefakte auflisten und löschen
     ttlcache/                      Generischer TTL-Cache für Schlüssel (Map) und Einzelwerte (Value)
   access/                          Identität und Rollen: wer eine Person ist (Tokens aus dem Role-Provider), welche Rolle sie hat (ADMIN_TOKENS, FLEET_ADMIN_TOKENS)
-  roleprovider/                    Client des role-provider-service (api/ ist generiert) und ein Mock für die Entwicklung
+  roleprovider/                    Anbindung des role-provider-service (über das Modul github.com/pfisterer/role-provider-service/client) und ein Mock für die Entwicklung
   llm/                             Fachbereich LLM-Dienst (LiteLLM)
     litellm/                       LiteLLM-Admin-API: Nutzer, Teams, Keys
     keys/                          LiteLLM-Keys und -Teams einer Person: Pools der Projekte, Budgets, abgeleitete Chat- und Workspace-Keys, Verbrauch
@@ -65,4 +65,4 @@ Jede Liste, die eine Person oder ein Skript liest, wird geblättert (golib `page
 
 ## Verweise auf Pfade
 
-Dockerfile (`COPY internal/`), Helm-Chart, `.air.toml` und `swag init -g ./cmd/main.go` (sucht rekursiv ab dem Modul) brauchen keine Änderung; `swagger.json` ist nach dem Umzug byteidentisch. Das Makefile nennt nur `internal/generated_docs` und `internal/roleprovider/api`, beide unverändert.
+Dockerfile (`COPY internal/`), Helm-Chart, `.air.toml` und `swag init -g ./cmd/main.go` (sucht rekursiv ab dem Modul) brauchen keine Änderung; `swagger.json` ist nach dem Umzug byteidentisch. Das Makefile nennt nur `internal/generated_docs`, unverändert.

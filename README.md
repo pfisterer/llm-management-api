@@ -1,6 +1,6 @@
 # llm-management-api
 
-Self-service API of the DHBW LLM service: API keys, usage, workspaces and the Mac fleet, with access from the projects of the budget tree and roles from the configuration. Consumed by the LLM section of [self-service-ui](https://github.com/pfisterer/self-service-ui) through the generated client `@dhbw-cloud/llm-client`.
+Self-service API of the AI service of dhbw.cloud: LLM keys and usage (LiteLLM), workspace projects, JupyterHub workspaces and GPU kernels in the GPU cluster, batch jobs with their files, the GPU and Mac fleets, with access from the projects of the budget tree and roles from the configuration. Consumed by the LLM section of [self-service-ui](https://github.com/pfisterer/self-service-ui) through the generated client `@dhbw-cloud/llm-client`, by the Python client and command `dhbw-cloud` (`clients/python`, built with `make py-package`) and by agents over MCP (`/mcp`).
 
 It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the aiaas-deployment project (Ansible; `docs/architektur.md` and `docs/todo.md` there).
 
@@ -20,14 +20,24 @@ The bearer token is the ID token the self-service BFF (oauth2-proxy) forwards: i
 
 An admin (`ADMIN_TOKENS`) may act on behalf of another person, e.g. for a ticket, by sending `X-Act-As: <email>` — the same header the other services of the platform read, each checking it against its own admins. The request then runs with that person's tokens and role, not the admin's; writes are logged with both. Keys are bound to the person's Keycloak sub, which an admin does not know: it is looked up from the person's LiteLLM user, so keys on someone's behalf work only once that person has used the LLM themself (409 `person_unknown` before). Chat and JupyterHub have their own sign-in and always open as the admin. `GET /v1/me` reports `may_act_as` and `acting_as`.
 
+Scripts, CI jobs and notebooks use a personal API token instead (`Authorization: Bearer aiaas_…`, created under `/v1/tokens` by a signed-in person; only its hash is stored). It acts as its owner with the owner's rights at the time of each request; a read-only token may only read (every write under `/v1` is refused for it). An API token can neither act on behalf of somebody nor create further tokens. Lifetime and number: `API_TOKEN_TTL_HOURS`, `API_TOKEN_MAX_TTL_HOURS`, `API_TOKEN_ALLOW_NEVER_EXPIRES`, `MAX_API_TOKENS_PER_USER`.
+
 ## API
 
 | Method and path | Role |
 |---|---|
 | `GET /v1/me` | any authenticated caller |
-| `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}`, `PUT /v1/keys/default-project` | any authenticated caller; usage and keys need a project with LLM tokens (403 otherwise) |
-| `GET /v1/fleet`, `/v1/fleet/inventory.csv`, `/v1/fleet/profile`, `/v1/fleet/package`, `/v1/fleet/readme`, `POST /v1/fleet/{serial}/block\|unblock`, `DELETE /v1/fleet/{serial}` | fleet-admin |
+| `GET/POST /v1/tokens`, `DELETE /v1/tokens/{id}` | any authenticated caller (creating one only when signed in, not with another API token) |
+| `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}`, `PUT /v1/keys/default-project`, `GET /v1/models/aliases` | any authenticated caller; they need a project with LLM tokens (403 otherwise; the aliases also for fleet-admins) |
+| `GET /v1/fleet`, `/v1/fleet/inventory.csv`, `/v1/fleet/inference`, `/v1/fleet/profile`, `/v1/fleet/package`, `/v1/fleet/readme`, `PUT /v1/fleet/model`, `POST /v1/fleet/{serial}/block\|unblock`, `DELETE /v1/fleet/{serial}` | fleet-admin |
 | `DELETE /v1/fleet/package` | admin |
+| `GET /v1/workspaces/catalog`, `/v1/workspaces/projects`, `/v1/workspaces/usage/me` | any authenticated caller (own usage: with workspace access) |
+| `PUT /v1/workspaces/projects/{slug}`, `POST …/{slug}/image/rebuild\|update`, `GET/PUT …/{slug}/credentials`, `DELETE …/{slug}/credentials/{host}`, `GET …/{slug}/image/log`, `GET /v1/workspaces/usage`, `/v1/workspaces/gpu-hours` | the project's managers and admins (admins may change everything, managers part of a project) |
+| `DELETE /v1/workspaces/projects/{slug}`, `GET /v1/workspaces/storage` | admin |
+| `GET/POST /v1/gpu/servers`, `DELETE /v1/gpu/servers/{name}`, `GET /v1/gpu/servers/{name}/progress`, `GET /v1/gpu/start-options` | workspace access: a member of an active project, or admin |
+| `POST /v1/gpu/jobs`, `PUT /v1/gpu/files`; `GET /v1/gpu/jobs`, `/v1/gpu/jobs/{id}`, `…/{id}/log`, `…/{id}/files`, `…/{id}/files/download`, `DELETE /v1/gpu/jobs/{id}` | submit and upload: workspace access; the rest: the person's own jobs, all of a project for its managers and admins (see Batch jobs) |
+| `GET /v1/gpu/fleet`, `PUT /v1/gpu/fleet/nodes/{name}`, `PUT/DELETE /v1/gpu/fleet/pools/{id}`, `GET /v1/inference/models`, `PUT/DELETE /v1/inference/models/{key}`, `PUT /v1/inference/tiers/{tier}` | admin (GPU administration, with `GPU_FLEET` enabled) |
+| `GET /v1/tree/projects`, `PUT/DELETE /v1/tree/projects/{node}`, `GET /v1/tree/catalog` | the budget tree's token (`TREE_API_TOKEN`), not a person |
 | `GET /healthz` (alive), `GET /readyz` (ready: the database answers; the identity provider's keys are listed under `degraded` without failing it), `GET /health` (kept for compatibility), `GET /config.json`, `GET /swagger.json` | public |
 
 Keys: the LiteLLM user id is `kc-<sub>` (as before), names are required and unique per person (stored with an owner tag, since LiteLLM aliases are global), at most `MAX_KEYS_PER_USER` own keys (the chat key does not count), and quotas are only written when they differ. Every key is in the team of one project (the named one, else the person's default project, stored as `default_project` in the LiteLLM user's metadata; the chat key always follows the default). The person's own LiteLLM budget is 0, so a key outside every team spends nothing; LiteLLM therefore needs `general_settings.skip_user_budget_on_team_key: true`, or that 0 would stop team keys too. The budget sync (every `BUDGET_SYNC_SECONDS` and after each change from the tree) keeps the teams' budgets, rate limits and models in step (budget 0 once a project ended or is gone, teams are never deleted), moves keys out of projects the person lost into their default project, gives every key its project's short-term budget, and takes the keys of somebody without any project out of their team (with a short-term budget of 0).
@@ -39,6 +49,19 @@ An agent working for a person reaches the same API over MCP (streamable HTTP, st
 ### Errors and their language
 
 Errors are answered as `{"error": "<text for people>", "code": "<stable reason>"}`; a client matches on `code`, never on the text. The text is German, or English for `Accept-Language: en` (golib `msg`: the tag with the highest q that names `de` or `en`, German when the header is missing or names neither), on `/v1` and `/mcp` alike (an MCP tool's error is in the language of the HTTP request that carried the call) and on the hub listener's routes for workspaces (`/v1` there, the GPU kernels); answers carry `Vary: Accept-Language`. Stays German: what the service stores (the message of a failed image build, the warnings about a project image, the reason of a model's classification), what it sends to other systems (JupyterHub's own endpoints and the reason of a refused start it shows, the budget tree's `/v1/tree`, LibreChat, the fleet's machine API, the markers in a job's log) and the logs. `internal/messages_test.go` fails on a German text outside a pair unless it is listed there with the reason.
+
+## Batch jobs and their files (with the GPU part)
+
+Batch jobs run a command in a project's environment on the GPU cluster without a workspace; they exist when the GPU part is on and `GPU_JOB_INIT_IMAGE` is set. `POST /v1/gpu/jobs` checks the job against the project (membership, batch jobs and the GPU class allowed, jobs per person, maximum run time, and the budget: what was used plus what running and waiting jobs reserve plus GPUs × `max_hours` of this one must fit; a refusal is 409 with its reason) and queues it in the project's Kueue queue. The job runs with the person's home in the project's volume and the shared folder; its output also goes to `~/jobs/<name>/output-<attempt>.log`. A preemptible job (the project's batch priority) is evicted for a workspace and starts again from the beginning; `max_hours` counts over all attempts. Before an eviction, its deadline or a cancel the command gets TERM and `DHBW_JOB_GRACE_SECONDS` (`GPU_JOB_GRACE_SECONDS`, default 120, at most 600) to save a checkpoint into `DHBW_JOB_DIR`; `DHBW_JOB_ATTEMPT` counts its starts. The job gets the person's LLM key (`OPENAI_API_KEY`, `OPENAI_BASE_URL` and Claude Code's `ANTHROPIC_*`, as in a workspace) by the rule of their workspaces in the project; `llm_project` chooses another LLM project or none.
+
+Reading: `GET /v1/gpu/jobs` lists the caller's jobs (paged, newest first, a waiting one with its place in the queue), with `project` all of the project for its managers and admins; a single job is read live from Kubernetes and Kueue. `GET …/{id}/log` is the end of the output, live from the pod while it runs (`lines`, default 200, at most 5000) and afterwards the last 64 KB, kept for 30 days. `DELETE /v1/gpu/jobs/{id}` cancels; what it used stays booked. A person removed from their project still sees and cancels their own jobs.
+
+Files, read and written by a short-lived files pod in the GPU cluster (mounting the person's home of the project's volume, read-only except for an upload; the first request may take a few seconds, an unused pod is kept five minutes for the next request and removed by a cleanup every minute):
+- `GET /v1/gpu/jobs/{id}/files?path=` lists a folder of the home the job ran in, by default the job's folder `~/jobs/<name>` (output, checkpoints), also after the job has ended. The job's person reads their whole home (with the project's shared folder at `project-shared`) while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed.
+- `GET /v1/gpu/jobs/{id}/files/download?path=` streams one file with the same rights; at most 5 GB and 30 minutes, a symbolic link must point into the readable part.
+- `PUT /v1/gpu/files?project=&path=` writes the body into the caller's own home in the project, or under `project-shared/` into the shared folder (not for the role reader). Missing folders are made, an existing file is replaced once the new one is complete. At most 5 GB and 30 minutes, `Content-Length` required (411 without, 413 above); the only route above the 1 MB body limit of the API.
+
+The command `dhbw-cloud` (`job submit --files`, `job upload`, `job watch`, `job files`, `job get`) is the client of these routes. In a workspace it needs no API token: the job routes and `GET /v1/gpu/start-options` are also served on the hub listener, authenticated by the server pod's own hub token (see below), as the person and never with the platform roles.
 
 ## Machine API (second listener, `MACHINE_BIND`, default `:8087`)
 
@@ -52,6 +75,17 @@ For the machines, the WireGuard hub and the discovery job; reachable through the
 | `GET /fleet/sites` (discovery) | admin token |
 
 The registry lives in Postgres (`fleet_peers`). One-off import of the Node broker's file: `llm-management-api import-peers /path/to/peers.json` (same environment as the service).
+
+## Hub listener (`GPU_HUB_BIND`, default `:8091`, with the GPU part)
+
+For JupyterHub and the workspaces in the GPU cluster, reached only through the WireGuard link; started when the GPU part is on and `GPU_HUB_TOKEN` is set.
+
+| Method and path | Caller |
+|---|---|
+| `GET /gpu/hub/access?user=` (projects, GPUs, LLM projects of a person), `POST /gpu/hub/spawn-check` (may this start happen now), `POST /gpu/hub/workspace-key` (the LLM key of a person's workspaces in a project) | JupyterHub, with `GPU_HUB_TOKEN` |
+| `POST /workspaces/homes`, `POST /workspaces/valkey` (the hourly storage job's report) | the storage CronJob, with `GPU_HUB_TOKEN` |
+| `POST/GET /gpu/kernels`, `GET/DELETE /gpu/kernels/{id}` (GPU kernels of "CPU + GPU-Kernel") | the server pod at the request's source address with its own hub token, its own kernels only |
+| `/v1/gpu/jobs…`, `PUT /v1/gpu/files`, `GET /v1/gpu/start-options` (see Batch jobs) | a workspace server pod with its own hub token, as its person, never with platform roles |
 
 ## Metrics (listener `METRICS_BIND`, default `:8092`)
 
@@ -92,7 +126,7 @@ The WireGuard handshake is not known to the service; the hub's node-exporter tex
 | `aiaas_workspace_project_image_updates_offered` | active projects with a moved image tag not taken yet |
 | `aiaas_workspace_project_end_timestamp_seconds{project}` | end of the last day of an active project with an end ("ending soon" = minus `time()`) |
 | `aiaas_workspace_project_budget_limit{project,unit,window,gpu_class,source}` | project-wide budgets of active projects (per-person budgets are left out); `source` `tree` or `project` |
-| `aiaas_workspace_project_budget_used{…}` | what the project used of it in its current window (UTC calendar days) |
+| `aiaas_workspace_project_budget_used{…}` | what the project used of it in its current window (calendar days in Europe/Berlin: 24h = today, 7d and 30d including today) |
 | `aiaas_workspace_project_storage_limit_bytes{project}` | size of the project's volume `ws-<slug>` |
 | `aiaas_workspace_project_storage_used_bytes{project}` | used space at the last hourly report |
 | `aiaas_workspace_storage_report_timestamp_seconds{report}` | last report of the hourly storage job, `dirs` or `valkey` |
@@ -127,32 +161,56 @@ Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RE
 
 | Variable | Meaning |
 |---|---|
-| `API_MODE` | `production` (default) or `development` |
+| `API_MODE` | `production` (default) or `development`; in development a `.env` in the working directory is read and overrides the environment |
+| `DEV_AUTH_USER` | who a request without a bearer is in development mode, default `root.admin@uni.example` |
 | `API_BIND` | listen address, default `:8086` |
-| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_JWKS_URL` | token verification |
-| `ROLE_PROVIDER_TYPE` | `http` (required in production) or `mock` |
-| `ROLE_PROVIDER_URL`, `ROLE_PROVIDER_TOKEN` | role-provider base URL (without `/v1`) and read token |
-| `DB_TYPE`, `DB_CONNECTION_STRING` | `postgres` (required in production) or `memory` |
+| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_JWKS_URL` | token verification (issuer and client id required in production) |
+| `ROLE_PROVIDER_TYPE` | `http` (default, required in production) or `mock` |
+| `ROLE_PROVIDER_URL`, `ROLE_PROVIDER_TOKEN` | role-provider base URL (without `/v1`) and read token, required for `http` |
+| `ROLE_PROVIDER_TIMEOUT_SECONDS` | time limit of a role-provider request, default 5 |
+| `DB_TYPE`, `DB_CONNECTION_STRING` | `memory` (default) or `postgres` (required in production, with the connection string) |
 | `ADMIN_TOKENS`, `FLEET_ADMIN_TOKENS` | comma-separated role-provider tokens (`user:<email>`, `group:<id>`) whose holders are admins (fleet-admins too) and fleet-admins |
-| `LLM_DEFAULT_RPM`, `LLM_DEFAULT_TPM` | requests and tokens per minute of a project for which the tree sets none, default 60 and 200000 (0 = no limit) |
-| `LLM_BASE_MODELS` | model groups every project may use, comma-separated, default `chat-default,chat-fast,code,embedding` (the stable aliases); the tree adds more per project |
-| `LLM_KEY_BUDGET_SHARE`, `LLM_KEY_BUDGET_WINDOW` | every key's short-term budget: this share of its project's budget per window, default `0.05` per `4h` |
-| `SELF_SERVICE_URL` | where people without a project get one (in the 403 of the LLM and for JupyterHub) |
 | `TOKEN_CACHE_SECONDS` | reuse of role-provider answers, default 60 |
-| `CHAT_BIND` | chat exchange for LibreChat (`/v1/*` with `X-LibreChat-User-*` headers), default `:8089`; NetworkPolicy: LibreChat only |
-| `CHAT_EXCHANGE_TOKEN` | shared secret LibreChat sends to the chat exchange as its API key (`Authorization: Bearer`); empty = the exchange refuses every request |
-| `ADMIN_LOGIN_BIND` | LiteLLM UI autologin (`/`, `/autologin`), default `:8090`; only behind the admin host's forward-auth, role admin |
+| `API_TOKEN_TTL_HOURS`, `API_TOKEN_MAX_TTL_HOURS` | lifetime of an API token when the request names none, default 24, and the longest one may ask for, default 8760 (a year) |
+| `API_TOKEN_ALLOW_NEVER_EXPIRES` | whether everybody may create tokens without expiry, default `false` (read-only tokens and an admin's own may anyway) |
+| `MAX_API_TOKENS_PER_USER` | valid API tokens per person, default 10, at most 50 |
+| `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service), required |
 | `LITELLM_GATEWAY_URL` | LiteLLM inference gateway (chat, classification probes) |
 | `LITELLM_UI_USERNAME`, `LITELLM_UI_PASSWORD` | shared LiteLLM UI account for the autologin |
-| `ALIASES`, `ALIAS_PROBES` | inventory `modelAliases` / `aliasProbes` (JSON) for `POST /fleet/classify` on the machine listener |
+| `LLM_DEFAULT_RPM`, `LLM_DEFAULT_TPM` | requests and tokens per minute of a project for which the tree sets none, default 60 and 200000 (0 = no limit) |
+| `LLM_BASE_MODELS` | model groups every project may use, comma-separated, default `chat-default,chat-fast,code,agent,embedding` (the stable aliases); the tree adds more per project |
+| `LLM_KEY_BUDGET_SHARE`, `LLM_KEY_BUDGET_WINDOW` | every key's short-term budget: this share of its project's budget per window, default `0.05` per `4h` (the window at most `30d`) |
+| `MAX_KEYS_PER_USER` | own keys per person, default 5, at most 20 |
+| `TREE_API_TOKEN` | the budget tree's token for `/v1/tree`; empty = no tree API |
+| `BUDGET_SYNC_SECONDS` | interval of the budget sync with LiteLLM (besides right after each change from the tree), default 600 |
+| `SELF_SERVICE_URL` | where people without a project get one (in the 403 of the LLM and for JupyterHub) |
 | `CHAT_URL` | link to the chat, returned by `/v1/me` |
 | `API_URL` | public OpenAI-compatible base URL (`…/v1`), returned by `/v1/me` |
 | `ADMIN_UI_URL` | LiteLLM admin UI autologin link, returned by `/v1/me` to admins only |
-| `LITELLM_URL`, `LITELLM_MASTER_KEY` | LiteLLM management API (backend service) |
-| `MAX_KEYS_PER_USER` | own keys per person, default 5 |
+| `CHAT_BIND` | chat exchange for LibreChat (`/v1/*` with `X-LibreChat-User-*` headers), default `:8089`; NetworkPolicy: LibreChat only |
+| `CHAT_EXCHANGE_TOKEN` | shared secret LibreChat sends to the chat exchange as its API key (`Authorization: Bearer`); empty = the exchange refuses every request |
+| `ADMIN_LOGIN_BIND` | LiteLLM UI autologin (`/`, `/autologin`), default `:8090`; only behind the admin host's forward-auth, role admin |
+| `MACHINE_BIND` | machine API, default `:8087` |
 | `METRICS_BIND` | Prometheus metrics (`/metrics`: fleet, workspaces, LLM keys), default `:8092`, empty = off; NetworkPolicy: monitoring namespace only |
+| `ALIASES`, `ALIAS_PROBES` | inventory `modelAliases` / `aliasProbes` (JSON) for `POST /fleet/classify` on the machine listener |
 | `FLEET`, `WIREGUARD` | the `fleet` and `wireguard` blocks of the aiaas-deployment inventory as JSON |
 | `FLEET_SCRIPTS_DIR`, `FLEET_PROFILE_TEMPLATE`, `FLEET_README`, `FLEET_PACKAGE_DIR` | fleet scripts, JAMF profile template, guide, uploaded package |
+| `GPU_ENABLED` | the GPU part (workspaces, GPU kernels, batch jobs, project images), default `false`; when on, `GPU_KUBE_API_URL`, `GPU_KUBE_TOKEN`, `GPU_KUBE_CA` (the GPU cluster's Kubernetes API through the WireGuard link), `GPU_REGISTRY` (Harbor), `JUPYTERHUB_URL` and `JUPYTERHUB_API_TOKEN` are required |
+| `GPU_BUILD_NAMESPACE`, `GPU_ENVS_PROJECT`, `GPU_BUILDER_IMAGE`, `GPU_BUILDER_SECRET`, `GPU_BUILD_PLATFORMS`, `GPU_INDEX_IMAGE`, `GPU_GIT_HOSTS` | project images from Git: namespace of the builds (default `env-build`), Harbor project (default `envs`), builder image (default the newest tag of repo2docker-buildkit), push secret (default `harbor-envs-builder`), architectures (default `amd64`), image that joins them into an index, Git hosts allowed (default `github.com,gitlab.com`) |
+| `GPU_WORKSPACE_NAMESPACE`, `GPU_INFERENCE_NAMESPACE` | where the workspace pods run (default `jupyterhub`) and the inference pool (default `inference`) |
+| `GPU_INFERENCE_URL`, `GPU_INFERENCE_API_KEY` | the vLLM replicas of the inference pool, reported as sites; empty URL = off, the key required with it |
+| `GPU_KERNEL_QUEUE`, `GPU_KERNEL_NO_GPU` | Kueue LocalQueue for GPU kernels without GPU, and kernels without a GPU (staging) |
+| `GPU_JOB_INIT_IMAGE` | init image that creates the person's home before a job; empty = no batch jobs |
+| `GPU_JOB_STORAGE_CLASS`, `GPU_JOB_STORAGE_ACCESS` | how a project's volume is made when a job comes before any workspace |
+| `GPU_JOB_GRACE_SECONDS` | a job's time after TERM to save a checkpoint, default 120 (also for 0), at most 600 |
+| `GPU_FLEET` | GPU administration as JSON (`{"enabled": true, "reserveCPU": …, "reserveMemoryGi": …, "inference": {…}}`); empty = off |
+| `GPU_HUB_BIND`, `GPU_HUB_TOKEN` | hub listener, default `:8091`, and JupyterHub's token for it; empty token = no hub listener |
+| `WORKSPACES` | profile catalogue and GPU classes as JSON; empty = the defaults |
+| `WORKSPACE_CREDENTIALS_KEY` | seals the projects' tokens for private repositories and registries (base64, 32 bytes); empty = no credentials |
+| `WORKSPACE_IMAGE_MAX_GB`, `WORKSPACE_IMAGE_HINT_GB` | compressed size above which a project image is refused (admins may save larger ones) and from which it gets a hint |
+| `HARBOR_SCAN_USER`, `HARBOR_SCAN_TOKEN` | robot account that reads Harbor's vulnerability scans of project images; empty = anonymously |
+| `IMAGE_CLEANUP_ENABLED`, `IMAGE_CLEANUP_DRY_RUN`, `IMAGE_CLEANUP_MIN_AGE_DAYS`, `IMAGE_CLEANUP_INTERVAL_MINUTES` | deleting the images of environments that are gone from Harbor's `envs`: default on, as a dry run (only logs), artifacts pushed or pulled within 7 days stay, every 60 minutes |
+| `HARBOR_CLEANUP_USER`, `HARBOR_CLEANUP_TOKEN` | robot account that may delete in `envs`; without it the cleanup stays a dry run |
 | `RESEARCH_PSEUDONYM_KEY` | key of the people's pseudonyms in the research log (HMAC-SHA256, at least 16 characters); empty = the log names no person. A new key gives everybody new pseudonyms |
 | `RESEARCH_RETENTION_DAYS` | how long the research log's rows are kept, default 730; 0 = no research log |
 
@@ -163,9 +221,12 @@ cp .env.example .env
 make dev            # live reload via air; ROLE_PROVIDER_TYPE=mock with e.g. ADMIN_TOKENS=user:root.admin@uni.example
 curl localhost:8086/v1/me                                  # the dev user
 curl -H 'X-Act-As: student@dhbw.de' localhost:8086/v1/me  # on a student's behalf
+curl -H 'Accept-Language: en' localhost:8086/v1/keys       # texts for people in English
 ```
 
-`make all` runs the tests, generates the API description and builds the binary. The layout of `internal/` (functional areas `llm/` and `cluster/`, the technical layer `platform/`, `webserver` on top) and the dependency rule between them are in `docs/architektur.md`; `internal/layers_test.go` enforces the rule. `make npm-package` builds the TypeScript client into `client-npm/`; `make npm-publish` publishes it (manual, needs `npm login`). The role-provider client is the Go module `github.com/pfisterer/role-provider-service/client`, published by that service under `client/vX.Y.Z` tags and pinned in go.mod; it is not generated here.
+`.env.example` points LiteLLM at a port-forward of a cluster's LiteLLM (`localhost:4001`). The whole platform runs locally with `run-development.sh` in the pdns-bwcloud checkout next to aiaas-deployment: it starts this service under air (`make all`) on `:8086` with `API_MODE=development`, `DB_TYPE=memory`, `ROLE_PROVIDER_TYPE=mock`, `ADMIN_TOKENS=user:root.admin@uni.example`, LiteLLM 1.94 with mock models in docker on `:4000` (`LITELLM_URL` and `LITELLM_GATEWAY_URL`, master key `sk-dev-master`) with its Postgres on `:15432`, `TREE_API_TOKEN` shared with the openstack-management-api on `:8083` (the budget tree, whose seed has AI budgets and projects), `BUDGET_SYNC_SECONDS=60`, and the self-service UI on `:8084`. Its GPU part points at a Kubernetes API that does not exist: projects, the tree sync and LLM keys work, starting workspaces does not, and without `GPU_JOB_INIT_IMAGE` and `GPU_HUB_TOKEN` there are no batch jobs and no hub listener. A `.env` left in this directory overrides the script's settings.
+
+`make all` runs the tests, generates the API description and builds the binary. The layout of `internal/`: the technical layer `platform/` (`background` loops, `oci` registry and Harbor client, `ttlcache`; HTTP helpers and the Prometheus text format come from golib), `access` (who a person is and their role) and `roleprovider`, the functional areas `llm/` (`litellm` admin API, `keys` with the projects' pools, `classify` of models into aliases, `fleet` of Macs) and `cluster/` (`workspace` projects and their rules, `gpu` for JupyterHub, Kubernetes, kernels, batch jobs, files pods, GPU administration and project images, `usage`, `research`), `webserver` on top (all listeners, REST and MCP) and `app` (`internal/*.go`), which wires everything. The dependency rule between them is in `docs/architektur.md`; `internal/layers_test.go` enforces it. `make npm-package` builds the TypeScript client into `client-npm/`; `make npm-publish` publishes it (manual, needs `npm login`). `make py-package` builds the Python package `dhbw-cloud` (`clients/python` plus a client generated from the spec) into `tmp/client-python/`, `make py-test` tests it, `make py-publish` publishes it to PyPI (manual). The role-provider client is the Go module `github.com/pfisterer/role-provider-service/client`, published by that service under `client/vX.Y.Z` tags and pinned in go.mod; it is not generated here.
 
 ## Release
 
