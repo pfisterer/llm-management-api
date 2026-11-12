@@ -161,7 +161,7 @@ curl localhost:8086/v1/me                                  # the dev user
 curl -H 'X-Act-As: student@dhbw.de' localhost:8086/v1/me  # on a student's behalf
 ```
 
-`make all` runs the tests, generates the API description and builds the binary. The layout of `internal/` (functional areas `llm/` and `cluster/`, the technical layer `platform/`, `webserver` on top) and the dependency rule between them are in `docs/architektur.md`; `internal/layers_test.go` enforces the rule. `make npm-package` builds the TypeScript client into `client-npm/`; `make npm-publish` publishes it (manual, needs `npm login`). `make generate-role-provider-client` regenerates the role-provider client from the release pinned in `RP_VERSION`.
+`make all` runs the tests, generates the API description and builds the binary. The layout of `internal/` (functional areas `llm/` and `cluster/`, the technical layer `platform/`, `webserver` on top) and the dependency rule between them are in `docs/architektur.md`; `internal/layers_test.go` enforces the rule. `make npm-package` builds the TypeScript client into `client-npm/`; `make npm-publish` publishes it (manual, needs `npm login`). The role-provider client is the Go module `github.com/pfisterer/role-provider-service/client`, published by that service under `client/vX.Y.Z` tags and pinned in go.mod; it is not generated here.
 
 ## Release
 

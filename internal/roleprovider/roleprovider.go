@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	roleclient "github.com/pfisterer/llm-management-api/internal/roleprovider/api"
+	roleclient "github.com/pfisterer/role-provider-service/client"
 	"go.uber.org/zap"
 )
 
