@@ -67,3 +67,5 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
 )
+
+replace github.com/pfisterer/cloud-self-service-golib => ../../pdns-bwcloud/cloud-self-service-golib
