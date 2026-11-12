@@ -38,8 +38,8 @@ type Options struct {
 	Verifier    TokenVerifier // nil only in development mode
 	// Probes serve /healthz and /readyz; nil = both without checks.
 	Probes *ginweb.Health
-	Access      *access.Service
-	Keys        *keys.Service
+	Access *access.Service
+	Keys   *keys.Service
 	// Quota decides a person's LLM pools and their limits, from the tree's projects and the configured defaults.
 	Quota LLMQuota
 	// MasterKey derives the workspace keys a batch job gets (keys.WorkspaceKey); empty = jobs without LLM key.
@@ -89,7 +89,7 @@ type Server struct {
 	gpu      *gpu.Service
 	usage    usage.Store
 	ws       *workspace.Service
-	probes *ginweb.Health
+	probes   *ginweb.Health
 	// tokens is nil without an API token service.
 	tokens *apiTokens
 	log    *zap.SugaredLogger
@@ -135,8 +135,9 @@ func (s *Server) Router() *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
+	// Texts for people in the caller's language (Accept-Language: German by default, English on request) for every route, the refusals of the middleware below and the MCP tools included.
 	// Writes from another origin are refused for every route (the self-service UI reaches this API through its BFF, same origin for the browser). The UI's origin is trusted for browsers that send no Sec-Fetch-Site, since the BFF rewrites Host on the way here.
-	r.Use(gin.Recovery(), s.requestLog(), ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{TrustedOrigins: originOf(s.adminUI), DevMode: s.devMode, Log: s.log}), limitBody())
+	r.Use(ginweb.Language(), gin.Recovery(), s.requestLog(), ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{TrustedOrigins: originOf(s.adminUI), DevMode: s.devMode, Log: s.log}), limitBody())
 
 	// /health stays for what still asks it (older probes, the ingress); the probes use /healthz (alive) and /readyz (ready: the checks of Probes).
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })

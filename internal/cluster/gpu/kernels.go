@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 )
@@ -89,9 +90,12 @@ type KernelOverviewEntry struct {
 var ErrNoKernelOwner = errors.New("no workspace server at this address")
 
 // KernelRefused is a start the limits or the request do not allow; Reason is shown in JupyterLab.
-type KernelRefused struct{ Reason string }
+type KernelRefused struct{ Reason msg.Text }
 
-func (e *KernelRefused) Error() string { return e.Reason }
+func (e *KernelRefused) Error() string { return e.Reason.String() }
+
+// Text is the reason in both languages (msg.Localized).
+func (e *KernelRefused) Text() msg.Text { return e.Reason }
 
 type kubeDoer interface {
 	do(ctx context.Context, method, path string, body, out any) error
@@ -256,7 +260,7 @@ func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelReque
 	}
 	if o.GPUClass == "" && !s.cfg.Kernels.NoGPU {
 		// A server started before GPU classes, or without one chosen.
-		return "", &KernelRefused{"Für diesen Workspace ist keine GPU-Klasse gewählt. Bitte den Workspace neu starten."}
+		return "", &KernelRefused{msg.T("Für diesen Workspace ist keine GPU-Klasse gewählt. Bitte den Workspace neu starten.", "No GPU class is chosen for this workspace. Please restart the workspace.")}
 	}
 	if s.kernelCheck != nil {
 		if err := s.kernelCheck(ctx, o); err != nil {
@@ -284,23 +288,23 @@ func validKernelRequest(o *KernelOwner, r *KernelRequest) error {
 	host, _, err := net.SplitHostPort(r.ResponseAddress)
 	switch {
 	case !kernelIDPattern.MatchString(r.KernelID):
-		return &KernelRefused{"Ungültige Kernel-ID."}
+		return &KernelRefused{msg.T("Ungültige Kernel-ID.", "Invalid kernel ID.")}
 	case err != nil || host != o.IP:
 		// The kernel reports its ports to the server that asked, nowhere else.
-		return &KernelRefused{"Ungültige Rückmeldeadresse."}
+		return &KernelRefused{msg.T("Ungültige Rückmeldeadresse.", "Invalid callback address.")}
 	case r.PortRange != "" && !portRangePattern.MatchString(r.PortRange):
-		return &KernelRefused{"Ungültiger Portbereich."}
+		return &KernelRefused{msg.T("Ungültiger Portbereich.", "Invalid port range.")}
 	case len(r.PublicKey) > 4096 || !publicKeyPattern.MatchString(r.PublicKey):
-		return &KernelRefused{"Ungültiger Schlüssel."}
+		return &KernelRefused{msg.T("Ungültiger Schlüssel.", "Invalid key.")}
 	case !classNamePattern.MatchString(r.KernelClassName):
-		return &KernelRefused{"Ungültige Kernel-Klasse."}
+		return &KernelRefused{msg.T("Ungültige Kernel-Klasse.", "Invalid kernel class.")}
 	case r.TransportEncryption != "" && r.TransportEncryption != "auto" && r.TransportEncryption != "required":
-		return &KernelRefused{"Ungültige Transportverschlüsselung."}
+		return &KernelRefused{msg.T("Ungültige Transportverschlüsselung.", "Invalid transport encryption.")}
 	}
 	if r.WorkingDir != "" {
 		rel, ok := homeRel(r.WorkingDir)
 		if !ok || !path.IsAbs(r.WorkingDir) { // the launcher sends an absolute path; a relative one is no working directory of a server
-			return &KernelRefused{"Arbeitsverzeichnis außerhalb des Homes."}
+			return &KernelRefused{msg.T("Arbeitsverzeichnis außerhalb des Homes.", "Working directory outside the home.")}
 		}
 		r.WorkingDir = path.Join(HomeDir, rel)
 	}
@@ -440,7 +444,7 @@ func (s *Service) KernelStatus(ctx context.Context, o *KernelOwner, kernelID str
 // StopKernel deletes the pods of one kernel of this server; reason is why, for the research log (research.EndIdleRelease, research.EndStoppedPerson, research.EndStoppedServer).
 func (s *Service) StopKernel(ctx context.Context, o *KernelOwner, kernelID, reason string) error {
 	if !kernelIDPattern.MatchString(kernelID) {
-		return &KernelRefused{"Ungültige Kernel-ID."}
+		return &KernelRefused{msg.T("Ungültige Kernel-ID.", "Invalid kernel ID.")}
 	}
 	selector := "component=kernel,kernel_id=" + kernelID + "," + kernelLabelOwner + "=" + o.Pod
 	if s.research != nil {

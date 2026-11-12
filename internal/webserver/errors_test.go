@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"go.uber.org/zap"
@@ -19,16 +20,16 @@ import (
 // TestClassify holds every area's answer to every kind of error, as the five REST mappers answered before classify (internalError, upstreamError, workspaceError, gpuError, jobError): REST and MCP answer from this table, so a change here changes both.
 func TestClassify(t *testing.T) {
 	boom := errors.New("boom")
-	inv := fmt.Errorf("wrapped: %w", &workspace.Invalid{Reason: "Ungültig."})
-	refusal := &workspace.Refusal{Reason: "Abgelehnt."}
-	jobRefused := &gpu.JobRefused{Reason: "Job abgelehnt."}
+	inv := fmt.Errorf("wrapped: %w", &workspace.Invalid{Reason: msg.T("Ungültig.", "Invalid.")})
+	refusal := &workspace.Refusal{Reason: msg.T("Abgelehnt.", "Refused.")}
+	jobRefused := &gpu.JobRefused{Reason: msg.T("Job abgelehnt.", "Job refused.")}
 	hub409 := &gpu.HubError{Status: 403, Message: "GPU-Kontingent erschöpft."}
 	hub500 := &gpu.HubError{Status: 500, Message: "hub down"}
 	badRepo := fmt.Errorf("%w: nur https", gpu.ErrInvalidRepo)
 	badRef := fmt.Errorf("%w: main2", gpu.ErrRefNotFound)
-	keyGone := &keyFailure{http.StatusServiceUnavailable, "upstream", "Kein Key.", errors.New("Kein Key.")}
-	keyUnknown := &keyFailure{http.StatusConflict, "person_unknown", "Unbekannt.", nil}
-	given := &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: "Nein."}
+	keyGone := &keyFailure{http.StatusServiceUnavailable, "upstream", msg.T("Kein Key.", "No key."), errors.New("Kein Key.")}
+	keyUnknown := &keyFailure{http.StatusConflict, "person_unknown", msg.T("Unbekannt.", "Unknown."), nil}
+	given := &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: msg.T("Nein.", "No.")}
 
 	type want struct {
 		status    int
@@ -98,6 +99,7 @@ func TestClassify(t *testing.T) {
 			s := &Server{log: zap.New(core).Sugar()}
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 			if !s.fail(c, areas[tc.area], "op", tc.err) {
 				t.Fatal("fail returned false for an error")
 			}

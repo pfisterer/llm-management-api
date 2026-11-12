@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // ErrNotFound is returned by the clients for a missing object.
@@ -235,16 +236,16 @@ type containerStatus struct {
 	} `json:"state"`
 }
 
-// jobState says in a sentence what the newest pod of a build job is doing, for the people waiting for the image, and since when it runs.
-func (k *kube) jobState(ctx context.Context, ns, job string) (string, *time.Time, error) {
+// jobState says in a sentence what the newest pod of a build job is doing, for the people waiting for the image (German and English, with Kubernetes' own words as they are), and since when it runs.
+func (k *kube) jobState(ctx context.Context, ns, job string) (msg.Text, *time.Time, error) {
 	var pods struct {
 		Items []buildPod `json:"items"`
 	}
 	if err := k.do(ctx, http.MethodGet, "/api/v1/namespaces/"+ns+"/pods?labelSelector="+url.QueryEscape("job-name="+job), nil, &pods); err != nil {
-		return "", nil, err
+		return msg.Text{}, nil, err
 	}
 	if len(pods.Items) == 0 {
-		return "Der Bau ist angelegt, sein Pod noch nicht.", nil, nil
+		return msg.T("Der Bau ist angelegt, sein Pod noch nicht.", "The build is created, its pod not yet."), nil, nil
 	}
 	p := pods.Items[0]
 	for _, q := range pods.Items[1:] {
@@ -256,39 +257,39 @@ func (k *kube) jobState(ctx context.Context, ns, job string) (string, *time.Time
 }
 
 // buildPodState puts a build pod's status into words: waiting for a node, preparing or pulling, running, ended.
-func buildPodState(p buildPod) string {
+func buildPodState(p buildPod) msg.Text {
 	for _, c := range p.Status.Conditions {
 		if c.Type == "PodScheduled" && c.Status == "False" {
-			return "Wartet auf einen Build-Knoten: " + c.Message
+			return msg.F("Wartet auf einen Build-Knoten: %s", "Waiting for a build node: %s", c.Message)
 		}
 	}
 	for _, c := range append(append([]containerStatus{}, p.Status.InitStatuses...), p.Status.ContainerStatuses...) {
 		if w := c.State.Waiting; w != nil && w.Reason != "" && w.Reason != "PodInitializing" {
 			switch w.Reason {
 			case "ContainerCreating":
-				return "Der Build-Container wird vorbereitet (Image des Builders wird geladen)."
+				return msg.T("Der Build-Container wird vorbereitet (Image des Builders wird geladen).", "The build container is being prepared (the builder's image is being pulled).")
 			case "ErrImagePull", "ImagePullBackOff":
-				return "Das Image des Builders lässt sich nicht laden: " + w.Message
+				return msg.F("Das Image des Builders lässt sich nicht laden: %s", "The builder's image cannot be pulled: %s", w.Message)
 			}
-			return "Wartet (" + w.Reason + "): " + w.Message
+			return msg.F("Wartet (%s): %s", "Waiting (%s): %s", w.Reason, w.Message)
 		}
 	}
 	switch p.Status.Phase {
 	case "Pending":
-		return "Der Build-Pod startet."
+		return msg.T("Der Build-Pod startet.", "The build pod is starting.")
 	case "Running":
-		return "Der Bau läuft."
+		return msg.T("Der Bau läuft.", "The build is running.")
 	case "Succeeded":
-		return "Der Bau ist fertig."
+		return msg.T("Der Bau ist fertig.", "The build is done.")
 	case "Failed":
 		for _, c := range p.Status.ContainerStatuses {
 			if t := c.State.Terminated; t != nil {
-				return fmt.Sprintf("Der Bau ist gescheitert (Exit-Code %d, %s).", t.ExitCode, t.Reason)
+				return msg.F("Der Bau ist gescheitert (Exit-Code %d, %s).", "The build failed (exit code %d, %s).", t.ExitCode, t.Reason)
 			}
 		}
-		return "Der Bau ist gescheitert."
+		return msg.T("Der Bau ist gescheitert.", "The build failed.")
 	}
-	return p.Status.Phase
+	return msg.Raw(p.Status.Phase)
 }
 
 func (k *kube) jobLog(ctx context.Context, ns, job string, tail int) (string, error) {

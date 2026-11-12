@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
@@ -27,7 +28,7 @@ func workspaceAccess(cl Caller, mine func() []workspace.Mine) error {
 	if cl.Role.AtLeast(access.RoleAdmin) || len(mine()) > 0 {
 		return nil
 	}
-	return &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: "Kein Zugang zu Workspaces (kein Projekt)."}
+	return &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: msg.T("Kein Zugang zu Workspaces (kein Projekt).", "No access to workspaces (no project).")}
 }
 
 // BuildLogResponse is the tail of a project image's build log.
@@ -102,7 +103,7 @@ var serverNameRE = regexp.MustCompile(`^(-|[A-Za-z0-9][A-Za-z0-9._-]{0,254})$`)
 func (s *Server) getServerProgress(c *gin.Context) {
 	name := strings.TrimSpace(c.Param("name"))
 	if !serverNameRE.MatchString(name) {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültiger Workspace-Name.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültiger Workspace-Name.", "Invalid workspace name."))
 		return
 	}
 	if name == "-" {
@@ -180,12 +181,12 @@ type StartServerRequest struct {
 func (s *Server) startServer(c *gin.Context) {
 	var req StartServerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "project und profile fehlen.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("project und profile fehlen.", "project and profile are missing."))
 		return
 	}
-	o, msg := s.startOptions(c, req)
-	if msg != "" {
-		abort(c, http.StatusBadRequest, "invalid", msg)
+	o, why := s.startOptions(c, req)
+	if !why.IsZero() {
+		abort(c, http.StatusBadRequest, "invalid", why)
 		return
 	}
 	srv, err := s.gpu.StartServer(c.Request.Context(), caller(c).Email, o)
@@ -197,12 +198,12 @@ func (s *Server) startServer(c *gin.Context) {
 }
 
 // startOptions checks a start against the caller's projects, as the start page offers it; the hub checks the limits.
-func (s *Server) startOptions(c *gin.Context, req StartServerRequest) (gpu.StartOptions, string) {
+func (s *Server) startOptions(c *gin.Context, req StartServerRequest) (gpu.StartOptions, msg.Text) {
 	return s.startOptionsFor(c.Request.Context(), s.myProjects(c), caller(c).Tokens, req)
 }
 
-// startOptionsFor is startOptions without gin, for the REST route and the MCP tool alike: mine are the caller's active projects, tokens theirs for the LLM pools; the message says what is wrong with the request, empty when nothing is.
-func (s *Server) startOptionsFor(ctx context.Context, mine []workspace.Mine, tokens []string, req StartServerRequest) (gpu.StartOptions, string) {
+// startOptionsFor is startOptions without gin, for the REST route and the MCP tool alike: mine are the caller's active projects, tokens theirs for the LLM pools; the text (German and English) says what is wrong with the request, zero when nothing is.
+func (s *Server) startOptionsFor(ctx context.Context, mine []workspace.Mine, tokens []string, req StartServerRequest) (gpu.StartOptions, msg.Text) {
 	var project *workspace.Mine
 	for _, m := range mine {
 		if m.Slug == req.Project {
@@ -210,15 +211,15 @@ func (s *Server) startOptionsFor(ctx context.Context, mine []workspace.Mine, tok
 		}
 	}
 	if project == nil {
-		return gpu.StartOptions{}, "Kein aktives Projekt " + req.Project + " mit Workspace-Zugang."
+		return gpu.StartOptions{}, noActiveProject(req.Project)
 	}
 	if !slices.Contains(project.Profiles, req.Profile) || (req.Profile == workspace.SplitProfile && !project.Derived()) {
-		return gpu.StartOptions{}, "Diese Umgebung ist im Projekt nicht freigegeben."
+		return gpu.StartOptions{}, msg.T("Diese Umgebung ist im Projekt nicht freigegeben.", "This environment is not enabled in the project.")
 	}
 	o := gpu.StartOptions{Project: req.Project, Profile: req.Profile, LLMProject: req.LLMProject}
 	if o.LLMProject != "" && o.LLMProject != gpu.NoLLM {
 		if _, ok := llmProjectFor(llmProjects(ctx, s.quota, tokens), o.LLMProject, "", ""); !ok {
-			return gpu.StartOptions{}, "Dieses LLM-Projekt steht nicht zur Wahl."
+			return gpu.StartOptions{}, msg.T("Dieses LLM-Projekt steht nicht zur Wahl.", "This LLM project cannot be chosen.")
 		}
 	}
 	usesGPU := false
@@ -228,14 +229,19 @@ func (s *Server) startOptionsFor(ctx context.Context, mine []workspace.Mine, tok
 		}
 	}
 	if !usesGPU {
-		return o, ""
+		return o, msg.Text{}
 	}
 	o.GPUClass = req.GPUClass
 	if o.GPUClass == "" && len(project.GPUClasses) == 1 {
 		o.GPUClass = project.GPUClasses[0]
 	}
 	if !project.AllowsGPUClass(o.GPUClass) {
-		return gpu.StartOptions{}, "Diese GPU-Klasse ist im Projekt nicht freigegeben."
+		return gpu.StartOptions{}, msg.T("Diese GPU-Klasse ist im Projekt nicht freigegeben.", "This GPU class is not enabled in the project.")
 	}
-	return o, ""
+	return o, msg.Text{}
+}
+
+// noActiveProject refuses a project that is none of the caller's active projects with workspaces.
+func noActiveProject(project string) msg.Text {
+	return msg.F("Kein aktives Projekt %s mit Workspace-Zugang.", "No active project %s with workspace access.", project)
 }

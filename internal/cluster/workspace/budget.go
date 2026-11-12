@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/calendar"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"go.uber.org/zap"
 )
@@ -28,16 +29,16 @@ type BudgetStatus struct {
 
 // unitDef is a unit of budgets: its name for people and what a usage row adds to it.
 type unitDef struct {
-	label  string
+	label  msg.Text
 	amount func(usage.Row) float64
 }
 
 // units are the units of workspace budgets (Budget.Unit); a unit not listed counts nothing.
 var units = map[string]unitDef{
-	"server_hours": {"Workspace-Stunden", func(r usage.Row) float64 { return r.ServerHours }},
-	"vcpu_hours":   {"vCPU-Stunden", func(r usage.Row) float64 { return r.VCPUHours }},
-	"ram_gb_hours": {"RAM-GB-Stunden", func(r usage.Row) float64 { return r.RAMGBHours }},
-	"gpu_hours":    {"GPU-Stunden", func(r usage.Row) float64 { return r.GPUHours }},
+	"server_hours": {msg.T("Workspace-Stunden", "workspace hours"), func(r usage.Row) float64 { return r.ServerHours }},
+	"vcpu_hours":   {msg.T("vCPU-Stunden", "vCPU hours"), func(r usage.Row) float64 { return r.VCPUHours }},
+	"ram_gb_hours": {msg.T("RAM-GB-Stunden", "RAM GB hours"), func(r usage.Row) float64 { return r.RAMGBHours }},
+	"gpu_hours":    {msg.T("GPU-Stunden", "GPU hours"), func(r usage.Row) float64 { return r.GPUHours }},
 }
 
 // windowDef is a window of budgets (golib calendar: its name for people, its length in days, 0 = since the project was created) and whether the budget tree gives amounts per it.
@@ -108,7 +109,7 @@ func (s *Service) SetUsage(u UsageReader) {
 		}
 		for _, b := range st {
 			if b.Exhausted {
-				return refuseStart("budget", "Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s%s.", p.Name, describe(b.Budget), num(b.Used), reservedNote(b))
+				return refuseStart("budget", "Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s%s.", "The budget in project “%s” is used up: %s. Used: %s%s.", p.Name, describe(b.Budget), num(b.Used), reservedNote(b))
 			}
 		}
 		return nil
@@ -191,23 +192,24 @@ func (s *Service) Enforce(ctx context.Context, running []RunningServer, stop Sto
 }
 
 // reservedNote names what jobs reserve of a budget, for the reasons; empty when nothing is reserved.
-func reservedNote(b BudgetStatus) string {
+func reservedNote(b BudgetStatus) msg.Text {
 	if b.Reserved <= 0 {
-		return ""
+		return msg.Text{}
 	}
-	return ", für Jobs vorgemerkt " + num(b.Reserved)
+	return msg.F(", für Jobs vorgemerkt %s", ", reserved for jobs %s", num(b.Reserved))
 }
 
-func describe(b Budget) string {
+// describe is a budget for people, e.g. "10 GPU-Stunden in 7 Tagen pro Person" / "10 GPU hours in 7 days per person".
+func describe(b Budget) msg.Text {
 	unit := units[b.Unit].label
 	if b.Unit == "gpu_hours" && b.GPUClass != "" {
-		unit += " (" + b.GPUClass + ")"
+		unit = msg.F("%s (%s)", "%s (%s)", unit, b.GPUClass)
 	}
-	who := "für das ganze Projekt"
+	who := msg.T("für das ganze Projekt", "for the whole project")
 	if b.PerPerson {
-		who = "pro Person"
+		who = msg.T("pro Person", "per person")
 	}
-	return fmt.Sprintf("%s %s %s %s", num(b.Amount), unit, windows[b.Window].Label, who)
+	return msg.F("%s %s %s %s", "%s %s %s %s", num(b.Amount), unit, windows[b.Window].Label, who)
 }
 
 // num writes a number for people: one decimal, two below 1 (job reservations are often fractions of an hour).

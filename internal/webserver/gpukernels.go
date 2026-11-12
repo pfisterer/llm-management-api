@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/research"
 )
@@ -17,17 +18,17 @@ func kernelRoutes(r *gin.Engine, o GPUHubOptions) {
 		ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
 		token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "token ")
 		if err != nil || !ok {
-			abort(c, http.StatusUnauthorized, "unauthorized", "Nur für Workspaces.")
+			abort(c, http.StatusUnauthorized, "unauthorized", msg.T("Nur für Workspaces.", "Only for workspaces."))
 			return nil
 		}
 		owner, err := o.Kernels.KernelCaller(c.Request.Context(), ip, strings.TrimSpace(token))
 		switch {
 		case errors.Is(err, gpu.ErrNoKernelOwner):
-			abort(c, http.StatusForbidden, "forbidden", "GPU-Kernel gibt es nur in Workspaces der Art „CPU + GPU-Kernel“.")
+			abort(c, http.StatusForbidden, "forbidden", msg.T("GPU-Kernel gibt es nur in Workspaces der Art „CPU + GPU-Kernel“.", "GPU kernels exist only in workspaces of the kind “CPU + GPU kernel”."))
 			return nil
 		case err != nil:
 			o.Log.Errorw("gpu kernel caller", "ip", ip, "error", err)
-			abort(c, http.StatusBadGateway, "unavailable", "Der Workspace konnte nicht geprüft werden.")
+			abort(c, http.StatusBadGateway, "unavailable", msg.T("Der Workspace konnte nicht geprüft werden.", "The workspace could not be checked."))
 			return nil
 		}
 		return owner
@@ -39,7 +40,7 @@ func kernelRoutes(r *gin.Engine, o GPUHubOptions) {
 			return
 		}
 		o.Log.Errorw("gpu kernel "+what, "owner", owner.Pod, "error", err)
-		abort(c, http.StatusInternalServerError, "internal", "GPU-Kernel: Fehler im KI-Dienst.")
+		abort(c, http.StatusInternalServerError, "internal", msg.T("GPU-Kernel: Fehler im KI-Dienst.", "GPU kernel: error in the AI service."))
 	}
 	r.POST("/gpu/kernels", func(c *gin.Context) {
 		owner := caller(c)
@@ -48,7 +49,7 @@ func kernelRoutes(r *gin.Engine, o GPUHubOptions) {
 		}
 		var req gpu.KernelRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+			abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültige Anfrage.", "Invalid request."))
 			return
 		}
 		name, err := o.Kernels.StartKernel(c.Request.Context(), owner, req)
@@ -80,7 +81,7 @@ func kernelRoutes(r *gin.Engine, o GPUHubOptions) {
 		case err != nil:
 			failed(c, owner, "status", err)
 		case st == nil:
-			abort(c, http.StatusNotFound, "not_found", "Kein Kernel-Pod.")
+			abort(c, http.StatusNotFound, "not_found", msg.T("Kein Kernel-Pod.", "No kernel pod."))
 		default:
 			c.JSON(http.StatusOK, st)
 		}

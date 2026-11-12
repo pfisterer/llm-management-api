@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"strings"
+
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // Batch jobs (docs/architektur.md "Batch-Jobs"): GPU jobs without a workspace, in the project's volume and environment. What a project allows (JobsPerPerson, JobMaxHours, BatchPriority) is checked here; the GPU part builds the job and keeps it. In a tree project whose budgets set batch jobs (TreeProject.BatchJobs) the first two are the tree's (Project.TreeJobs), else the admins'.
@@ -98,42 +100,42 @@ type JobGrant struct {
 func (s *Service) CheckJob(ctx context.Context, tokens []string, r JobRequest) (JobGrant, error) {
 	p, err := s.store.Get(ctx, r.Project)
 	if errors.Is(err, ErrNotFound) {
-		return JobGrant{}, refuse(noProjectAccess)
+		return JobGrant{}, refuse("%s", "%s", noProjectAccess)
 	}
 	if err != nil {
 		return JobGrant{}, err
 	}
 	switch {
 	case p.RoleOf(tokens) == "":
-		return JobGrant{}, refuse(noProjectAccess)
+		return JobGrant{}, refuse("%s", "%s", noProjectAccess)
 	case !p.Active(s.now()):
-		return JobGrant{}, refuse("Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))
+		return JobGrant{}, refuse("Projekt „%s“ ist am %s abgelaufen.", "Project “%s” ended on %s.", p.Name, dateOf(*p.EndsAt))
 	case p.NoWorkspaces:
-		return JobGrant{}, refuse("Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", p.Name)
+		return JobGrant{}, refuse("Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", "Project “%s” has no workspaces, only LLM tokens.", p.Name)
 	case p.StorageGB <= 0:
-		return JobGrant{}, refuse("Projekt „%s“ hat keinen Workspace-Speicher; Jobs brauchen ihn für Daten und Ausgabe.", p.Name)
+		return JobGrant{}, refuse("Projekt „%s“ hat keinen Workspace-Speicher; Jobs brauchen ihn für Daten und Ausgabe.", "Project “%s” has no workspace storage; jobs need it for data and output.", p.Name)
 	case p.ImagePending():
-		return JobGrant{}, refuse("Die Umgebung von Projekt „%s“ ist noch nicht gebaut.", p.Name)
+		return JobGrant{}, refuse("Die Umgebung von Projekt „%s“ ist noch nicht gebaut.", "The environment of project “%s” is not built yet.", p.Name)
 	case p.Limits.JobsPerPerson <= 0 || len(p.GPUClasses) == 0:
-		return JobGrant{}, refuse("Im Projekt „%s“ sind keine Batch-Jobs freigegeben.", p.Name)
+		return JobGrant{}, refuse("Im Projekt „%s“ sind keine Batch-Jobs freigegeben.", "No batch jobs are enabled in project “%s”.", p.Name)
 	case r.Jobs >= p.Limits.JobsPerPerson:
-		return JobGrant{}, refuse("Im Projekt „%s“ %s gleichzeitig möglich (laufend und wartend); schon %d. Einen zuerst abwarten oder abbrechen.", p.Name, plural(p.Limits.JobsPerPerson, "ist 1 Job", "sind %d Jobs"), r.Jobs)
+		return JobGrant{}, refuse("Im Projekt „%s“ %s gleichzeitig möglich (laufend und wartend); schon %d. Einen zuerst abwarten oder abbrechen.", "In project “%s” %s possible at the same time (running and waiting); already %d. Wait for one or cancel it first.", p.Name, plural(p.Limits.JobsPerPerson, msg.T("ist 1 Job", "1 job is"), msg.T("sind %d Jobs", "%d jobs are")), r.Jobs)
 	}
 	g := JobGrant{Project: p, GPUClass: r.GPUClass, MaxHours: JobMaxHours(p), Guaranteed: p.BatchPriority == BatchGuaranteed}
 	if g.GPUClass == "" && len(p.GPUClasses) == 1 {
 		g.GPUClass = p.GPUClasses[0]
 	}
 	if g.GPUClass == "" {
-		return JobGrant{}, invalid("Bitte eine GPU-Klasse wählen.")
+		return JobGrant{}, invalid("Bitte eine GPU-Klasse wählen.", "Please choose a GPU class.")
 	}
 	if !p.AllowsGPUClass(g.GPUClass) {
-		return JobGrant{}, refuse("GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", s.ClassName(ctx, g.GPUClass), p.Name)
+		return JobGrant{}, refuse("GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", "GPU class %s is not enabled in project “%s”.", s.ClassName(ctx, g.GPUClass), p.Name)
 	}
 	if n := p.GPUsByClass[g.GPUClass]; n > 0 && r.GPUs > n {
-		return JobGrant{}, refuse("Das Projekt „%s“ hat %s der Klasse %s.", p.Name, plural(n, "1 GPU", "%d GPUs"), s.ClassName(ctx, g.GPUClass))
+		return JobGrant{}, refuse("Das Projekt „%s“ hat %s der Klasse %s.", "Project “%s” has %s of class %s.", p.Name, plural(n, msg.T("1 GPU", "1 GPU"), msg.T("%d GPUs", "%d GPUs")), s.ClassName(ctx, g.GPUClass))
 	}
 	if r.MaxHours < 0 || r.MaxHours > g.MaxHours {
-		return JobGrant{}, refuse("Höchstlaufzeit im Projekt „%s“: %s Stunden.", p.Name, num(g.MaxHours))
+		return JobGrant{}, refuse("Höchstlaufzeit im Projekt „%s“: %s Stunden.", "Maximum run time in project “%s”: %s hours.", p.Name, num(g.MaxHours))
 	}
 	if r.MaxHours > 0 {
 		g.MaxHours = r.MaxHours
@@ -145,10 +147,10 @@ func (s *Service) CheckJob(ctx context.Context, tokens []string, r JobRequest) (
 	need := float64(max(r.GPUs, 1)) * g.MaxHours
 	for _, b := range st {
 		if b.Unit == "gpu_hours" && b.coversClass(g.GPUClass) && b.Amount > 0 && b.Used+b.Reserved+need > b.Amount+1e-9 {
-			return JobGrant{}, refuse("Budget im Projekt „%s“ reicht nicht: %s. Genutzt %s, für laufende und wartende Jobs vorgemerkt %s, dieser Job bräuchte bis zu %s.", p.Name, describe(b.Budget), num(b.Used), num(b.Reserved), num(need))
+			return JobGrant{}, refuse("Budget im Projekt „%s“ reicht nicht: %s. Genutzt %s, für laufende und wartende Jobs vorgemerkt %s, dieser Job bräuchte bis zu %s.", "The budget in project “%s” is not enough: %s. Used %s, reserved for running and waiting jobs %s, this job would need up to %s.", p.Name, describe(b.Budget), num(b.Used), num(b.Reserved), num(need))
 		}
 		if b.Exhausted {
-			return JobGrant{}, refuse("Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s.", p.Name, describe(b.Budget), num(b.Used+b.Reserved))
+			return JobGrant{}, refuse("Budget im Projekt „%s“ aufgebraucht: %s. Genutzt: %s.", "The budget in project “%s” is used up: %s. Used: %s.", p.Name, describe(b.Budget), num(b.Used+b.Reserved))
 		}
 	}
 	return g, nil
@@ -183,7 +185,7 @@ func (s *Service) JobQueues(ctx context.Context) ([]JobQueue, error) {
 // checkJobLimits refuses job limits outside their range.
 func checkJobLimits(l Limits) error {
 	if l.JobsPerPerson < 0 || l.JobMaxHours < 0 || l.JobMaxHours > MaxJobHours || math.IsNaN(l.JobMaxHours) {
-		return invalid("Batch-Jobs: Jobs je Person nicht negativ, Höchstlaufzeit zwischen 0 (Standard %s Stunden) und %s Stunden.", num(DefaultJobMaxHours), num(MaxJobHours))
+		return invalid("Batch-Jobs: Jobs je Person nicht negativ, Höchstlaufzeit zwischen 0 (Standard %s Stunden) und %s Stunden.", "Batch jobs: jobs per person not negative, maximum run time between 0 (default %s hours) and %s hours.", num(DefaultJobMaxHours), num(MaxJobHours))
 	}
 	return nil
 }

@@ -26,11 +26,11 @@ func service(running ...Running) *Service {
 func reason(err error) string {
 	var r *Refusal
 	if errors.As(err, &r) {
-		return r.Reason
+		return r.Reason.String()
 	}
 	var inv *Invalid
 	if errors.As(err, &inv) {
-		return inv.Reason
+		return inv.Reason.String()
 	}
 	if err != nil {
 		return "ERROR " + err.Error()
@@ -133,11 +133,11 @@ func TestCheckStart(t *testing.T) {
 		t.Fatalf("server limit: %q", got)
 	}
 	// Budget hook.
-	s2.SetBudgetCheck(func(context.Context, Project, string, string) error { return refuse("Budget aufgebraucht") })
+	s2.SetBudgetCheck(func(context.Context, Project, string, string) error { return refuse("Budget aufgebraucht", "Budget used up") })
 	if got := reason(s.CheckStart(ctx, me, cases[0].req)); got != "" {
 		t.Fatalf("no budget hook on s: %q", got)
 	}
-	s.SetBudgetCheck(func(context.Context, Project, string, string) error { return refuse("Budget aufgebraucht") })
+	s.SetBudgetCheck(func(context.Context, Project, string, string) error { return refuse("Budget aufgebraucht", "Budget used up") })
 	if got := reason(s.CheckStart(ctx, me, cases[0].req)); got != "Budget aufgebraucht" {
 		t.Fatalf("budget: %q", got)
 	}

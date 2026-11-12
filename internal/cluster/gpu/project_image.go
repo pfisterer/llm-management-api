@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
@@ -199,12 +200,12 @@ func (s *Service) CheckGitBranch(ctx context.Context, gitURL, branch string, aut
 	}
 	if branch == "" {
 		if refs.DefaultBranch == "" {
-			return "", errors.New("das Repository hat keinen Standard-Branch")
+			return "", msg.Errorf("das Repository hat keinen Standard-Branch", "the repository has no default branch")
 		}
 		return canonical, nil
 	}
 	if refs.Refs["refs/heads/"+branch] == "" {
-		return "", fmt.Errorf("Branch %q nicht gefunden (Material folgt einem Branch, nicht einem Tag oder Commit)", branch)
+		return "", msg.Errorf("Branch %q nicht gefunden (Material folgt einem Branch, nicht einem Tag oder Commit)", "Branch %q not found (material follows a branch, not a tag or commit)", branch)
 	}
 	return canonical, nil
 }
@@ -260,7 +261,8 @@ func (s *Service) ProjectImageLog(ctx context.Context, slug string) (workspace.B
 			}
 		}
 	}
-	return workspace.BuildLog{Log: log, State: state, Since: since}, nil
+	// The state is a sentence for people, in the language of the request (ginweb.Language put it into ctx).
+	return workspace.BuildLog{Log: log, State: state.In(msg.LangOf(ctx)), Since: since}, nil
 }
 
 // ForgetProjectImage drops the project's builds (the project no longer builds from Git, or is gone).

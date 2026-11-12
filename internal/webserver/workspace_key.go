@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
@@ -18,14 +19,18 @@ type keySource struct {
 	MasterKey string
 }
 
-// keyFailure is a key that could not be found out (LiteLLM or the projects not reachable): an error status, not an answer.
+// keyFailure is a key that could not be found out (LiteLLM or the projects not reachable): an error status, not an answer. text is for people, in German and English.
 type keyFailure struct {
-	status    int
-	code, msg string
-	err       error
+	status int
+	code   string
+	text   msg.Text
+	err    error
 }
 
-func (f *keyFailure) Error() string { return f.msg }
+func (f *keyFailure) Error() string { return f.text.String() }
+
+// Text is the text for people in both languages (msg.Localized).
+func (f *keyFailure) Text() msg.Text { return f.text }
 
 // workspaceKey is the person's key for the workspaces and batch jobs of proj, whose LLM tokens it draws from chosen by llmProjectFor: the choice (a slug, gpu.NoLLM, or empty), the project's setting default_llm_project, the project's own LLM tokens, the person's first LLM project. The caller has checked that the person is a member of proj. A response with an empty Key and a Reason means definitely no key; a keyFailure that it could not be found out. sub is the person's Keycloak sub when known; without it the person is looked up by e-mail.
 func (k keySource) workspaceKey(ctx context.Context, email, sub string, tokens []string, proj workspace.Project, chosen string) (WorkspaceKeyResponse, *keyFailure) {
@@ -41,19 +46,20 @@ func (k keySource) workspaceKey(ctx context.Context, email, sub string, tokens [
 	if sub = strings.TrimSpace(sub); sub == "" {
 		found, ok, err := k.Keys.SubjectOf(ctx, email)
 		if err != nil {
-			return WorkspaceKeyResponse{}, &keyFailure{http.StatusBadGateway, "upstream", "LiteLLM nicht erreichbar.", err}
+			return WorkspaceKeyResponse{}, &keyFailure{http.StatusBadGateway, "upstream", msg.T("LiteLLM nicht erreichbar.", "LiteLLM not reachable."), err}
 		}
 		if !ok {
 			return WorkspaceKeyResponse{Reason: "person unknown to the LLM service"}, nil
 		}
 		sub = found
 	}
-	g, status, msg := k.Quota.GrantFor(ctx, tokens)
+	g, status, why := k.Quota.GrantFor(ctx, tokens)
 	if status >= 500 {
-		return WorkspaceKeyResponse{}, &keyFailure{http.StatusServiceUnavailable, "upstream", msg, errors.New(msg)}
+		return WorkspaceKeyResponse{}, &keyFailure{http.StatusServiceUnavailable, "upstream", why, errors.New(why.String())}
 	}
 	if status != 0 {
-		return WorkspaceKeyResponse{Reason: msg}, nil
+		// The reason goes to JupyterHub, in German as before.
+		return WorkspaceKeyResponse{Reason: why.String()}, nil
 	}
 	var llm []HubLLMProject
 	for _, p := range g.Pools {
@@ -78,7 +84,7 @@ func (k keySource) workspaceKey(ctx context.Context, email, sub string, tokens [
 		return WorkspaceKeyResponse{Reason: "project has no LLM tokens"}, nil
 	}
 	if err != nil {
-		return WorkspaceKeyResponse{}, &keyFailure{http.StatusBadGateway, "upstream", "Key konnte nicht angelegt werden.", err}
+		return WorkspaceKeyResponse{}, &keyFailure{http.StatusBadGateway, "upstream", msg.T("Key konnte nicht angelegt werden.", "The key could not be created."), err}
 	}
 	return WorkspaceKeyResponse{Key: key, LLMProject: target}, nil
 }

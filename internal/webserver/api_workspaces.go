@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/calendar"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
@@ -176,7 +177,7 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 	cl := caller(c)
 	var p workspace.Project
 	if err := c.ShouldBindJSON(&p); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültiger Inhalt.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültiger Inhalt.", "Invalid content."))
 		return
 	}
 	p.Slug = c.Param("slug")
@@ -197,14 +198,14 @@ func (s *Server) manager(ctx context.Context, cl Caller, slug string) error {
 		return nil
 	}
 	if slug == "" {
-		return &apiError{Status: http.StatusBadRequest, Code: "invalid", Msg: "Projekt fehlt."}
+		return &apiError{Status: http.StatusBadRequest, Code: "invalid", Msg: msg.T("Projekt fehlt.", "The project is missing.")}
 	}
 	ok, err := s.ws.MayManage(ctx, cl.Tokens, false, slug)
 	if err != nil {
 		return s.classify(projectErrors, "workspace project", err)
 	}
 	if !ok {
-		return &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: "Nur für Admins und die Verwaltung des Projekts."}
+		return &apiError{Status: http.StatusForbidden, Code: "forbidden", Msg: msg.T("Nur für Admins und die Verwaltung des Projekts.", "Only for admins and the project's managers.")}
 	}
 	return nil
 }
@@ -319,7 +320,7 @@ func (s *Server) setProjectCredential(c *gin.Context) {
 	}
 	var req CredentialRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Host, Benutzername und Token angeben."})
+		abort(c, http.StatusBadRequest, "", msg.T("Host, Benutzername und Token angeben.", "Give host, user name and token."))
 		return
 	}
 	if s.fail(c, projectErrors, "workspace project", s.ws.SetCredential(c.Request.Context(), slug, req.Host, req.Username, req.Token, caller(c).Email)) {
@@ -416,7 +417,7 @@ func (s *Server) getWorkspaceStorage(c *gin.Context) {
 	r, err := s.ws.StorageReport(c.Request.Context())
 	if err != nil {
 		s.log.Errorw("storage report failed", "error", err)
-		abort(c, http.StatusInternalServerError, "internal", "Speicher konnte nicht gelesen werden.")
+		abort(c, http.StatusInternalServerError, "internal", msg.T("Speicher konnte nicht gelesen werden.", "The storage could not be read."))
 		return
 	}
 	c.JSON(http.StatusOK, r)
@@ -440,7 +441,7 @@ func (s *Server) getWorkspaceStorage(c *gin.Context) {
 func (s *Server) getGPUHours(c *gin.Context) {
 	gs, ok := s.usage.(usage.GPUStore)
 	if !ok {
-		abort(c, http.StatusServiceUnavailable, "unavailable", "Keine Stundenwerte hier.")
+		abort(c, http.StatusServiceUnavailable, "unavailable", msg.T("Keine Stundenwerte hier.", "No hour values here."))
 		return
 	}
 	cl := caller(c)
@@ -460,7 +461,7 @@ func (s *Server) getGPUHours(c *gin.Context) {
 	r, err := usage.BuildGPUReport(c.Request.Context(), gs, p.Start(), p.End(), keep, admin && project == "")
 	if err != nil {
 		s.log.Errorw("gpu hours failed", "error", err)
-		abort(c, http.StatusInternalServerError, "internal", "Stundenwerte konnten nicht gelesen werden.")
+		abort(c, http.StatusInternalServerError, "internal", msg.T("Stundenwerte konnten nicht gelesen werden.", "The hour values could not be read."))
 		return
 	}
 	c.JSON(http.StatusOK, r)

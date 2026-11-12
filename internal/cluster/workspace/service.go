@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/cipher"
 	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/calendar"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/promtext"
 )
 
@@ -126,27 +126,39 @@ type Running struct {
 	GPUs     float64
 }
 
-// Refusal is a start that the project does not allow, with a reason for the person. Kind is what refused it, for the metrics (StartResults); empty for refusals outside a start.
+// Refusal is a start that the project does not allow, with a reason for the person in German and English. Kind is what refused it, for the metrics (StartResults); empty for refusals outside a start.
 type Refusal struct {
-	Reason string
+	Reason msg.Text
 	Kind   string
 }
 
-func (r *Refusal) Error() string { return r.Reason }
+// Error is the reason in German, for the log and for JupyterHub, which shows it at a refused start.
+func (r *Refusal) Error() string { return r.Reason.String() }
 
-func refuse(format string, args ...any) error { return &Refusal{Reason: fmt.Sprintf(format, args...)} }
+// Text is the reason in both languages (msg.Localized), for the answers of the API.
+func (r *Refusal) Text() msg.Text { return r.Reason }
+
+// refuse is a Refusal whose reason is msg.F(de, en, args...).
+func refuse(de, en string, args ...any) error { return &Refusal{Reason: msg.F(de, en, args...)} }
 
 // Invalid is an input that is wrong in itself (a name, a range, an unknown id), as opposed to a Refusal by the project's rules or state: 400 here, a Refusal 409 (decided 10.11.2026).
-type Invalid struct{ Reason string }
+type Invalid struct{ Reason msg.Text }
 
-func (e *Invalid) Error() string { return e.Reason }
+func (e *Invalid) Error() string { return e.Reason.String() }
 
-func invalid(format string, args ...any) error { return &Invalid{Reason: fmt.Sprintf(format, args...)} }
+// Text is the reason in both languages (msg.Localized).
+func (e *Invalid) Text() msg.Text { return e.Reason }
+
+// invalid is an Invalid whose reason is msg.F(de, en, args...).
+func invalid(de, en string, args ...any) error { return &Invalid{Reason: msg.F(de, en, args...)} }
 
 // refuseStart is a refusal of a start, of a kind of StartResults.
-func refuseStart(kind, format string, args ...any) error {
-	return &Refusal{Reason: fmt.Sprintf(format, args...), Kind: kind}
+func refuseStart(kind, de, en string, args ...any) error {
+	return &Refusal{Reason: msg.F(de, en, args...), Kind: kind}
 }
+
+// dateOf is a day for people: 31.12.2026 in German, 2026-12-31 in English.
+func dateOf(t time.Time) msg.Text { return msg.T(t.Format("02.01.2006"), t.Format("2006-01-02")) }
 
 // Service is the projects' logic.
 type Service struct {
@@ -326,11 +338,11 @@ func (s *Service) validate(p *Project) error {
 	p.Slug = strings.ToLower(strings.TrimSpace(p.Slug))
 	p.Name = strings.TrimSpace(p.Name)
 	if !slugRE.MatchString(p.Slug) {
-		return invalid("Kurzname ungültig: Kleinbuchstaben, Ziffern und Bindestriche, höchstens 40 Zeichen.")
+		return invalid("Kurzname ungültig: Kleinbuchstaben, Ziffern und Bindestriche, höchstens 40 Zeichen.", "Invalid short name: lowercase letters, digits and hyphens, at most 40 characters.")
 	}
 	// "none" is the start without LLM (llm_project, gpu.NoLLM; DefaultLLMProject), never a project.
 	if p.Slug == NoLLM {
-		return invalid("Kurzname „none“ ist reserviert.")
+		return invalid("Kurzname „none“ ist reserviert.", "The short name “none” is reserved.")
 	}
 	if p.Name == "" {
 		p.Name = p.Slug
@@ -338,13 +350,13 @@ func (s *Service) validate(p *Project) error {
 	for i, m := range p.Members {
 		m.Token = strings.TrimSpace(m.Token)
 		if !strings.HasPrefix(m.Token, "user:") && !strings.HasPrefix(m.Token, "group:") {
-			return invalid("Mitglied %q: user:<E-Mail> oder group:<Gruppe>.", m.Token)
+			return invalid("Mitglied %q: user:<E-Mail> oder group:<Gruppe>.", "Member %q: user:<e-mail> or group:<group>.", m.Token)
 		}
 		if m.Role == "" {
 			m.Role = RoleMember
 		}
 		if roleRank[m.Role] == 0 {
-			return invalid("Rolle %q unbekannt (reader, member, manager).", m.Role)
+			return invalid("Rolle %q unbekannt (reader, member, manager).", "Unknown role %q (reader, member, manager).", m.Role)
 		}
 		p.Members[i] = m
 	}
@@ -353,28 +365,28 @@ func (s *Service) validate(p *Project) error {
 	if len(s.cfg.Bases) > 0 {
 		b, ok := s.base(p.ImageBase)
 		if !ok {
-			return invalid("Basis %q gibt es nicht.", p.ImageBase)
+			return invalid("Basis %q gibt es nicht.", "There is no base %q.", p.ImageBase)
 		}
 		p.ImageBase = b.ID
 	}
 	for _, c := range p.GPUClasses {
 		if !s.knownClass(c) {
-			return invalid("GPU-Klasse %q gibt es nicht.", c)
+			return invalid("GPU-Klasse %q gibt es nicht.", "There is no GPU class %q.", c)
 		}
 	}
 	l := p.Limits
 	if l.ServersPerPerson < 0 || l.CPUPerPerson < 0 || l.RAMGBPerPerson < 0 || l.GPUsPerPerson < 0 || p.LLMMTokens < 0 || p.LLMRPM < 0 || p.LLMTPM < 0 {
-		return invalid("Grenzen dürfen nicht negativ sein.")
+		return invalid("Grenzen dürfen nicht negativ sein.", "Limits must not be negative.")
 	}
 	if err := checkJobLimits(l); err != nil {
 		return err
 	}
 	if p.BatchPriority != "" && p.BatchPriority != BatchGuaranteed {
-		return invalid("Priorität der Batch-Jobs: leer (verdrängbar) oder %q.", BatchGuaranteed)
+		return invalid("Priorität der Batch-Jobs: leer (verdrängbar) oder %q.", "Priority of the batch jobs: empty (preemptible) or %q.", BatchGuaranteed)
 	}
 	for c, n := range p.GPUsByClass {
 		if n < 0 || !s.knownClass(c) {
-			return invalid("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", c)
+			return invalid("GPUs der Klasse %q: Klasse unbekannt oder Zahl negativ.", "GPUs of class %q: unknown class or negative number.", c)
 		}
 	}
 	// A person cannot hold more GPUs than the project has: without a GPU class that is none, so a limit set before the classes went (or by hand) would only mislead.
@@ -385,7 +397,7 @@ func (s *Service) validate(p *Project) error {
 		_, unit := units[b.Unit]
 		_, window := windows[b.Window]
 		if !unit || !window || b.Amount < 0 {
-			return invalid("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster %s; Menge nicht negativ.", strings.Join(calendar.Names(), ", "))
+			return invalid("Budget ungültig: Einheit server_hours, vcpu_hours, ram_gb_hours oder gpu_hours; Fenster %s; Menge nicht negativ.", "Invalid budget: unit server_hours, vcpu_hours, ram_gb_hours or gpu_hours; window %s; amount not negative.", strings.Join(calendar.Names(), ", "))
 		}
 	}
 	return nil
@@ -444,7 +456,7 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		return Project{}, err
 	}
 	if b, _ := s.base(p.ImageBase); b.Deprecated() && b.ID != cur.ImageBase {
-		return Project{}, refuse("%s läuft aus und ist für Projekte nicht mehr wählbar; stattdessen %s.", b.Name, s.baseName(b.ReplacedBy))
+		return Project{}, refuse("%s läuft aus und ist für Projekte nicht mehr wählbar; stattdessen %s.", "%s is being phased out and can no longer be chosen for projects; use %s instead.", b.Name, s.baseName(b.ReplacedBy))
 	}
 	if err := s.applyProjectImage(ctx, &p, cur, asAdmin); err != nil {
 		return Project{}, err
@@ -482,7 +494,7 @@ func (s *Service) checkDefaultLLM(ctx context.Context, p Project) error {
 	}
 	llm, err := s.store.Get(ctx, p.DefaultLLMProject)
 	if errors.Is(err, ErrNotFound) || (err == nil && llm.LLMMTokens <= 0) {
-		return refuse("„%s“ ist kein Projekt mit LLM-Tokens.", p.DefaultLLMProject)
+		return refuse("„%s“ ist kein Projekt mit LLM-Tokens.", "“%s” is no project with LLM tokens.", p.DefaultLLMProject)
 	}
 	return err
 }
@@ -520,7 +532,7 @@ type StartRequest struct {
 }
 
 // noProjectAccess refuses a project that does not exist and one the person is no member of alike: a refusal must not tell which slugs exist, nor name a foreign project.
-const noProjectAccess = "Projekt nicht gefunden oder kein Zugang."
+var noProjectAccess = msg.T("Projekt nicht gefunden oder kein Zugang.", "Project not found or no access.")
 
 // CheckStart decides whether a person may start a profile in a project now. The reason of a refusal is shown in JupyterHub. Every decision is counted (aiaas_workspace_starts_total, metrics.go).
 func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartRequest) error {
@@ -531,47 +543,47 @@ func (s *Service) CheckStart(ctx context.Context, tokens []string, r StartReques
 
 func (s *Service) checkStart(ctx context.Context, tokens []string, r StartRequest) error {
 	if r.Project == "" {
-		return refuseStart("project", "Kein Projekt gewählt.")
+		return refuseStart("project", "Kein Projekt gewählt.", "No project chosen.")
 	}
 	p, err := s.store.Get(ctx, r.Project)
 	if errors.Is(err, ErrNotFound) {
-		return refuseStart("project", noProjectAccess)
+		return refuseStart("project", "%s", "%s", noProjectAccess)
 	}
 	if err != nil {
 		return err
 	}
 	if p.RoleOf(tokens) == "" {
-		return refuseStart("project", noProjectAccess)
+		return refuseStart("project", "%s", "%s", noProjectAccess)
 	}
 	if !p.Active(s.now()) {
-		return refuseStart("project", "Projekt „%s“ ist am %s abgelaufen.", p.Name, p.EndsAt.Format("02.01.2006"))
+		return refuseStart("project", "Projekt „%s“ ist am %s abgelaufen.", "Project “%s” ended on %s.", p.Name, dateOf(*p.EndsAt))
 	}
 	if p.NoWorkspaces {
-		return refuseStart("project", "Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", p.Name)
+		return refuseStart("project", "Projekt „%s“ hat keine Workspaces, nur LLM-Tokens.", "Project “%s” has no workspaces, only LLM tokens.", p.Name)
 	}
 	if p.ImagePending() {
-		return refuseStart("image_error", "Die Umgebung von Projekt „%s“ ist noch nicht gebaut. Der Bau und sein Protokoll stehen in den Projekteinstellungen (Workspaces); gestartet werden kann, sobald er fertig ist.", p.Name)
+		return refuseStart("image_error", "Die Umgebung von Projekt „%s“ ist noch nicht gebaut. Der Bau und sein Protokoll stehen in den Projekteinstellungen (Workspaces); gestartet werden kann, sobald er fertig ist.", "The environment of project “%s” is not built yet. The build and its log are in the project settings (Workspaces); it can be started once the build is done.", p.Name)
 	}
 	if !p.Allows(r.Profile) {
-		return refuseStart("no_profile", "Workspace-Art %q ist im Projekt „%s“ nicht freigegeben.", r.Profile, p.Name)
+		return refuseStart("no_profile", "Workspace-Art %q ist im Projekt „%s“ nicht freigegeben.", "Workspace kind %q is not enabled in project “%s”.", r.Profile, p.Name)
 	}
 	if r.Profile == SplitProfile && !p.Derived() {
-		return refuseStart("no_profile", "„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", p.Name)
+		return refuseStart("no_profile", "„CPU + GPU-Kernel“ braucht eine Umgebung auf einer unserer Basen; das Image des Projekts „%s“ ist keine. Stattdessen „CPU“ oder „GPU“ wählen.", "“CPU + GPU kernel” needs an environment on one of our bases; the image of project “%s” is none. Choose “CPU” or “GPU” instead.", p.Name)
 	}
 	class := ""
 	if r.GPUs > 0 {
 		if p.Limits.GPUsPerPerson == 0 || len(p.GPUClasses) == 0 {
-			return refuseStart("gpu_class", "Im Projekt „%s“ sind keine GPUs freigegeben.", p.Name)
+			return refuseStart("gpu_class", "Im Projekt „%s“ sind keine GPUs freigegeben.", "No GPUs are enabled in project “%s”.", p.Name)
 		}
 		class = r.GPUClass
 		if class == "" && len(p.GPUClasses) == 1 {
 			class = p.GPUClasses[0]
 		}
 		if class == "" {
-			return refuseStart("gpu_class", "Bitte eine GPU-Klasse wählen.")
+			return refuseStart("gpu_class", "Bitte eine GPU-Klasse wählen.", "Please choose a GPU class.")
 		}
 		if !p.AllowsGPUClass(class) {
-			return refuseStart("gpu_class", "GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", s.ClassName(ctx, class), p.Name)
+			return refuseStart("gpu_class", "GPU-Klasse %s ist im Projekt „%s“ nicht freigegeben.", "GPU class %s is not enabled in project “%s”.", s.ClassName(ctx, class), p.Name)
 		}
 	}
 	running, err := s.running(ctx)
@@ -601,15 +613,15 @@ func (s *Service) checkStart(ctx context.Context, tokens []string, r StartReques
 	l := p.Limits
 	switch {
 	case !r.Kernel && l.ServersPerPerson > 0 && servers >= l.ServersPerPerson:
-		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Workspace zuerst beenden.", p.Name, plural(l.ServersPerPerson, "ist 1 Workspace", "sind %d Workspaces"), servers)
+		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich; schon %d laufen. Einen anderen Workspace zuerst beenden.", "In project “%s” %s possible at the same time; %d are already running. Stop another workspace first.", p.Name, plural(l.ServersPerPerson, msg.T("ist 1 Workspace", "1 workspace is"), msg.T("sind %d Workspaces", "%d workspaces are")), servers)
 	case l.CPUPerPerson > 0 && cpu+r.CPU > l.CPUPerPerson+1e-9:
-		return refuseStart("limit", "Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Workspace bräuchte %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)
+		return refuseStart("limit", "Im Projekt „%s“ sind %g Kerne gleichzeitig möglich; belegt sind %g, dieser Workspace bräuchte %g.", "In project “%s” %g cores are possible at the same time; %g are in use, this workspace would need %g.", p.Name, l.CPUPerPerson, cpu, r.CPU)
 	case l.RAMGBPerPerson > 0 && ram+r.RAMGB > l.RAMGBPerPerson+1e-9:
-		return refuseStart("limit", "Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Workspace bräuchte %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
+		return refuseStart("limit", "Im Projekt „%s“ sind %g GB Speicher gleichzeitig möglich; belegt sind %.1f, dieser Workspace bräuchte %.1f.", "In project “%s” %g GB of memory are possible at the same time; %.1f are in use, this workspace would need %.1f.", p.Name, l.RAMGBPerPerson, ram, r.RAMGB)
 	case r.GPUs > 0 && gpus+r.GPUs > float64(l.GPUsPerPerson):
-		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", p.Name, plural(l.GPUsPerPerson, "ist 1 GPU", "sind %d GPUs"), gpus)
+		return refuseStart("limit", "Im Projekt „%s“ %s gleichzeitig möglich, und %g ist schon in Benutzung. Das andere zuerst beenden.", "In project “%s” %s possible at the same time, and %g is already in use. Stop the other one first.", p.Name, plural(l.GPUsPerPerson, msg.T("ist 1 GPU", "1 GPU is"), msg.T("sind %d GPUs", "%d GPUs are")), gpus)
 	case r.GPUs > 0 && p.GPUsByClass[class] > 0 && classGPUs+r.GPUs > float64(p.GPUsByClass[class]):
-		return refuseStart("gpu_busy", "Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", p.GPUsByClass[class], s.ClassName(ctx, class), p.Name)
+		return refuseStart("gpu_busy", "Alle %d GPUs der Klasse %s im Projekt „%s“ sind gerade belegt.", "All %d GPUs of class %s in project “%s” are in use right now.", p.GPUsByClass[class], s.ClassName(ctx, class), p.Name)
 	}
 	if !r.Kernel {
 		if err := s.checkMaterial(ctx, p); err != nil {
@@ -641,15 +653,16 @@ func (s *Service) checkMaterial(ctx context.Context, p Project) error {
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	if _, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL))); err != nil {
-		return refuseStart("material_error", "Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Workspace nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", p.Name, p.MaterialGitURL, err)
+		return refuseStart("material_error", "Das Material des Projekts „%s“ (%s) ist nicht abrufbar: %v. Ohne Material startet der Workspace nicht; das Repository steht in den Workspace-Einstellungen des Projekts.", "The material of project “%s” (%s) cannot be fetched: %v. Without its material the workspace does not start; the repository is set in the project's workspace settings.", p.Name, p.MaterialGitURL, err)
 	}
 	s.materialOK.Store(key, s.now())
 	return nil
 }
 
-func plural(n int, one, many string) string {
+// plural is one for n == 1, else many with n filled in, in both languages.
+func plural(n int, one, many msg.Text) msg.Text {
 	if n == 1 {
 		return one
 	}
-	return fmt.Sprintf(many, n)
+	return msg.F(many.In(msg.DE), many.In(msg.EN), n)
 }

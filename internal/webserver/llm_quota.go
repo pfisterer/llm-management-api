@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
@@ -21,32 +22,32 @@ type LLMQuota struct {
 	SelfServiceURL string
 }
 
-// GrantFor is the person's pools; a status and message when they may not use the LLM (projects not readable, no project with tokens).
-func (q LLMQuota) GrantFor(ctx context.Context, tokens []string) (keys.Grant, int, string) {
-	pools, status, msg := q.PoolsFor(ctx, tokens)
+// GrantFor is the person's pools; a status and a text for people (German and English) when they may not use the LLM (projects not readable, no project with tokens).
+func (q LLMQuota) GrantFor(ctx context.Context, tokens []string) (keys.Grant, int, msg.Text) {
+	pools, status, why := q.PoolsFor(ctx, tokens)
 	if status != 0 {
-		return keys.Grant{}, status, msg
+		return keys.Grant{}, status, why
 	}
 	if len(pools) == 0 {
-		msg := "Kein Projekt mit LLM-Tokens."
+		why := msg.T("Kein Projekt mit LLM-Tokens.", "No project with LLM tokens.")
 		if q.SelfServiceURL != "" {
-			msg += " Ein Projekt gibt es unter " + q.SelfServiceURL
+			why = msg.F("%s Ein Projekt gibt es unter %s", "%s A project can be had at %s", why, q.SelfServiceURL)
 		}
-		return keys.Grant{}, http.StatusForbidden, msg
+		return keys.Grant{}, http.StatusForbidden, why
 	}
-	return keys.Grant{Pools: pools}, 0, ""
+	return keys.Grant{Pools: pools}, 0, msg.Text{}
 }
 
-// PoolsFor lists the pools the person may draw from (see workspace.LLMPoolsFor) with their effective limits; a status and message when the projects cannot be read.
-func (q LLMQuota) PoolsFor(ctx context.Context, tokens []string) ([]keys.Pool, int, string) {
+// PoolsFor lists the pools the person may draw from (see workspace.LLMPoolsFor) with their effective limits; a status and a text for people when the projects cannot be read.
+func (q LLMQuota) PoolsFor(ctx context.Context, tokens []string) ([]keys.Pool, int, msg.Text) {
 	if q.Projects == nil {
-		return nil, http.StatusServiceUnavailable, "Projekte sind hier nicht verfügbar."
+		return nil, http.StatusServiceUnavailable, msg.T("Projekte sind hier nicht verfügbar.", "Projects are not available here.")
 	}
 	list, err := q.Projects.LLMPoolsFor(ctx, tokens)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, "Projekte konnten gerade nicht gelesen werden."
+		return nil, http.StatusServiceUnavailable, msg.T("Projekte konnten gerade nicht gelesen werden.", "The projects could not be read right now.")
 	}
-	return q.toPools(list), 0, ""
+	return q.toPools(list), 0, msg.Text{}
 }
 
 // toPools gives every project its effective limits: its own rate limits or the defaults, and the base models plus its own, sorted and without duplicates.

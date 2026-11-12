@@ -3,7 +3,6 @@ package webserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
@@ -154,7 +154,7 @@ func (s *Server) getFleetProfile(c *gin.Context) {
 	b, err := s.material.Mobileconfig(s.fleet.Config(), fleet.ProfileOptions{
 		Location: clean("location", 64), Operator: clean("operator", 64), Contact: clean("contact", 96)})
 	if err != nil {
-		abort(c, http.StatusNotFound, "not_found", "Profilvorlage fehlt.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Profilvorlage fehlt.", "The profile template is missing."))
 		return
 	}
 	c.Header("Content-Disposition", `attachment; filename="de.dhbw.llm.mobileconfig"`)
@@ -175,7 +175,7 @@ func (s *Server) getFleetProfile(c *gin.Context) {
 func (s *Server) getFleetPackage(c *gin.Context) {
 	path, name, err := s.material.PackagePath()
 	if err != nil {
-		abort(c, http.StatusNotFound, "not_found", "Kein Paket hinterlegt (build-bundle.sh --upload).")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Kein Paket hinterlegt (build-bundle.sh --upload).", "No package stored (build-bundle.sh --upload)."))
 		return
 	}
 	c.Header("Cache-Control", "no-store")
@@ -211,7 +211,7 @@ func (s *Server) deleteFleetPackage(c *gin.Context) {
 func (s *Server) getFleetReadme(c *gin.Context) {
 	b, err := os.ReadFile(s.material.ReadmePath)
 	if err != nil {
-		abort(c, http.StatusNotFound, "not_found", "Anleitung fehlt.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Anleitung fehlt.", "The instructions are missing."))
 		return
 	}
 	c.Header("Content-Disposition", `attachment; filename="LIESMICH-Flotte.md"`)
@@ -245,7 +245,7 @@ func (s *Server) unblockMachine(c *gin.Context) { s.setBlocked(c, false) }
 func (s *Server) setBlocked(c *gin.Context, blocked bool) {
 	err := s.fleet.SetBlocked(c.Request.Context(), c.Param("serial"), blocked)
 	if errors.Is(err, fleet.ErrPeerNotFound) {
-		abort(c, http.StatusNotFound, "not_found", "Maschine nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Maschine nicht gefunden.", "Machine not found."))
 		return
 	}
 	if err != nil {
@@ -284,22 +284,22 @@ type FleetModelResponse struct {
 func (s *Server) setFleetModel(c *gin.Context) {
 	var req FleetModelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültige Anfrage.", "Invalid request."))
 		return
 	}
 	n, err := s.fleet.SetModel(c.Request.Context(), req.Serials, req.Model)
 	var misfit *fleet.MisfitError
 	switch {
 	case errors.As(err, &misfit):
-		abort(c, http.StatusBadRequest, "model_too_large", fmt.Sprintf("%s ist %.1f GB groß und passt nicht in die Speichergrenze von %s. Diese Maschinen abwählen oder ein kleineres Modell nehmen.", misfit.Model, misfit.SizeGB, strings.Join(misfit.Machines, ", ")))
+		abort(c, http.StatusBadRequest, "model_too_large", msg.F("%s ist %.1f GB groß und passt nicht in die Speichergrenze von %s. Diese Maschinen abwählen oder ein kleineres Modell nehmen.", "%s is %.1f GB and does not fit into the memory limit of %s. Deselect these machines or take a smaller model.", misfit.Model, misfit.SizeGB, strings.Join(misfit.Machines, ", ")))
 	case errors.Is(err, fleet.ErrUnknownModel):
-		abort(c, http.StatusBadRequest, "unknown_model", "Dieses Modell gibt es im Ollama-Register nicht. Name und Tag prüfen (z. B. qwen3.5:9b).")
+		abort(c, http.StatusBadRequest, "unknown_model", msg.T("Dieses Modell gibt es im Ollama-Register nicht. Name und Tag prüfen (z. B. qwen3.5:9b).", "This model does not exist in the Ollama registry. Check name and tag (e.g. qwen3.5:9b)."))
 	case errors.Is(err, fleet.ErrBadModel):
-		abort(c, http.StatusBadRequest, "invalid_model", "Kein gültiger Modellname.")
+		abort(c, http.StatusBadRequest, "invalid_model", msg.T("Kein gültiger Modellname.", "Not a valid model name."))
 	case errors.Is(err, fleet.ErrPeerNotFound):
-		abort(c, http.StatusNotFound, "not_found", "Maschine nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Maschine nicht gefunden.", "Machine not found."))
 	case errors.Is(err, fleet.ErrRegistry):
-		abort(c, http.StatusBadGateway, "registry", "Das Ollama-Register ist nicht erreichbar, die Größe des Modells lässt sich nicht prüfen. Später erneut versuchen.")
+		abort(c, http.StatusBadGateway, "registry", msg.T("Das Ollama-Register ist nicht erreichbar, die Größe des Modells lässt sich nicht prüfen. Später erneut versuchen.", "The Ollama registry is not reachable, the size of the model cannot be checked. Try again later."))
 	case err != nil:
 		s.fail(c, internalErrors, "set fleet model", err)
 	default:
@@ -321,7 +321,7 @@ func (s *Server) setFleetModel(c *gin.Context) {
 func (s *Server) forgetMachine(c *gin.Context) {
 	err := s.fleet.Forget(c.Request.Context(), c.Param("serial"))
 	if errors.Is(err, fleet.ErrPeerNotFound) {
-		abort(c, http.StatusNotFound, "not_found", "Maschine nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Maschine nicht gefunden.", "Machine not found."))
 		return
 	}
 	if err != nil {

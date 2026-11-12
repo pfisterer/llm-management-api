@@ -13,7 +13,7 @@ func (s *Service) create(ctx context.Context, p Project, by string) (Project, er
 	p.CreatedBy, p.UpdatedBy = by, by
 	err := s.store.Create(ctx, &p)
 	if errors.Is(err, ErrExists) {
-		return Project{}, refuse("Ein Projekt %q gibt es schon.", p.Slug)
+		return Project{}, refuse("Ein Projekt %q gibt es schon.", "A project %q exists already.", p.Slug)
 	}
 	return p, err
 }

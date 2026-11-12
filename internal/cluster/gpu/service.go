@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/research"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
@@ -21,7 +22,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var ErrInvalidRepo = errors.New("Repository nicht verwendbar")
+var ErrInvalidRepo = msg.Err(msg.T("Repository nicht verwendbar", "Repository not usable"))
 
 // builds starts and watches build jobs; registry answers whether an image
 // exists; servers starts JupyterHub servers. Interfaces so the service can be
@@ -31,7 +32,7 @@ type builds interface {
 	jobStatus(ctx context.Context, ns, name string) (jobStatus, error)
 	deleteJob(ctx context.Context, ns, name string) error
 	jobLog(ctx context.Context, ns, job string, tail int) (string, error)
-	jobState(ctx context.Context, ns, job string) (string, *time.Time, error)
+	jobState(ctx context.Context, ns, job string) (msg.Text, *time.Time, error)
 }
 
 type images interface {
@@ -139,7 +140,7 @@ var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
 func (s *Service) normaliseRepo(raw string) (string, string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", "", fmt.Errorf("%w: nur öffentliche https-Adressen ohne Zugangsdaten", ErrInvalidRepo)
+		return "", "", msg.Errorf("%w: nur öffentliche https-Adressen ohne Zugangsdaten", "%w: only public https addresses without credentials", ErrInvalidRepo)
 	}
 	host := strings.ToLower(u.Hostname())
 	allowed := false
@@ -153,11 +154,11 @@ func (s *Service) normaliseRepo(raw string) (string, string, error) {
 		}
 	}
 	if !allowed {
-		return "", "", fmt.Errorf("%w: %s ist nicht zugelassen (zugelassen: %s)", ErrInvalidRepo, host, strings.Join(s.cfg.GitHosts, ", "))
+		return "", "", msg.Errorf("%w: %s ist nicht zugelassen (zugelassen: %s)", "%w: %s is not allowed (allowed: %s)", ErrInvalidRepo, host, strings.Join(s.cfg.GitHosts, ", "))
 	}
 	path := strings.Trim(strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git"), "/")
 	if strings.Count(path, "/") < 1 {
-		return "", "", fmt.Errorf("%w: erwartet https://%s/<besitzer>/<name>", ErrInvalidRepo, host)
+		return "", "", msg.Errorf("%w: erwartet https://%s/<besitzer>/<name>", "%w: expected https://%s/<owner>/<name>", ErrInvalidRepo, host)
 	}
 	canonical := "https://" + host + "/" + path
 	slug := strings.Trim(slugUnsafe.ReplaceAllString(strings.ToLower(host+"-"+path), "-"), "-")
@@ -170,7 +171,7 @@ func (s *Service) normaliseRepo(raw string) (string, string, error) {
 // create adds a project image for owner: resolve the ref, reuse the image if it exists, otherwise start a build on base.
 func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name string) (Environment, error) {
 	if base == "" {
-		return Environment{}, fmt.Errorf("%w: Projekt-Images aus Git sind hier nicht eingerichtet", ErrInvalidRepo)
+		return Environment{}, msg.Errorf("%w: Projekt-Images aus Git sind hier nicht eingerichtet", "%w: project images from Git are not set up here", ErrInvalidRepo)
 	}
 	canonical, slug, err := s.normaliseRepo(gitURL)
 	if err != nil {
@@ -178,14 +179,14 @@ func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name str
 	}
 	refs, err := s.refs(ctx, canonical, nil)
 	if err != nil {
-		return Environment{}, fmt.Errorf("%w: %v", ErrInvalidRepo, err)
+		return Environment{}, msg.Errorf("%w: %v", "%w: %v", ErrInvalidRepo, err)
 	}
 	commit, branch, err := refs.resolve(ref)
 	if err != nil {
 		return Environment{}, err
 	}
 	if len(commit) < 12 {
-		return Environment{}, fmt.Errorf("%w: Commit %q zu kurz, mindestens 12 Zeichen angeben", ErrInvalidRepo, commit)
+		return Environment{}, msg.Errorf("%w: Commit %q zu kurz, mindestens 12 Zeichen angeben", "%w: commit %q too short, give at least 12 characters", ErrInvalidRepo, commit)
 	}
 	if strings.TrimSpace(name) == "" {
 		name = pathBase(canonical)

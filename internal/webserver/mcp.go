@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/cloud-self-service-golib/mcpserve"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
@@ -230,9 +231,9 @@ func (s *Server) registerLLMTools(srv *mcp.Server, cl mcpCaller) {
 		Name:        "get_my_llm_usage",
 		Description: "The caller's LLM projects (pools: tokens per 30 days, spend and budget, requests and tokens per minute, the models, which one new keys spend from by default) and their API keys for the OpenAI-compatible API: name, project, spend and budget, never the key itself. A new key is made on the LLM page of the self-service, not here.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, keys.Usage, error) {
-		g, status, msg := s.quota.GrantFor(ctx, cl.Tokens)
+		g, status, why := s.quota.GrantFor(ctx, cl.Tokens)
 		if status != 0 {
-			return nil, keys.Usage{}, errors.New(msg)
+			return nil, keys.Usage{}, msg.Err(why)
 		}
 		p, fail := s.keyPersonFor(ctx, cl.Caller)
 		if fail != nil {
@@ -253,9 +254,9 @@ func (s *Server) registerLLMTools(srv *mcp.Server, cl mcpCaller) {
 		Name:        "list_llm_models",
 		Description: "The model names (aliases such as chat-default, chat-fast, code, embedding; a group the caller's projects were granted on top only for them) the LLM API answers under, with the models currently behind each, how many deployments serve it and passed the last health check, and the longest prompt and answer every deployment takes (0 = unknown).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, ModelAliasesResponse, error) {
-		grant, status, msg := s.quota.GrantFor(ctx, cl.Tokens)
+		grant, status, why := s.quota.GrantFor(ctx, cl.Tokens)
 		if status != 0 && !cl.Role.AtLeast(access.RoleFleetAdmin) {
-			return nil, ModelAliasesResponse{}, errors.New(msg)
+			return nil, ModelAliasesResponse{}, msg.Err(why)
 		}
 		var granted []string
 		for _, p := range grant.Pools {
@@ -355,7 +356,7 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		name, ok := mcpServerName(in.Name)
 		if !ok {
-			return nil, gpu.Progress{}, errors.New("Ungültiger Workspace-Name.")
+			return nil, gpu.Progress{}, msg.Errorf("Ungültiger Workspace-Name.", "Invalid workspace name.")
 		}
 		p, err := s.gpu.ServerProgress(ctx, cl.Email, name)
 		if err != nil {
@@ -384,12 +385,12 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 			return nil, gpu.Server{}, err
 		}
 		if in.Project == "" || in.Profile == "" {
-			return nil, gpu.Server{}, errors.New("project und profile fehlen.")
+			return nil, gpu.Server{}, msg.Errorf("project und profile fehlen.", "project and profile are missing.")
 		}
 		// The input is the REST request field for field (mcp_input_drift_test.go holds them together), so it converts.
-		o, msg := s.startOptionsFor(ctx, mine, cl.Tokens, StartServerRequest(in))
-		if msg != "" {
-			return nil, gpu.Server{}, errors.New(msg)
+		o, why := s.startOptionsFor(ctx, mine, cl.Tokens, StartServerRequest(in))
+		if !why.IsZero() {
+			return nil, gpu.Server{}, msg.Err(why)
 		}
 		s.log.Infow("MCP start_server", "actor", cl.actorEmail(), "user", cl.Email, "project", in.Project, "profile", in.Profile)
 		srv, err := s.gpu.StartServer(ctx, cl.Email, o)
@@ -408,13 +409,13 @@ func (s *Server) registerServerTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		name, ok := mcpServerName(in.Name)
 		if !ok {
-			return nil, mcpDone{}, errors.New("Ungültiger Workspace-Name.")
+			return nil, mcpDone{}, msg.Errorf("Ungültiger Workspace-Name.", "Invalid workspace name.")
 		}
 		s.log.Infow("MCP stop_server", "actor", cl.actorEmail(), "user", cl.Email, "server", name)
 		if err := s.gpu.StopServer(ctx, cl.Email, name); err != nil {
 			return nil, mcpDone{}, s.mcpFail(gpuErrors, "stop server", err)
 		}
-		return nil, mcpDone{Done: true, Message: "Der Server wird beendet."}, nil
+		return nil, mcpDone{Done: true, Message: msg.T("Der Server wird beendet.", "The server is being stopped.").In(msg.LangOf(ctx))}, nil
 	})
 }
 
@@ -487,15 +488,11 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		rel, ok := gpu.JobFilePath(p, root)
 		if !ok {
-			where := "im Home"
-			if root != "" {
-				where = "im Ordner des Jobs (~/" + root + ")"
-			}
-			return nil, gpu.JobFiles{}, errors.New("Nur Pfade " + where + ".")
+			return nil, gpu.JobFiles{}, msg.Err(onlyPathsIn(root))
 		}
 		list, err := s.gpu.ListJobFiles(ctx, j, rel)
 		if errors.Is(err, gpu.ErrNotFound) {
-			return nil, gpu.JobFiles{}, errors.New("Ordner nicht gefunden.")
+			return nil, gpu.JobFiles{}, msg.Errorf("Ordner nicht gefunden.", "Folder not found.")
 		}
 		if err != nil {
 			return nil, gpu.JobFiles{}, s.mcpFail(jobErrors, "files", err)
@@ -511,7 +508,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 			return nil, gpu.Job{}, err
 		}
 		if in.Project == "" {
-			return nil, gpu.Job{}, errors.New("project fehlt.")
+			return nil, gpu.Job{}, msg.Errorf("project fehlt.", "project is missing.")
 		}
 		s.log.Infow("MCP submit_job", "actor", cl.actorEmail(), "user", cl.Email, "project", in.Project)
 		// The input is the REST request field for field (mcp_input_drift_test.go holds them together), so it converts.

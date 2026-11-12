@@ -214,10 +214,10 @@ func (m *ModelAliases) build(ctx context.Context) (map[string]AliasModels, bool,
 //	@Router			/v1/models/aliases [get]
 func (s *Server) getModelAliases(c *gin.Context) {
 	cl := caller(c)
-	grant, status, msg := s.quota.GrantFor(c.Request.Context(), cl.Tokens)
+	grant, status, why := s.quota.GrantFor(c.Request.Context(), cl.Tokens)
 	if status != 0 && !cl.Role.AtLeast(access.RoleFleetAdmin) {
 		code := map[int]string{http.StatusForbidden: "no_quota", http.StatusServiceUnavailable: "unavailable"}[status]
-		abort(c, status, code, msg)
+		abort(c, status, code, why)
 		return
 	}
 	// The groups of the person's projects (an admin without a project: the base aliases only).

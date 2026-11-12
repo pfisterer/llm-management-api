@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -257,10 +258,13 @@ const DefaultPool = "general"
 // A pool id ends up in Kubernetes names and label values (Kueue queues gpu-<pool>-<tier>, the node label), so DNS-1123: lowercase letters, digits and single hyphens inside, no underscore. The class id pool-tier stays unique because the tiers are fixed words without a hyphen.
 var poolIDPattern = regexp.MustCompile(`^[a-z](-?[a-z0-9])+$`)
 
-// ErrFleet is a request the GPU administration refuses; the text is for the admin.
-type ErrFleet struct{ Reason string }
+// ErrFleet is a request the GPU administration refuses; the text is for the admin, in German and English.
+type ErrFleet struct{ Reason msg.Text }
 
-func (e *ErrFleet) Error() string { return e.Reason }
+func (e *ErrFleet) Error() string { return e.Reason.String() }
+
+// Text is the reason in both languages (msg.Localized).
+func (e *ErrFleet) Text() msg.Text { return e.Reason }
 
 // SetFleet switches the GPU administration on.
 func (s *Service) SetFleet(store FleetStore, cfg FleetConfig) { s.fleet, s.fleetCfg = store, cfg }
@@ -437,7 +441,7 @@ func classFor(classes []GPUClass, pool, tier string) string {
 // AssignNode puts a node into a pool and tier (creating the class on first use); pool "" removes the assignment. The cluster follows at the next reconcile.
 func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 	if s.fleet == nil {
-		return &ErrFleet{"GPU-Verwaltung ist aus."}
+		return &ErrFleet{msg.T("GPU-Verwaltung ist aus.", "The GPU administration is off.")}
 	}
 	if a.Pool == "" {
 		return s.fleet.DeleteAssignment(ctx, a.Node)
@@ -447,13 +451,13 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 		return err
 	}
 	if !slices.ContainsFunc(pools, func(p Pool) bool { return p.ID == a.Pool }) {
-		return &ErrFleet{fmt.Sprintf("Pool %q gibt es nicht.", a.Pool)}
+		return &ErrFleet{msg.F("Pool %q gibt es nicht.", "There is no pool %q.", a.Pool)}
 	}
 	if _, ok := tierByID(a.Tier); !ok {
-		return &ErrFleet{fmt.Sprintf("Stufe %q gibt es nicht.", a.Tier)}
+		return &ErrFleet{msg.F("Stufe %q gibt es nicht.", "There is no tier %q.", a.Tier)}
 	}
 	if a.Weight < 0 || a.Weight > MaxReplicaWeight {
-		return &ErrFleet{fmt.Sprintf("Gewicht: 1–%d (leer oder 0 = 1).", MaxReplicaWeight)}
+		return &ErrFleet{msg.F("Gewicht: 1–%d (leer oder 0 = 1).", "Weight: 1–%d (empty or 0 = 1).", MaxReplicaWeight)}
 	}
 	if a.GapModel != "" && a.GapModel != NoGapFiller {
 		models, _, err := s.catalogue(ctx)
@@ -461,7 +465,7 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 			return err
 		}
 		if _, ok := models[a.GapModel]; !ok {
-			return &ErrFleet{fmt.Sprintf("Modell %q gibt es nicht.", a.GapModel)}
+			return &ErrFleet{msg.F("Modell %q gibt es nicht.", "There is no model %q.", a.GapModel)}
 		}
 	}
 	nodes, err := s.GPUNodes(ctx)
@@ -469,7 +473,7 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 		return err
 	}
 	if !slices.ContainsFunc(nodes, func(n GPUNode) bool { return n.Name == a.Node }) {
-		return &ErrFleet{fmt.Sprintf("GPU-Knoten %q gibt es nicht.", a.Node)}
+		return &ErrFleet{msg.F("GPU-Knoten %q gibt es nicht.", "There is no GPU node %q.", a.Node)}
 	}
 	classes, err := s.fleet.Classes(ctx)
 	if err != nil {
@@ -487,14 +491,14 @@ func (s *Service) AssignNode(ctx context.Context, a NodeAssignment) error {
 // SavePool creates or renames a pool.
 func (s *Service) SavePool(ctx context.Context, p Pool) error {
 	if s.fleet == nil {
-		return &ErrFleet{"GPU-Verwaltung ist aus."}
+		return &ErrFleet{msg.T("GPU-Verwaltung ist aus.", "The GPU administration is off.")}
 	}
 	p.Name = strings.TrimSpace(p.Name)
 	if !poolIDPattern.MatchString(p.ID) || len(p.ID) > 20 {
-		return &ErrFleet{"Kürzel des Pools: Kleinbuchstaben, Ziffern und einzelne Bindestriche, beginnend mit einem Buchstaben, nicht auf Bindestrich endend, 2–20 Zeichen (z. B. mannheim-arm64). Unterstriche gehen nicht, das Kürzel landet in Kubernetes-Namen."}
+		return &ErrFleet{msg.T("Kürzel des Pools: Kleinbuchstaben, Ziffern und einzelne Bindestriche, beginnend mit einem Buchstaben, nicht auf Bindestrich endend, 2–20 Zeichen (z. B. mannheim-arm64). Unterstriche gehen nicht, das Kürzel landet in Kubernetes-Namen.", "Short name of the pool: lowercase letters, digits and single hyphens, starting with a letter, not ending in a hyphen, 2–20 characters (e.g. mannheim-arm64). No underscores, the short name ends up in Kubernetes names.")}
 	}
 	if p.Name == "" {
-		return &ErrFleet{"Name fehlt."}
+		return &ErrFleet{msg.T("Name fehlt.", "The name is missing.")}
 	}
 	pools, err := s.fleet.Pools(ctx)
 	if err != nil {
@@ -514,13 +518,13 @@ func (s *Service) SavePool(ctx context.Context, p Pool) error {
 // RenamePool gives a pool a new id. Its classes become <new>-<tier> and remember the old id in Replaces: the tree moves its amounts over, the projects their classes and the booked usage (OnClassRenamed). Its nodes follow, and the Kueue objects of the old classes go once the new ones stand.
 func (s *Service) RenamePool(ctx context.Context, old, new string) error {
 	if s.fleet == nil {
-		return &ErrFleet{"GPU-Verwaltung ist aus."}
+		return &ErrFleet{msg.T("GPU-Verwaltung ist aus.", "The GPU administration is off.")}
 	}
 	if old == DefaultPool {
-		return &ErrFleet{"Der Pool „general“ behält sein Kürzel."}
+		return &ErrFleet{msg.T("Der Pool „general“ behält sein Kürzel.", "The pool “general” keeps its short name.")}
 	}
 	if !poolIDPattern.MatchString(new) || len(new) > 20 {
-		return &ErrFleet{"Kürzel des Pools: Kleinbuchstaben, Ziffern und einzelne Bindestriche, beginnend mit einem Buchstaben, nicht auf Bindestrich endend, 2–20 Zeichen (z. B. mannheim-arm64). Unterstriche gehen nicht, das Kürzel landet in Kubernetes-Namen."}
+		return &ErrFleet{msg.T("Kürzel des Pools: Kleinbuchstaben, Ziffern und einzelne Bindestriche, beginnend mit einem Buchstaben, nicht auf Bindestrich endend, 2–20 Zeichen (z. B. mannheim-arm64). Unterstriche gehen nicht, das Kürzel landet in Kubernetes-Namen.", "Short name of the pool: lowercase letters, digits and single hyphens, starting with a letter, not ending in a hyphen, 2–20 characters (e.g. mannheim-arm64). No underscores, the short name ends up in Kubernetes names.")}
 	}
 	pools, err := s.fleet.Pools(ctx)
 	if err != nil {
@@ -530,13 +534,13 @@ func (s *Service) RenamePool(ctx context.Context, old, new string) error {
 	for i := range pools {
 		switch pools[i].ID {
 		case new:
-			return &ErrFleet{fmt.Sprintf("Den Pool „%s“ gibt es schon.", new)}
+			return &ErrFleet{msg.F("Den Pool „%s“ gibt es schon.", "The pool “%s” exists already.", new)}
 		case old:
 			pool = &pools[i]
 		}
 	}
 	if pool == nil {
-		return &ErrFleet{fmt.Sprintf("Den Pool „%s“ gibt es nicht.", old)}
+		return &ErrFleet{msg.F("Den Pool „%s“ gibt es nicht.", "There is no pool “%s”.", old)}
 	}
 	classes, err := s.fleet.Classes(ctx)
 	if err != nil {
@@ -621,17 +625,17 @@ func (s *Service) removeClassQueues(ctx context.Context, classes []string) error
 // DeletePool removes a pool that no node and no class uses.
 func (s *Service) DeletePool(ctx context.Context, id string) error {
 	if s.fleet == nil {
-		return &ErrFleet{"GPU-Verwaltung ist aus."}
+		return &ErrFleet{msg.T("GPU-Verwaltung ist aus.", "The GPU administration is off.")}
 	}
 	if id == DefaultPool {
-		return &ErrFleet{"Den Pool „general“ gibt es immer."}
+		return &ErrFleet{msg.T("Den Pool „general“ gibt es immer.", "The pool “general” always exists.")}
 	}
 	classes, err := s.fleet.Classes(ctx)
 	if err != nil {
 		return err
 	}
 	if slices.ContainsFunc(classes, func(c GPUClass) bool { return c.Pool == id }) {
-		return &ErrFleet{"Der Pool hat schon GPU-Klassen (Ressourcen im Baum); er bleibt."}
+		return &ErrFleet{msg.T("Der Pool hat schon GPU-Klassen (Ressourcen im Baum); er bleibt.", "The pool has GPU classes already (resources in the tree); it stays.")}
 	}
 	return s.fleet.DeletePool(ctx, id)
 }

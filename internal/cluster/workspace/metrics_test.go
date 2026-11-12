@@ -30,7 +30,7 @@ func TestStartCounter(t *testing.T) {
 	} {
 		_ = s.CheckStart(ctx, me, r)
 	}
-	s.SetBudgetCheck(func(context.Context, Project, string, string) error { return refuse("Budget aufgebraucht") })
+	s.SetBudgetCheck(func(context.Context, Project, string, string) error { return refuse("Budget aufgebraucht", "Budget used up") })
 	_ = s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"})
 	s.SetBudgetCheck(func(context.Context, Project, string, string) error { return errors.New("db down") })
 	_ = s.CheckStart(ctx, me, StartRequest{Person: "a@dhbw.de", Project: "kurs", Profile: "cpu"})

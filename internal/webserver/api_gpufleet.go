@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 )
 
@@ -48,7 +49,7 @@ func (s *Server) getGPUFleet(c *gin.Context) {
 		}
 	}
 	s.log.Errorw("gpu fleet failed", "error", err)
-	abort(c, http.StatusInternalServerError, "internal", "GPU-Verwaltung konnte nicht gelesen werden.")
+	abort(c, http.StatusInternalServerError, "internal", msg.T("GPU-Verwaltung konnte nicht gelesen werden.", "The GPU administration could not be read."))
 }
 
 func orEmpty[T any](v []T) []T {
@@ -87,7 +88,7 @@ type GPUNodeRequest struct {
 func (s *Server) putGPUNode(c *gin.Context) {
 	var req GPUNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültige Anfrage.", "Invalid request."))
 		return
 	}
 	a := gpu.NodeAssignment{Node: c.Param("name"), Pool: strings.TrimSpace(req.Pool), Tier: req.Tier, AvailableUntil: req.AvailableUntil, GapModel: strings.TrimSpace(req.GapModel), Weight: req.Weight, UpdatedBy: caller(c).Email}
@@ -126,7 +127,7 @@ type GPUPoolRequest struct {
 func (s *Server) putGPUPool(c *gin.Context) {
 	var req GPUPoolRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültige Anfrage.", "Invalid request."))
 		return
 	}
 	if !s.fleetDone(c, s.gpu.SavePool(c.Request.Context(), gpu.Pool{ID: c.Param("id"), Name: req.Name, Lend: req.Lend})) {
@@ -173,7 +174,7 @@ func (s *Server) fleetDone(c *gin.Context, err error) bool {
 		abort(c, http.StatusBadRequest, "invalid", refused.Reason)
 	default:
 		s.log.Errorw("gpu fleet change failed", "error", err)
-		abort(c, http.StatusInternalServerError, "internal", "Änderung fehlgeschlagen.")
+		abort(c, http.StatusInternalServerError, "internal", msg.T("Änderung fehlgeschlagen.", "The change failed."))
 	}
 	return false
 }

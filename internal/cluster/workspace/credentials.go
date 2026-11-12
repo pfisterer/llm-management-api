@@ -121,17 +121,17 @@ func (s *Service) Credentials(ctx context.Context, project string) ([]Credential
 // SetCredential stores (or replaces) a project's access to a host and brings the projects' secrets up to date.
 func (s *Service) SetCredential(ctx context.Context, project, host, username, token, by string) error {
 	if s.creds == nil {
-		return refuse("Zugänge sind hier nicht eingerichtet.")
+		return refuse("Zugänge sind hier nicht eingerichtet.", "Credentials are not set up here.")
 	}
 	if _, err := s.store.Get(ctx, project); err != nil {
 		return err
 	}
 	host, username, token = normaliseHost(host), strings.TrimSpace(username), strings.TrimSpace(token)
 	if !hostRE.MatchString(host) || !strings.Contains(host, ".") {
-		return invalid("Host %q ungültig: nur der Name, z. B. gitlab.dhbw.de oder ghcr.io.", host)
+		return invalid("Host %q ungültig: nur der Name, z. B. gitlab.dhbw.de oder ghcr.io.", "Invalid host %q: only the name, e.g. gitlab.dhbw.de or ghcr.io.", host)
 	}
 	if username == "" || token == "" || strings.ContainsAny(username, ":\n") || strings.ContainsAny(token, "\n ") {
-		return invalid("Benutzername und Token werden gebraucht (Benutzername ohne Doppelpunkt, Token ohne Leerzeichen).")
+		return invalid("Benutzername und Token werden gebraucht (Benutzername ohne Doppelpunkt, Token ohne Leerzeichen).", "A user name and a token are needed (user name without a colon, token without spaces).")
 	}
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {

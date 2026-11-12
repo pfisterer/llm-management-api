@@ -10,6 +10,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/cloud-self-service-golib/credential"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
@@ -63,23 +64,23 @@ func (s *Server) authenticate(c *gin.Context) (Identity, bool) {
 	switch {
 	case err == nil:
 	case errors.Is(err, credential.ErrMissing), errors.Is(err, credential.ErrNoVerifier):
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Anmeldung erforderlich.")
+		abort(c, http.StatusUnauthorized, "unauthenticated", msg.T("Anmeldung erforderlich.", "Sign-in required."))
 		return Identity{}, false
 	case errors.Is(err, credential.ErrKeysUnavailable):
-		abort(c, http.StatusServiceUnavailable, "auth_unavailable", "Anmeldedienst gerade nicht erreichbar.")
+		abort(c, http.StatusServiceUnavailable, "auth_unavailable", msg.T("Anmeldedienst gerade nicht erreichbar.", "The sign-in service is not reachable right now."))
 		return Identity{}, false
 	case errors.Is(err, token.ErrNotFound):
 		// Expired, revoked and unknown tokens are one answer (the library makes an expired token absent), so the response does not tell which.
 		s.log.Infow("api token rejected")
-		abort(c, http.StatusUnauthorized, "unauthenticated", "API-Token ungültig, abgelaufen oder gelöscht.")
+		abort(c, http.StatusUnauthorized, "unauthenticated", msg.T("API-Token ungültig, abgelaufen oder gelöscht.", "API token invalid, expired or deleted."))
 		return Identity{}, false
 	case errors.Is(err, credential.ErrRejected):
 		s.log.Infow("token rejected", "error", err)
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Anmeldung ungültig oder abgelaufen.")
+		abort(c, http.StatusUnauthorized, "unauthenticated", msg.T("Anmeldung ungültig oder abgelaufen.", "Sign-in invalid or expired."))
 		return Identity{}, false
 	default:
 		s.log.Errorw("api token lookup failed", "error", err)
-		abort(c, http.StatusInternalServerError, "internal", "Interner Fehler.")
+		abort(c, http.StatusInternalServerError, "internal", msg.T("Interner Fehler.", "Internal error."))
 		return Identity{}, false
 	}
 	if p.ViaAPIToken() {
@@ -88,7 +89,7 @@ func (s *Server) authenticate(c *gin.Context) (Identity, bool) {
 	}
 	email := strings.ToLower(strings.TrimSpace(p.Claims.Email))
 	if email == "" || p.Claims.Subject == "" {
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Das Token enthält keine E-Mail-Adresse.")
+		abort(c, http.StatusUnauthorized, "unauthenticated", msg.T("Das Token enthält keine E-Mail-Adresse.", "The token contains no e-mail address."))
 		return Identity{}, false
 	}
 	ginweb.SetReadOnly(c, false)
@@ -104,17 +105,17 @@ func (s *Server) withCaller(c *gin.Context) {
 	self := s.access.Who(c.Request.Context(), id.Email)
 	// Acting on behalf is for people signed in: a leaked admin token must not become every person at once. Refused rather than ignored, like a forbidden X-Act-As.
 	if id.ViaAPIToken && c.GetHeader(authn.ActAsHeader) != "" {
-		abort(c, http.StatusForbidden, "act_as_forbidden", "Handeln im Auftrag anderer Personen ist nur nach einer Anmeldung möglich, nicht mit einem API-Token.")
+		abort(c, http.StatusForbidden, "act_as_forbidden", msg.T("Handeln im Auftrag anderer Personen ist nur nach einer Anmeldung möglich, nicht mit einem API-Token.", "Acting on behalf of other people is only possible after signing in, not with an API token."))
 		return
 	}
 	may := self.Role.AtLeast(access.RoleAdmin) && !id.ViaAPIToken
 	target, err := authn.ActAs(c.GetHeader(authn.ActAsHeader), id.Email, may)
 	switch {
 	case errors.Is(err, authn.ErrActAsInvalid):
-		abort(c, http.StatusBadRequest, "act_as_invalid", "X-Act-As muss eine E-Mail-Adresse sein.")
+		abort(c, http.StatusBadRequest, "act_as_invalid", msg.T("X-Act-As muss eine E-Mail-Adresse sein.", "X-Act-As must be an e-mail address."))
 		return
 	case err != nil:
-		abort(c, http.StatusForbidden, "act_as_forbidden", "Handeln im Auftrag anderer Personen ist nur für Administratoren möglich.")
+		abort(c, http.StatusForbidden, "act_as_forbidden", msg.T("Handeln im Auftrag anderer Personen ist nur für Administratoren möglich.", "Only administrators can act on behalf of other people."))
 		return
 	}
 	if target == id.Email {
@@ -148,15 +149,15 @@ func (s *Server) keyPersonFor(ctx context.Context, cl Caller) (keys.Person, *key
 	}
 	sub, found, err := s.keys.SubjectOf(ctx, cl.Email)
 	if err != nil {
-		return keys.Person{}, &keyFailure{http.StatusBadGateway, "litellm", "Das Gateway ist gerade nicht erreichbar.", err}
+		return keys.Person{}, &keyFailure{http.StatusBadGateway, "litellm", msg.T("Das Gateway ist gerade nicht erreichbar.", "The gateway is not reachable right now."), err}
 	}
 	if !found {
 		if !s.devMode {
-			msg := "Diese Person hat den KI-Dienst noch nie selbst genutzt. In ihrem Auftrag sind Keys erst möglich, nachdem sie sich einmal angemeldet und die LLM-Seite geöffnet hat."
+			text := msg.T("Diese Person hat den KI-Dienst noch nie selbst genutzt. In ihrem Auftrag sind Keys erst möglich, nachdem sie sich einmal angemeldet und die LLM-Seite geöffnet hat.", "This person has never used the AI service themselves. Keys on their behalf are only possible after they have signed in once and opened the LLM page.")
 			if cl.Actor == "" {
-				msg = "Mit einem API-Token sind LLM-Keys erst möglich, nachdem sich die Person einmal angemeldet und die LLM-Seite geöffnet hat."
+				text = msg.T("Mit einem API-Token sind LLM-Keys erst möglich, nachdem sich die Person einmal angemeldet und die LLM-Seite geöffnet hat.", "With an API token, LLM keys are only possible after the person has signed in once and opened the LLM page.")
 			}
-			return keys.Person{}, &keyFailure{http.StatusConflict, "person_unknown", msg, nil}
+			return keys.Person{}, &keyFailure{http.StatusConflict, "person_unknown", text, nil}
 		}
 		sub = "dev-" + cl.Email
 	}
@@ -168,7 +169,7 @@ func (s *Server) keyPersonFor(ctx context.Context, cl Caller) (keys.Person, *key
 func require(min access.Role) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !caller(c).Role.AtLeast(min) {
-			abort(c, http.StatusForbidden, "forbidden", "Keine Berechtigung für diese Funktion.")
+			abort(c, http.StatusForbidden, "forbidden", msg.T("Keine Berechtigung für diese Funktion.", "No permission for this function."))
 			return
 		}
 		c.Next()
@@ -189,6 +190,12 @@ type ErrorResponse struct {
 	Code string `json:"code" example:"forbidden"`
 }
 
-func abort(c *gin.Context, status int, code, msg string) {
-	c.AbortWithStatusJSON(status, ErrorResponse{Error: msg, Code: code})
+// abort answers an error to people: its text in the request's language (ginweb.Lang: Accept-Language, German by default), the stable code, and aborts the chain.
+func abort(c *gin.Context, status int, code string, text msg.Text) {
+	c.AbortWithStatusJSON(status, ErrorResponse{Error: text.In(ginweb.Lang(c)), Code: code})
+}
+
+// abortMachine answers an error to another system, not to people (JupyterHub on its own endpoints of the hub listener, the budget tree on /v1/tree): one text, in German, as these callers have always read it.
+func abortMachine(c *gin.Context, status int, code, text string) {
+	c.AbortWithStatusJSON(status, ErrorResponse{Error: text, Code: code})
 }

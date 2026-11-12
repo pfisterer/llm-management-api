@@ -1,6 +1,10 @@
 package workspace
 
-import "reflect"
+import (
+	"reflect"
+
+	"github.com/pfisterer/cloud-self-service-golib/msg"
+)
 
 // Release times (docs/todo.md idle_release): when a workspace or a GPU kernel goes back, per kind of use (CPU, GPU). Counted is idle time, not runtime: nothing computes (no running cell, no CPU or GPU load of its kernels and processes), with an open tab or without one; a training keeps its GPU as long as it runs, up to the optional upper bound. The budget sets the most a project may have (ReleaseMax, from the budget tree), the project chooses within it (Release); an empty field takes the budget's value, and where the budget sets none, today's value of the kind of workspace (Profile.IdleMinutes and MaxHours from the inventory, 5 min and 4 h for a GPU kernel).
 
@@ -206,16 +210,16 @@ func (s *Service) ReleaseCeiling(p Project) Release {
 var kindNames = map[string]string{"cpu": "CPU", "gpu": "GPU"}
 
 // validRange refuses times outside the bounds: idle times 1 minute to a day, upper bounds 0 (none) to 30 days.
-func validRange(r Release, what string) error {
+func validRange(r Release, what msg.Text) error {
 	for _, kind := range []string{"cpu", "gpu"} {
 		t := r.kind(kind)
 		for _, v := range []*int{t.IdleOpenMinutes, t.IdleClosedMinutes} {
 			if v != nil && (*v < 1 || *v > MaxIdleMinutes) {
-				return invalid("Rückgabezeiten %s (%s): Leerlauf zwischen 1 und %d Minuten.", what, kindNames[kind], MaxIdleMinutes)
+				return invalid("Rückgabezeiten %s (%s): Leerlauf zwischen 1 und %d Minuten.", "Release times %s (%s): idle time between 1 and %d minutes.", what, kindNames[kind], MaxIdleMinutes)
 			}
 		}
 		if t.MaxHours != nil && (*t.MaxHours < 0 || *t.MaxHours > MaxMaxHours) {
-			return invalid("Rückgabezeiten %s (%s): Obergrenze zwischen 1 und %d Stunden, 0 = keine.", what, kindNames[kind], MaxMaxHours)
+			return invalid("Rückgabezeiten %s (%s): Obergrenze zwischen 1 und %d Stunden, 0 = keine.", "Release times %s (%s): upper bound between 1 and %d hours, 0 = none.", what, kindNames[kind], MaxMaxHours)
 		}
 	}
 	return nil
@@ -223,43 +227,43 @@ func validRange(r Release, what string) error {
 
 // checkReleaseMax refuses a budget's times that are out of range or without an upper bound where none is allowed: for CPU never, for GPU only with GPUs of the project's own.
 func checkReleaseMax(p Project) error {
-	if err := validRange(p.ReleaseMax, "des Budgets"); err != nil {
+	if err := validRange(p.ReleaseMax, msg.T("des Budgets", "of the budget")); err != nil {
 		return err
 	}
 	if m := p.ReleaseMax.CPU.MaxHours; m != nil && *m == 0 {
-		return refuse("Rückgabezeiten (CPU): ohne Obergrenze geht es nur bei eigenen GPUs; CPUs teilen sich alle.")
+		return refuse("Rückgabezeiten (CPU): ohne Obergrenze geht es nur bei eigenen GPUs; CPUs teilen sich alle.", "Release times (CPU): without an upper bound only with GPUs of one's own; CPUs are shared by everybody.")
 	}
 	if m := p.ReleaseMax.GPU.MaxHours; m != nil && *m == 0 && !ownGPUs(p) {
-		return refuse("Rückgabezeiten (GPU): ohne Obergrenze geht es nur mit eigenen GPUs des Projekts (GPUs je Klasse); im gemeinsamen Pool gibt es immer eine.")
+		return refuse("Rückgabezeiten (GPU): ohne Obergrenze geht es nur mit eigenen GPUs des Projekts (GPUs je Klasse); im gemeinsamen Pool gibt es immer eine.", "Release times (GPU): without an upper bound only with the project's own GPUs (GPUs per class); in the shared pool there is always one.")
 	}
 	return nil
 }
 
 // checkRelease refuses the project's times when one is out of range or above what the budget allows (ceiling).
 func (s *Service) checkRelease(p Project) error {
-	if err := validRange(p.Release, "des Projekts"); err != nil {
+	if err := validRange(p.Release, msg.T("des Projekts", "of the project")); err != nil {
 		return err
 	}
 	for _, kind := range []string{"cpu", "gpu"} {
 		t, c := p.Release.kind(kind), s.ceiling(p, kind)
 		if v := t.IdleOpenMinutes; v != nil && *v > c.idleOpen {
-			return refuse("Rückgabezeiten (%s): höchstens %d Minuten Leerlauf mit offenem Tab, mehr erlaubt das Budget nicht.", kindNames[kind], c.idleOpen)
+			return refuse("Rückgabezeiten (%s): höchstens %d Minuten Leerlauf mit offenem Tab, mehr erlaubt das Budget nicht.", "Release times (%s): at most %d minutes idle with an open tab, the budget allows no more.", kindNames[kind], c.idleOpen)
 		}
 		if v := t.IdleClosedMinutes; v != nil && *v > c.idleClosed {
-			return refuse("Rückgabezeiten (%s): höchstens %d Minuten Leerlauf ohne Tab, mehr erlaubt das Budget nicht.", kindNames[kind], c.idleClosed)
+			return refuse("Rückgabezeiten (%s): höchstens %d Minuten Leerlauf ohne Tab, mehr erlaubt das Budget nicht.", "Release times (%s): at most %d minutes idle without a tab, the budget allows no more.", kindNames[kind], c.idleClosed)
 		}
 		if v := t.MaxHours; v != nil && c.maxHours > 0 && (*v == 0 || *v > c.maxHours) {
-			return refuse("Rückgabezeiten (%s): Obergrenze höchstens %d Stunden, mehr erlaubt das Budget nicht%s.", kindNames[kind], c.maxHours, unlimitedHint(kind))
+			return refuse("Rückgabezeiten (%s): Obergrenze höchstens %d Stunden, mehr erlaubt das Budget nicht%s.", "Release times (%s): upper bound at most %d hours, the budget allows no more%s.", kindNames[kind], c.maxHours, unlimitedHint(kind))
 		}
 	}
 	return nil
 }
 
-func unlimitedHint(kind string) string {
+func unlimitedHint(kind string) msg.Text {
 	if kind == "gpu" {
-		return " (ohne Obergrenze nur mit eigenen GPUs, wenn das Budget es erlaubt)"
+		return msg.T(" (ohne Obergrenze nur mit eigenen GPUs, wenn das Budget es erlaubt)", " (without an upper bound only with GPUs of one's own, if the budget allows it)")
 	}
-	return ""
+	return msg.Text{}
 }
 
 // applyRelease checks the release times of an update against the stored project: only what changed is checked, so a project whose budget shrank stays editable (its stored times are capped when they are used, resolve).

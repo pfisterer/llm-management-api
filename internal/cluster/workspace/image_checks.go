@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // The checks of a project image (docs/todo.md image_hardening): what its registry says about it decides little — only an image for neither linux/amd64 nor linux/arm64 or one above the size limit is refused, and only when it is saved (imageRefusal). Everything else is a warning shown with the project (imageWarnings), because any image may be the project's and many run fine although they were not built for JupyterHub.
@@ -53,13 +55,18 @@ func FormatGB(b int64) string {
 	return strings.Replace(strconv.FormatFloat(float64(b)/1e9, 'f', 1, 64), ".", ",", 1) + " GB"
 }
 
+// gbText is FormatGB for both languages: "2,0 GB" in German, "2.0 GB" in English.
+func gbText(b int64) msg.Text {
+	return msg.T(FormatGB(b), strconv.FormatFloat(float64(b)/1e9, 'f', 1, 64)+" GB")
+}
+
 // imageRefusal is why an image cannot be saved as the project's: no variant the nodes run, or larger than the limit unless an admin saves it.
 func imageRefusal(image string, img RegistryImage, maxBytes int64, asAdmin bool) error {
 	if len(img.Archs) > 0 && !slices.Contains(img.Archs, "amd64") && !slices.Contains(img.Archs, "arm64") {
-		return refuse("Image %s gibt es nur für %s; die Knoten hier laufen mit linux/amd64 oder linux/arm64.", image, strings.Join(img.Archs, ", "))
+		return refuse("Image %s gibt es nur für %s; die Knoten hier laufen mit linux/amd64 oder linux/arm64.", "Image %s exists only for %s; the nodes here run linux/amd64 or linux/arm64.", image, strings.Join(img.Archs, ", "))
 	}
 	if img.Size > maxBytes && !asAdmin {
-		return refuse("Image %s ist %s groß (komprimiert), erlaubt sind bis zu %s. Ein größeres Image kann ein Admin eintragen.", image, FormatGB(img.Size), FormatGB(maxBytes))
+		return refuse("Image %s ist %s groß (komprimiert), erlaubt sind bis zu %s. Ein größeres Image kann ein Admin eintragen.", "Image %s is %s (compressed), up to %s are allowed. An admin can enter a larger image.", image, gbText(img.Size), gbText(maxBytes))
 	}
 	return nil
 }

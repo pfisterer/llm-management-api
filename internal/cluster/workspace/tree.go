@@ -120,7 +120,7 @@ func grantedClasses(tp TreeProject) []string {
 // UpsertFromTree creates or updates the project of a tree node with what the tree says. A new project gets every profile it can use and moderate limits per person, which its managers may change.
 func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProject) (TreeStatus, error) {
 	if strings.TrimSpace(node) == "" {
-		return TreeStatus{}, invalid("Knoten fehlt.")
+		return TreeStatus{}, invalid("Knoten fehlt.", "The node is missing.")
 	}
 	cur, exists, err := s.byNode(ctx, node)
 	if err != nil {
@@ -178,7 +178,7 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 	budgets := slices.DeleteFunc(slices.Clone(p.Budgets), func(b Budget) bool { return b.Tree })
 	for _, b := range tp.Budgets {
 		if !windows[b.Window].tree {
-			return TreeStatus{}, invalid("Budget aus dem Baum mit Fenster %q: der Budgetbaum vergibt Mengen je %s.", b.Window, strings.Join(treeWindows, ", "))
+			return TreeStatus{}, invalid("Budget aus dem Baum mit Fenster %q: der Budgetbaum vergibt Mengen je %s.", "Budget from the tree with window %q: the budget tree grants amounts per %s.", b.Window, strings.Join(treeWindows, ", "))
 		}
 		budgets = append(budgets, Budget{Unit: b.Unit, GPUClass: b.GPUClass, Window: b.Window, Amount: b.Amount, Tree: true})
 	}
@@ -328,7 +328,7 @@ func withinTree(p Project) error {
 		}
 		for _, t := range p.Budgets {
 			if t.Tree && t.Unit == b.Unit && t.GPUClass == b.GPUClass && b.Amount > t.Amount {
-				return refuse("Budget %s ist größer als die %s, die das Projekt aus dem Budgetbaum hat.", describe(b), num(t.Amount))
+				return refuse("Budget %s ist größer als die %s, die das Projekt aus dem Budgetbaum hat.", "Budget %s is larger than the %s the project has from the budget tree.", describe(b), num(t.Amount))
 			}
 		}
 	}

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/retry"
 )
 
@@ -140,7 +141,7 @@ func (s *Service) OpenJobFile(ctx context.Context, j Job, rel string) (io.ReadCl
 	}
 	if size > JobFileMaxBytes {
 		resp.Body.Close()
-		return nil, 0, &JobRefused{fmt.Sprintf("Die Datei ist größer als %d GB; große Ergebnisse besser in S3 oder einem Workspace abholen.", JobFileMaxBytes>>30)}
+		return nil, 0, &JobRefused{msg.F("Die Datei ist größer als %d GB; große Ergebnisse besser in S3 oder einem Workspace abholen.", "The file is larger than %d GB; better fetch large results through S3 or a workspace.", JobFileMaxBytes>>30)}
 	}
 	return resp.Body, size, nil
 }
@@ -148,15 +149,15 @@ func (s *Service) OpenJobFile(ctx context.Context, j Job, rel string) (io.ReadCl
 // PutJobFile writes a file of size bytes from body into the home of the person in the project, or into the project's shared folder (rel under SharedDir) unless sharedReadOnly (a reader of the project); rel is relative to the home (JobFilePath has checked it, not the home itself). Missing folders are made; an existing file is replaced only once the new one is complete. The person's upload pod writes it, the only files pod that may.
 func (s *Service) PutJobFile(ctx context.Context, project, person, rel string, sharedReadOnly bool, body io.Reader, size int64) (JobFile, error) {
 	if size > JobFileMaxBytes {
-		return JobFile{}, &JobRefused{fmt.Sprintf("Die Datei ist größer als %d GB; große Daten besser über S3 oder einen Workspace holen.", JobFileMaxBytes>>30)}
+		return JobFile{}, &JobRefused{msg.F("Die Datei ist größer als %d GB; große Daten besser über S3 oder einen Workspace holen.", "The file is larger than %d GB; better bring large data through S3 or a workspace.", JobFileMaxBytes>>30)}
 	}
 	if rel == SharedDir {
-		return JobFile{}, &JobRefused{"Keine Datei (ein Ordner oder etwas anderes)."}
+		return JobFile{}, &JobRefused{msg.T("Keine Datei (ein Ordner oder etwas anderes).", "Not a file (a folder or something else).")}
 	}
 	access := filesWrite
 	if sharedReadOnly {
 		if strings.HasPrefix(rel, SharedDir+"/") {
-			return JobFile{}, &JobRefused{"Im gemeinsamen Ordner ~/project-shared darf die Rolle „Lesend“ nur lesen."}
+			return JobFile{}, &JobRefused{msg.T("Im gemeinsamen Ordner ~/project-shared darf die Rolle „Lesend“ nur lesen.", "In the shared folder ~/project-shared the role “Reader” may only read.")}
 		}
 		access = filesWriteHome
 	}
@@ -178,7 +179,7 @@ func (s *Service) PutJobFile(ctx context.Context, project, person, rel string, s
 // filesDo asks the files pod of the person and project with the access: GET from the reading one, PUT to one that may write. A pod that went away meanwhile is started anew once; a body cannot be sent twice, so before a write the pod is asked whether it is still there.
 func (s *Service) filesDo(ctx context.Context, project, person string, access filesAccess, op, rel string, body io.Reader, size int64) (*http.Response, error) {
 	if s.k8s == nil || s.cfg.Jobs.InitImage == "" {
-		return nil, &JobRefused{"Dateien von Jobs sind in diesem Cluster nicht eingerichtet."}
+		return nil, &JobRefused{msg.T("Dateien von Jobs sind in diesem Cluster nicht eingerichtet.", "Files of jobs are not set up in this cluster.")}
 	}
 	write := access != filesRead
 	method := http.MethodGet
@@ -228,19 +229,19 @@ func (s *Service) filesDo(ctx context.Context, project, person string, access fi
 		case resp.StatusCode == http.StatusNotFound:
 			return nil, ErrNotFound
 		case e.Error == "not_a_directory":
-			return nil, &JobRefused{"Kein Ordner."}
+			return nil, &JobRefused{msg.T("Kein Ordner.", "Not a folder.")}
 		case e.Error == "not_a_file":
-			return nil, &JobRefused{"Keine Datei (ein Ordner oder etwas anderes)."}
+			return nil, &JobRefused{msg.T("Keine Datei (ein Ordner oder etwas anderes).", "Not a file (a folder or something else).")}
 		case e.Error == "parent_not_a_directory":
-			return nil, &JobRefused{"Ein Teil des Pfads ist eine Datei, kein Ordner."}
+			return nil, &JobRefused{msg.T("Ein Teil des Pfads ist eine Datei, kein Ordner.", "A part of the path is a file, not a folder.")}
 		case e.Error == "no_space":
-			return nil, &JobRefused{"Kein Platz mehr im Home: die Speichergrenze des Projekts ist erreicht."}
+			return nil, &JobRefused{msg.T("Kein Platz mehr im Home: die Speichergrenze des Projekts ist erreicht.", "No space left in the home: the project's storage limit is reached.")}
 		case e.Error == "incomplete":
-			return nil, &JobRefused{"Die Datei kam nicht vollständig an."}
+			return nil, &JobRefused{msg.T("Die Datei kam nicht vollständig an.", "The file did not arrive completely.")}
 		case resp.StatusCode == http.StatusForbidden && write:
-			return nil, &JobRefused{"Nicht schreibbar."}
+			return nil, &JobRefused{msg.T("Nicht schreibbar.", "Not writable.")}
 		case resp.StatusCode == http.StatusForbidden:
-			return nil, &JobRefused{"Nicht lesbar."}
+			return nil, &JobRefused{msg.T("Nicht lesbar.", "Not readable.")}
 		}
 		return nil, fmt.Errorf("files pod: %d %s", resp.StatusCode, e.Error)
 	}

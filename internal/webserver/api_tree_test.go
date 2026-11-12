@@ -90,8 +90,8 @@ func TestLLMQuota(t *testing.T) {
 	if status != 0 || !reflect.DeepEqual(g, want) {
 		t.Errorf("grant = %+v, status %d; want %+v", g, status, want)
 	}
-	if _, status, msg := q.GrantFor(ctx, []string{"user:b@dhbw.de"}); status != http.StatusForbidden || !strings.Contains(msg, "Kein Projekt mit LLM-Tokens") || !strings.Contains(msg, "https://self-service") {
-		t.Errorf("without tokens: %d %q", status, msg)
+	if _, status, why := q.GrantFor(ctx, []string{"user:b@dhbw.de"}); status != http.StatusForbidden || !strings.Contains(why.String(), "Kein Projekt mit LLM-Tokens") || !strings.Contains(why.String(), "https://self-service") {
+		t.Errorf("without tokens: %d %q", status, why)
 	}
 	q.Projects = nil
 	if _, status, _ := q.GrantFor(ctx, []string{"group:k"}); status != http.StatusServiceUnavailable {

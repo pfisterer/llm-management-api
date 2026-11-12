@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 )
@@ -39,10 +40,10 @@ type DefaultProjectResponse struct {
 // person and grant (pools) of the caller; false (and an answer) when they may not use the LLM.
 func (s *Server) personAndGrant(c *gin.Context) (keys.Person, keys.Grant, bool) {
 	cl := caller(c)
-	g, status, msg := s.quota.GrantFor(c.Request.Context(), cl.Tokens)
+	g, status, why := s.quota.GrantFor(c.Request.Context(), cl.Tokens)
 	if status != 0 {
 		code := map[int]string{http.StatusForbidden: "no_quota", http.StatusServiceUnavailable: "unavailable"}[status]
-		abort(c, status, code, msg)
+		abort(c, status, code, why)
 		return keys.Person{}, keys.Grant{}, false
 	}
 	p, ok := s.keyPerson(c)
@@ -51,7 +52,7 @@ func (s *Server) personAndGrant(c *gin.Context) (keys.Person, keys.Grant, bool) 
 
 // notEligible answers a project the caller may not draw LLM tokens from.
 func notEligible(c *gin.Context) {
-	abort(c, http.StatusForbidden, "project_not_allowed", "Für dieses Projekt stehen keine LLM-Tokens zur Verfügung: Es gehört nicht zu den eigenen Projekten, ist abgelaufen oder hat keine LLM-Tokens.")
+	abort(c, http.StatusForbidden, "project_not_allowed", msg.T("Für dieses Projekt stehen keine LLM-Tokens zur Verfügung: Es gehört nicht zu den eigenen Projekten, ist abgelaufen oder hat keine LLM-Tokens.", "No LLM tokens are available for this project: it is none of your projects, has ended or has no LLM tokens."))
 }
 
 // getUsage godoc
@@ -150,15 +151,15 @@ func (s *Server) createKey(c *gin.Context) {
 	secret, v, err := s.keys.Create(c.Request.Context(), p, g, req.Name, req.Project)
 	switch {
 	case errors.Is(err, keys.ErrNameRequired):
-		abort(c, http.StatusBadRequest, "name_required", "Bitte einen Namen für den API Key angeben, z. B. „laptop“ oder „vscode“.")
+		abort(c, http.StatusBadRequest, "name_required", msg.T("Bitte einen Namen für den API Key angeben, z. B. „laptop“ oder „vscode“.", "Please give a name for the API key, e.g. “laptop” or “vscode”."))
 	case errors.Is(err, keys.ErrNotEligible):
 		notEligible(c)
 	case errors.Is(err, keys.ErrTooManyKeys):
-		abort(c, http.StatusConflict, "too_many_keys", "Höchstzahl an API Keys erreicht. Bitte zuerst einen alten löschen.")
+		abort(c, http.StatusConflict, "too_many_keys", msg.T("Höchstzahl an API Keys erreicht. Bitte zuerst einen alten löschen.", "Maximum number of API keys reached. Please delete an old one first."))
 	case errors.Is(err, keys.ErrNameReserved):
-		abort(c, http.StatusBadRequest, "name_reserved", "Diese Bezeichnung ist für automatische Keys reserviert (DHBW-Chat, Workspaces).")
+		abort(c, http.StatusBadRequest, "name_reserved", msg.T("Diese Bezeichnung ist für automatische Keys reserviert (DHBW-Chat, Workspaces).", "This name is reserved for automatic keys (DHBW chat, workspaces)."))
 	case errors.Is(err, keys.ErrDuplicate):
-		abort(c, http.StatusConflict, "duplicate", "Diese Bezeichnung ist schon für einen anderen eigenen Key vergeben.")
+		abort(c, http.StatusConflict, "duplicate", msg.T("Diese Bezeichnung ist schon für einen anderen eigenen Key vergeben.", "This name is already used for another key of yours."))
 	case err != nil:
 		s.fail(c, gatewayErrors, "create key", err)
 	default:
@@ -187,7 +188,7 @@ func (s *Server) setDefaultProject(c *gin.Context) {
 	}
 	var req DefaultProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "project_required", "Bitte ein Projekt angeben.")
+		abort(c, http.StatusBadRequest, "project_required", msg.T("Bitte ein Projekt angeben.", "Please give a project."))
 		return
 	}
 	pool, err := s.keys.SetDefaultProject(c.Request.Context(), p, g, req.Project)
@@ -219,7 +220,7 @@ func (s *Server) deleteKey(c *gin.Context) {
 	err := s.keys.Delete(c.Request.Context(), p, c.Param("id"))
 	switch {
 	case errors.Is(err, keys.ErrNotFound):
-		abort(c, http.StatusNotFound, "not_found", "API Key nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("API Key nicht gefunden.", "API key not found."))
 	case err != nil:
 		s.fail(c, gatewayErrors, "delete key", err)
 	default:

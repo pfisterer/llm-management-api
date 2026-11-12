@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/calendar"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"go.uber.org/zap"
 )
@@ -147,8 +148,15 @@ func TestDescribeGolden(t *testing.T) {
 		{Budget{Unit: "server_hours", Window: "24h", Amount: 0.25}, "0.25 Workspace-Stunden heute für das ganze Projekt"},
 		{Budget{Unit: "ram_gb_hours", Window: "total", Amount: 1000}, "1000 RAM-GB-Stunden insgesamt für das ganze Projekt"},
 	} {
-		if got := describe(tc.b); got != tc.want {
+		if got := describe(tc.b).String(); got != tc.want {
 			t.Errorf("describe(%+v) = %q, want %q", tc.b, got, tc.want)
 		}
+	}
+	// In English for a refusal answered in English.
+	if got := describe(Budget{Unit: "gpu_hours", GPUClass: "l4-3q", Window: "7d", Amount: 2.5, PerPerson: true}).In(msg.EN); got != "2.5 GPU hours (l4-3q) in 7 days per person" {
+		t.Errorf("describe in English = %q", got)
+	}
+	if got := plural(3, msg.T("ist 1 Job", "1 job is"), msg.T("sind %d Jobs", "%d jobs are")); got.String() != "sind 3 Jobs" || got.In(msg.EN) != "3 jobs are" {
+		t.Errorf("plural = %q / %q", got.String(), got.In(msg.EN))
 	}
 }

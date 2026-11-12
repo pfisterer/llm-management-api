@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // fakeKernelKube answers the pod listing with a fixed server pod and records what is created and deleted.
@@ -126,7 +128,7 @@ func TestStartKernel(t *testing.T) {
 		}
 	}
 
-	s.SetKernelCheck(func(context.Context, *KernelOwner) error { return &KernelRefused{"voll"} })
+	s.SetKernelCheck(func(context.Context, *KernelOwner) error { return &KernelRefused{msg.T("voll", "full")} })
 	if _, err := s.StartKernel(ctx, o, req); err == nil || err.Error() != "voll" || len(k.created) != 1 {
 		t.Errorf("refused by the limits: %v", err)
 	}

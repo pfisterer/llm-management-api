@@ -12,7 +12,7 @@ import (
 // requireTreeToken lets only the budget tree (resource-management-api) through, by its own token.
 func (s *Server) requireTreeToken(c *gin.Context) {
 	if !authn.BearerIs(c.GetHeader("Authorization"), s.treeTok) {
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Nur für den Budgetbaum.")
+		abortMachine(c, http.StatusUnauthorized, "unauthenticated", "Nur für den Budgetbaum.")
 		return
 	}
 	c.Next()
@@ -56,7 +56,7 @@ func (s *Server) listTreeProjects(c *gin.Context) {
 func (s *Server) putTreeProject(c *gin.Context) {
 	var tp workspace.TreeProject
 	if err := c.ShouldBindJSON(&tp); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültiger Inhalt.")
+		abortMachine(c, http.StatusBadRequest, "invalid", "Ungültiger Inhalt.")
 		return
 	}
 	st, err := s.ws.UpsertFromTree(c.Request.Context(), c.Param("node"), tp)
@@ -82,7 +82,7 @@ func (s *Server) putTreeProject(c *gin.Context) {
 func (s *Server) deleteTreeProject(c *gin.Context) {
 	err := s.ws.DeleteFromTree(c.Request.Context(), c.Param("node"))
 	if errors.Is(err, workspace.ErrNotFound) {
-		abort(c, http.StatusNotFound, "not_found", "Projekt nicht gefunden.")
+		abortMachine(c, http.StatusNotFound, "not_found", "Projekt nicht gefunden.")
 		return
 	}
 	if s.fail(c, projectErrors, "workspace project", err) {

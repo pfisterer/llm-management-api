@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/httpx"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
@@ -23,7 +24,8 @@ type gitRefs struct {
 	DefaultBranch string
 }
 
-var ErrRefNotFound = errors.New("Branch, Tag oder Commit nicht gefunden")
+// ErrRefNotFound is a branch, tag or commit the repository does not have.
+var ErrRefNotFound = msg.Err(msg.T("Branch, Tag oder Commit nicht gefunden", "Branch, tag or commit not found"))
 
 // fetchRefs reads the refs of a public repository over Git's smart HTTP
 // protocol (what `git ls-remote` does), so the service needs no git binary.
@@ -39,17 +41,17 @@ func fetchRefs(ctx context.Context, client *http.Client, repoURL string, auth *w
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return gitRefs{}, fmt.Errorf("Git-Server nicht erreichbar: %w", err)
+		return gitRefs{}, msg.Errorf("Git-Server nicht erreichbar: %w", "Git server not reachable: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		if auth != nil {
-			return gitRefs{}, fmt.Errorf("Repository nicht gefunden, oder der Zugang des Projekts reicht nicht (HTTP %d)", resp.StatusCode)
+			return gitRefs{}, msg.Errorf("Repository nicht gefunden, oder der Zugang des Projekts reicht nicht (HTTP %d)", "Repository not found, or the project's credential is not enough (HTTP %d)", resp.StatusCode)
 		}
-		return gitRefs{}, fmt.Errorf("Repository nicht gefunden oder nicht öffentlich (HTTP %d)", resp.StatusCode)
+		return gitRefs{}, msg.Errorf("Repository nicht gefunden oder nicht öffentlich (HTTP %d)", "Repository not found or not public (HTTP %d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return gitRefs{}, fmt.Errorf("Git-Server antwortet mit HTTP %d", resp.StatusCode)
+		return gitRefs{}, msg.Errorf("Git-Server antwortet mit HTTP %d", "The Git server answers with HTTP %d", resp.StatusCode)
 	}
 	return parseRefAdvertisement(resp.Body)
 }
@@ -115,7 +117,7 @@ func (g gitRefs) resolve(ref string) (commit, branch string, err error) {
 	switch {
 	case ref == "" || ref == "HEAD":
 		if g.DefaultBranch == "" {
-			return "", "", errors.New("Das Repository hat keinen Standard-Branch")
+			return "", "", msg.Errorf("Das Repository hat keinen Standard-Branch", "The repository has no default branch")
 		}
 		return g.Refs["refs/heads/"+g.DefaultBranch], g.DefaultBranch, nil
 	case g.Refs["refs/heads/"+ref] != "":
@@ -127,7 +129,7 @@ func (g gitRefs) resolve(ref string) (commit, branch string, err error) {
 	case hexRef.MatchString(strings.ToLower(ref)):
 		return strings.ToLower(ref), g.DefaultBranch, nil
 	}
-	return "", "", fmt.Errorf("%w: %s", ErrRefNotFound, ref)
+	return "", "", msg.Errorf("%w: %s", "%w: %s", ErrRefNotFound, ref)
 }
 
 func newGitClient() *http.Client { return httpx.WithRetry(&http.Client{Timeout: 30 * time.Second}) }

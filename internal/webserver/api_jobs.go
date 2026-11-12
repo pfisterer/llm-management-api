@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
@@ -95,10 +96,10 @@ func agentEnv(baseURL string, models []string, limits map[string]ModelLimit) map
 }
 
 // keyReasons are the reasons of workspaceKey for no key, for people.
-var keyReasons = map[string]string{
-	"the chosen LLM project is none of the person's projects with LLM tokens": "Das gewählte LLM-Projekt ist keines der eigenen Projekte mit LLM-Tokens.",
-	"person unknown to the LLM service":                                       "Für LLM-Schlüssel muss die Person den KI-Dienst einmal selbst genutzt haben (anmelden und die LLM-Seite öffnen).",
-	"project has no LLM tokens":                                               "Das gewählte Projekt hat keine LLM-Tokens.",
+var keyReasons = map[string]msg.Text{
+	"the chosen LLM project is none of the person's projects with LLM tokens": msg.T("Das gewählte LLM-Projekt ist keines der eigenen Projekte mit LLM-Tokens.", "The chosen LLM project is none of your projects with LLM tokens."),
+	"person unknown to the LLM service":                                       msg.T("Für LLM-Schlüssel muss die Person den KI-Dienst einmal selbst genutzt haben (anmelden und die LLM-Seite öffnen).", "For LLM keys the person must have used the AI service themselves once (sign in and open the LLM page)."),
+	"project has no LLM tokens":                                               msg.T("Das gewählte Projekt hat keine LLM-Tokens.", "The chosen project has no LLM tokens."),
 }
 
 // submitJob checks the job against the project (membership, batch jobs, class, limits, budget with reservations) and submits it with the project's environment as a start sees it. Check and submit hold the project's job lock: requests sent together cannot all pass the check before any of them is saved.
@@ -132,7 +133,7 @@ func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Servic
 		}
 	}
 	if hp == nil {
-		return gpu.Job{}, &workspace.Refusal{Reason: "Kein aktives Projekt " + req.Project + " mit Workspace-Zugang."}
+		return gpu.Job{}, &workspace.Refusal{Reason: noActiveProject(req.Project)}
 	}
 	spec := gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed && !req.Preemptible,
 		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, SharedReadOnly: hp.SharedReadOnly, ScratchGB: hp.ScratchGB, StorageGB: hp.StorageGB,
@@ -151,7 +152,7 @@ func jobLLMKey(ctx context.Context, ws *workspace.Service, k *jobKeys, a jobActo
 	}
 	if k == nil {
 		if chosen != "" {
-			return &workspace.Refusal{Reason: "LLM-Schlüssel für Jobs sind in diesem Dienst nicht eingerichtet."}
+			return &workspace.Refusal{Reason: msg.T("LLM-Schlüssel für Jobs sind in diesem Dienst nicht eingerichtet.", "LLM keys for jobs are not set up in this service.")}
 		}
 		return nil
 	}
@@ -167,9 +168,9 @@ func jobLLMKey(ctx context.Context, ws *workspace.Service, k *jobKeys, a jobActo
 	case fail != nil:
 		return nil
 	case got.Key == "" && chosen != "":
-		reason := keyReasons[got.Reason]
-		if reason == "" {
-			reason = "Kein LLM-Schlüssel aus " + chosen + "."
+		reason, ok := keyReasons[got.Reason]
+		if !ok {
+			reason = msg.F("Kein LLM-Schlüssel aus %s.", "No LLM key from %s.", chosen)
 		}
 		return &workspace.Refusal{Reason: reason}
 	case got.Key == "":
@@ -286,7 +287,7 @@ func (s *Server) listJobs(c *gin.Context) {
 func (s *Server) submitJob(c *gin.Context) {
 	var req SubmitJobRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "project fehlt.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("project fehlt.", "project is missing."))
 		return
 	}
 	j, err := submitJob(c.Request.Context(), s.ws, s.gpu, s.jobKeys(), s.jobActor(c), req)
@@ -401,11 +402,7 @@ func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
 	}
 	rel, ok := gpu.JobFilePath(p, root)
 	if !ok {
-		where := "im Home"
-		if root != "" {
-			where = "im Ordner des Jobs (~/" + root + ")"
-		}
-		abort(c, http.StatusBadRequest, "invalid", "Nur Pfade "+where+".")
+		abort(c, http.StatusBadRequest, "invalid", onlyPathsIn(root))
 		return gpu.Job{}, "", false
 	}
 	return j, rel, true
@@ -432,7 +429,7 @@ func (s *Server) listJobFiles(c *gin.Context) {
 	}
 	list, err := s.gpu.ListJobFiles(c.Request.Context(), j, rel)
 	if errors.Is(err, gpu.ErrNotFound) {
-		abort(c, http.StatusNotFound, "not_found", "Ordner nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Ordner nicht gefunden.", "Folder not found."))
 		return
 	}
 	if err != nil {
@@ -458,7 +455,7 @@ func (s *Server) listJobFiles(c *gin.Context) {
 //	@Router			/v1/gpu/jobs/{id}/files/download [get]
 func (s *Server) downloadJobFile(c *gin.Context) {
 	if c.Query("path") == "" {
-		abort(c, http.StatusBadRequest, "invalid", "path fehlt.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("path fehlt.", "path is missing."))
 		return
 	}
 	j, rel, ok := s.jobFile(c)
@@ -469,7 +466,7 @@ func (s *Server) downloadJobFile(c *gin.Context) {
 	defer cancel()
 	body, size, err := s.gpu.OpenJobFile(ctx, j, rel)
 	if errors.Is(err, gpu.ErrNotFound) {
-		abort(c, http.StatusNotFound, "not_found", "Datei nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Datei nicht gefunden.", "File not found."))
 		return
 	}
 	if err != nil {
@@ -505,13 +502,13 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 	rel, ok := gpu.JobFilePath(c.Query("path"), "")
 	switch {
 	case !ok || rel == "":
-		abort(c, http.StatusBadRequest, "invalid", "Pfad einer Datei im Home angeben.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Pfad einer Datei im Home angeben.", "Give the path of a file in the home."))
 		return
 	case c.Request.ContentLength < 0:
-		abort(c, http.StatusLengthRequired, "length_required", "Content-Length fehlt.")
+		abort(c, http.StatusLengthRequired, "length_required", msg.T("Content-Length fehlt.", "Content-Length is missing."))
 		return
 	case c.Request.ContentLength > gpu.JobFileMaxBytes:
-		abort(c, http.StatusRequestEntityTooLarge, "too_large", "Höchstens 5 GB je Datei.")
+		abort(c, http.StatusRequestEntityTooLarge, "too_large", msg.T("Höchstens 5 GB je Datei.", "At most 5 GB per file."))
 		return
 	}
 	ctx := c.Request.Context()
@@ -525,7 +522,7 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 	hps := hubProjects(ctx, s.ws, mine)
 	i := slices.IndexFunc(hps, func(p HubProject) bool { return p.Slug == project })
 	if i < 0 {
-		s.fail(c, jobErrors, "upload", &workspace.Refusal{Reason: "Kein aktives Projekt " + project + " mit Workspace-Zugang."})
+		s.fail(c, jobErrors, "upload", &workspace.Refusal{Reason: noActiveProject(project)})
 		return
 	}
 	sharedRO := hps[i].SharedReadOnly
@@ -534,7 +531,7 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 	f, err := s.gpu.PutJobFile(ctx, project, a.person, rel, sharedRO, c.Request.Body, c.Request.ContentLength)
 	if errors.Is(err, gpu.ErrNotFound) {
 		// The files pod refuses a path that leaves the home through a symbolic link.
-		abort(c, http.StatusBadRequest, "invalid", "Pfad einer Datei im Home angeben.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Pfad einer Datei im Home angeben.", "Give the path of a file in the home."))
 		return
 	}
 	if err != nil {
@@ -542,4 +539,12 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, f)
+}
+
+// onlyPathsIn refuses a path outside where a job's files are read: the job's folder root when there is one, else the home.
+func onlyPathsIn(root string) msg.Text {
+	if root != "" {
+		return msg.F("Nur Pfade im Ordner des Jobs (~/%s).", "Only paths in the job's folder (~/%s).", root)
+	}
+	return msg.T("Nur Pfade im Home.", "Only paths in the home.")
 }

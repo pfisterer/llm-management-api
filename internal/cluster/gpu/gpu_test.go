@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 
 	"go.uber.org/zap"
@@ -99,8 +100,8 @@ func (f *fakeBuilds) deleteJob(_ context.Context, _, name string) error {
 	f.deleted = append(f.deleted, name)
 	return nil
 }
-func (f *fakeBuilds) jobState(context.Context, string, string) (string, *time.Time, error) {
-	return "Läuft.", nil, nil
+func (f *fakeBuilds) jobState(context.Context, string, string) (msg.Text, *time.Time, error) {
+	return msg.T("Läuft.", "Running."), nil, nil
 }
 
 func (f *fakeBuilds) jobLog(_ context.Context, _, name string, _ int) (string, error) {

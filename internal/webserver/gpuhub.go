@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/cloud-self-service-golib/ginweb"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
@@ -225,7 +226,8 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	r.Use(gin.Recovery())
+	// The workspace routes and the GPU kernels answer people (the command dhbw-cloud and JupyterLab in a workspace) in their language; JupyterHub's own endpoints answer in German (abortMachine), as JupyterHub sends no Accept-Language.
+	r.Use(gin.Recovery(), ginweb.Language())
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 	r.GET("/gpu/hub/access", func(c *gin.Context) {
 		if !hubToken(c, o.Token) {
@@ -233,7 +235,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 		}
 		email := strings.ToLower(strings.TrimSpace(c.Query("user")))
 		if email == "" {
-			abort(c, http.StatusBadRequest, "invalid", "user fehlt.")
+			abortMachine(c, http.StatusBadRequest, "invalid", "user fehlt.")
 			return
 		}
 		who := o.Access.Who(c.Request.Context(), email)
@@ -242,7 +244,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			mine, err := o.Workspaces.ForPerson(c.Request.Context(), who.Tokens, "", false)
 			if err != nil {
 				o.Log.Errorw("gpu hub projects failed", "email", email, "error", err)
-				abort(c, http.StatusInternalServerError, "internal", "Projekte konnten nicht gelesen werden.")
+				abortMachine(c, http.StatusInternalServerError, "internal", "Projekte konnten nicht gelesen werden.")
 				return
 			}
 			resp.Projects = hubProjects(c.Request.Context(), o.Workspaces, mine)
@@ -268,7 +270,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			var req workspace.StartRequest
 			if err := c.ShouldBindJSON(&req); err != nil || req.Person == "" {
-				abort(c, http.StatusBadRequest, "invalid", "user, project und profile fehlen.")
+				abortMachine(c, http.StatusBadRequest, "invalid", "user, project und profile fehlen.")
 				return
 			}
 			req.Person = strings.ToLower(strings.TrimSpace(req.Person))
@@ -278,10 +280,11 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			case err == nil:
 				c.JSON(http.StatusOK, gin.H{"allowed": true})
 			case errors.As(err, &refusal):
-				c.JSON(http.StatusOK, gin.H{"allowed": false, "reason": refusal.Reason})
+				// JupyterHub shows the reason at the start, in German as before.
+				c.JSON(http.StatusOK, gin.H{"allowed": false, "reason": refusal.Reason.String()})
 			default:
 				o.Log.Errorw("spawn check failed", "user", req.Person, "error", err)
-				abort(c, http.StatusInternalServerError, "internal", "Start konnte nicht geprüft werden.")
+				abortMachine(c, http.StatusInternalServerError, "internal", "Start konnte nicht geprüft werden.")
 			}
 		})
 	}
@@ -299,12 +302,12 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4<<20))
 			if err != nil {
-				abort(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
+				abortMachine(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
 				return
 			}
 			used, err := usage.ParseQuotaList(string(raw))
 			if err != nil {
-				abort(c, http.StatusBadRequest, "invalid", err.Error())
+				abortMachine(c, http.StatusBadRequest, "invalid", err.Error())
 				return
 			}
 			if o.Workspaces != nil {
@@ -320,7 +323,7 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			if err != nil {
 				o.Log.Errorw("home usage failed", "error", err)
-				abort(c, http.StatusInternalServerError, "internal", "Speichern fehlgeschlagen.")
+				abortMachine(c, http.StatusInternalServerError, "internal", "Speichern fehlgeschlagen.")
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"homes": len(rows)})
@@ -334,30 +337,30 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			var req WorkspaceKeyRequest
 			if err := c.ShouldBindJSON(&req); err != nil || req.User == "" || req.Project == "" {
-				abort(c, http.StatusBadRequest, "invalid", "user und project fehlen.")
+				abortMachine(c, http.StatusBadRequest, "invalid", "user und project fehlen.")
 				return
 			}
 			ctx := c.Request.Context()
 			email := strings.ToLower(strings.TrimSpace(req.User))
 			tokens := o.Access.Who(ctx, email).Tokens
 			if o.Workspaces == nil {
-				abort(c, http.StatusForbidden, "forbidden", "Projekte sind nicht eingerichtet.")
+				abortMachine(c, http.StatusForbidden, "forbidden", "Projekte sind nicht eingerichtet.")
 				return
 			}
 			proj, err := o.Workspaces.Get(ctx, req.Project)
 			if err != nil && !errors.Is(err, workspace.ErrNotFound) {
 				o.Log.Errorw("workspace key: project not read", "project", req.Project, "error", err)
-				abort(c, http.StatusInternalServerError, "internal", "Projekt nicht lesbar.")
+				abortMachine(c, http.StatusInternalServerError, "internal", "Projekt nicht lesbar.")
 				return
 			}
 			if err != nil || proj.RoleOf(tokens) == "" {
-				abort(c, http.StatusForbidden, "forbidden", "Kein Mitglied des Projekts.")
+				abortMachine(c, http.StatusForbidden, "forbidden", "Kein Mitglied des Projekts.")
 				return
 			}
 			got, fail := keySource{Keys: o.Keys, Quota: o.Quota, MasterKey: o.MasterKey}.workspaceKey(ctx, email, req.Subject, tokens, proj, req.LLMProject)
 			if fail != nil {
 				o.Log.Errorw("workspace key failed", "user", email, "project", req.Project, "error", fail.err)
-				abort(c, fail.status, fail.code, fail.msg)
+				abortMachine(c, fail.status, fail.code, fail.text.String())
 				return
 			}
 			if got.Key == "" {
@@ -398,12 +401,12 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 			if err != nil {
-				abort(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
+				abortMachine(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
 				return
 			}
 			m, ok := workspace.ParseValkeyInfo(string(raw))
 			if !ok {
-				abort(c, http.StatusBadRequest, "invalid", "Keine Ausgabe von INFO memory.")
+				abortMachine(c, http.StatusBadRequest, "invalid", "Keine Ausgabe von INFO memory.")
 				return
 			}
 			if err := o.Workspaces.SetValkeyMemory(c.Request.Context(), m); err != nil {
@@ -446,17 +449,17 @@ func workspaceCaller(o GPUHubOptions) gin.HandlerFunc {
 		ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
 		token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "token ")
 		if err != nil || !ok || strings.TrimSpace(token) == "" {
-			abort(c, http.StatusUnauthorized, "unauthenticated", "Nur aus dem eigenen Workspace mit seinem Hub-Token (JUPYTERHUB_API_TOKEN).")
+			abort(c, http.StatusUnauthorized, "unauthenticated", msg.T("Nur aus dem eigenen Workspace mit seinem Hub-Token (JUPYTERHUB_API_TOKEN).", "Only from your own workspace with its hub token (JUPYTERHUB_API_TOKEN)."))
 			return
 		}
 		owner, err := o.Kernels.ServerCaller(c.Request.Context(), ip, strings.TrimSpace(token))
 		switch {
 		case errors.Is(err, gpu.ErrNoKernelOwner):
-			abort(c, http.StatusUnauthorized, "unauthenticated", "Nur aus dem eigenen laufenden Workspace mit seinem Hub-Token; außerhalb ein API-Token (aiaas_…) nutzen.")
+			abort(c, http.StatusUnauthorized, "unauthenticated", msg.T("Nur aus dem eigenen laufenden Workspace mit seinem Hub-Token; außerhalb ein API-Token (aiaas_…) nutzen.", "Only from your own running workspace with its hub token; outside of it use an API token (aiaas_…)."))
 			return
 		case err != nil:
 			o.Log.Errorw("workspace caller", "ip", ip, "error", err)
-			abort(c, http.StatusBadGateway, "unavailable", "Der Workspace konnte nicht geprüft werden.")
+			abort(c, http.StatusBadGateway, "unavailable", msg.T("Der Workspace konnte nicht geprüft werden.", "The workspace could not be checked."))
 			return
 		}
 		email := strings.ToLower(strings.TrimSpace(owner.Person))
@@ -472,7 +475,7 @@ func workspaceCaller(o GPUHubOptions) gin.HandlerFunc {
 
 func hubToken(c *gin.Context, token string) bool {
 	if !authn.BearerIs(c.GetHeader("Authorization"), token) {
-		abort(c, http.StatusUnauthorized, "unauthenticated", "Token fehlt oder ist falsch.")
+		abortMachine(c, http.StatusUnauthorized, "unauthenticated", "Token fehlt oder ist falsch.")
 		return false
 	}
 	return true

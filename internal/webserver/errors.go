@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/apierr"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
@@ -29,7 +30,7 @@ func area(logPrefix string, fallback apiError, rules ...apierr.Rule) errArea {
 
 // keyFailureRule: a keyFailure keeps its own status, code and text in every area.
 var keyFailureRule = apierr.As(func(kf *keyFailure) *apiError {
-	return apiError{Status: kf.status, Code: kf.code, Msg: kf.msg}.WithCause(kf.err)
+	return apiError{Status: kf.status, Code: kf.code, Msg: kf.text}.WithCause(kf.err)
 })
 
 var (
@@ -40,7 +41,7 @@ var (
 	}
 	// jobRefusedRule: gpu.JobRefused is 400 invalid.
 	jobRefusedRule = apierr.As(func(r *gpu.JobRefused) *apiError { return apierr.New(http.StatusBadRequest, "invalid", r.Reason) })
-	// hubRules: gpu.ErrInvalidRepo and gpu.ErrRefNotFound are 400 invalid with their text, a gpu.HubError below 500 is 409 hub_refused with JupyterHub's message (e.g. GPU quota exhausted: it is meant for people).
+	// hubRules: gpu.ErrInvalidRepo and gpu.ErrRefNotFound are 400 invalid with their text (German and English), a gpu.HubError below 500 is 409 hub_refused with JupyterHub's message as it is, in its one language (e.g. GPU quota exhausted: it is meant for people).
 	hubRules = []apierr.Rule{
 		apierr.IsWithText(gpu.ErrInvalidRepo, http.StatusBadRequest, "invalid"),
 		apierr.IsWithText(gpu.ErrRefNotFound, http.StatusBadRequest, "invalid"),
@@ -48,25 +49,25 @@ var (
 			if he.Status >= 500 {
 				return nil
 			}
-			return apierr.New(http.StatusConflict, "hub_refused", he.Message)
+			return apierr.New(http.StatusConflict, "hub_refused", msg.Raw(he.Message))
 		}),
 	}
 
-	internalFallback = apiError{Status: http.StatusInternalServerError, Code: "internal", Msg: "Interner Fehler."}
-	clusterFallback  = apiError{Status: http.StatusBadGateway, Code: "gpu_cluster", Msg: "GPU-Cluster gerade nicht erreichbar."}
+	internalFallback = apiError{Status: http.StatusInternalServerError, Code: "internal", Msg: msg.T("Interner Fehler.", "Internal error.")}
+	clusterFallback  = apiError{Status: http.StatusBadGateway, Code: "gpu_cluster", Msg: msg.T("GPU-Cluster gerade nicht erreichbar.", "The GPU cluster is not reachable right now.")}
 )
 
 var (
 	// internalErrors: the service's own database and stores.
 	internalErrors = area("", internalFallback)
 	// gatewayErrors: LiteLLM, the LLM gateway.
-	gatewayErrors = area("", apiError{Status: http.StatusBadGateway, Code: "litellm", Msg: "Das Gateway ist gerade nicht erreichbar."})
+	gatewayErrors = area("", apiError{Status: http.StatusBadGateway, Code: "litellm", Msg: msg.T("Das Gateway ist gerade nicht erreichbar.", "The gateway is not reachable right now.")})
 	// projectErrors: the workspace projects.
-	projectErrors = area("", internalFallback, append(refusalRules, apierr.Is(workspace.ErrNotFound, http.StatusNotFound, "not_found", "Projekt nicht gefunden."))...)
+	projectErrors = area("", internalFallback, append(refusalRules, apierr.Is(workspace.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Projekt nicht gefunden.", "Project not found.")))...)
 	// gpuErrors: the servers in JupyterHub and the GPU cluster.
-	gpuErrors = area("", clusterFallback, append([]apierr.Rule{apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", "Nicht gefunden.")}, hubRules...)...)
+	gpuErrors = area("", clusterFallback, append([]apierr.Rule{apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Nicht gefunden.", "Not found."))}, hubRules...)...)
 	// jobErrors: the batch jobs.
-	jobErrors = area("batch job ", clusterFallback, append(refusalRules, jobRefusedRule, apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", "Job nicht gefunden."))...)
+	jobErrors = area("batch job ", clusterFallback, append(refusalRules, jobRefusedRule, apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Job nicht gefunden.", "Job not found.")))...)
 )
 
 // classify turns a service's error into the API's answer, by the rules of the area, and is the one place that logs the cause of a 5xx (what names the operation, in English). An apiError (e.g. of manager or workspaceAccess) stays as it is; a keyFailure keeps its own status, code and text in every area.
@@ -88,7 +89,7 @@ func (s *Server) fail(c *gin.Context, area errArea, what string, err error) bool
 	return true
 }
 
-// mcpFail is what an MCP tool reports of err: the text REST answers with, by the same rules (fail).
+// mcpFail is what an MCP tool reports of err: the text REST answers with, by the same rules (fail), in German and English; mcpserve.AddTool renders it in the language of the MCP request.
 func (s *Server) mcpFail(area errArea, what string, err error) error {
 	return s.classify(area, what, err).MCPError()
 }

@@ -177,9 +177,10 @@ func (ex *chatExchange) key(ctx context.Context, p keys.Person) (string, int, st
 			ex.o.Log.Errorw("chat: identity not checked", "user", uid, "error", err)
 			return answer{status: http.StatusBadGateway, msg: "LiteLLM nicht erreichbar"}, nil
 		}
-		g, status, msg := ex.o.Quota.GrantFor(cctx, ex.o.Access.Who(cctx, p.Email).Tokens)
+		g, status, why := ex.o.Quota.GrantFor(cctx, ex.o.Access.Who(cctx, p.Email).Tokens)
 		if status != 0 {
-			return answer{status: status, msg: msg}, nil
+			// LibreChat shows it as it is: German, like the chat's other answers.
+			return answer{status: status, msg: why.String()}, nil
 		}
 		key, err := ex.o.Keys.EnsureChatKey(cctx, p, g, ex.o.MasterKey)
 		if err != nil {

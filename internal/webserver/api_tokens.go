@@ -2,13 +2,13 @@ package webserver
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/cloud-self-service-golib/page"
 	"github.com/pfisterer/cloud-self-service-golib/token"
 	"github.com/pfisterer/llm-management-api/internal/access"
@@ -142,20 +142,20 @@ func (s *Server) createAPIToken(c *gin.Context) {
 	cl := caller(c)
 	// A token that mints tokens would let a leaked one renew itself forever, past every expiry. This holds for acting on behalf as well: withCaller already refuses X-Act-As with an API token, and the identity acted for carries the flag of the credential that signed in.
 	if cl.ViaAPIToken {
-		abort(c, http.StatusForbidden, "token_via_token", "API-Tokens lassen sich nur nach einer Anmeldung erstellen, nicht mit einem anderen API-Token.")
+		abort(c, http.StatusForbidden, "token_via_token", msg.T("API-Tokens lassen sich nur nach einer Anmeldung erstellen, nicht mit einem anderen API-Token.", "API tokens can only be created after signing in, not with another API token."))
 		return
 	}
 	// On behalf of a person only for a signed-in admin. withCaller lets nobody else act on behalf; checked again here because what is issued is a credential that IS the person and outlives the session.
 	onBehalf := cl.Actor != ""
 	if onBehalf && !cl.MayActAs {
-		abort(c, http.StatusForbidden, "token_on_behalf", "API-Tokens im Auftrag anderer Personen können nur Administratoren erstellen.")
+		abort(c, http.StatusForbidden, "token_on_behalf", msg.T("API-Tokens im Auftrag anderer Personen können nur Administratoren erstellen.", "Only administrators can create API tokens on behalf of other people."))
 		return
 	}
 	var req CreateAPITokenRequest
 	// An empty body is the defaults.
 	if c.Request.ContentLength != 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
-			abort(c, http.StatusBadRequest, "invalid_request", "Ungültige Anfrage.")
+			abort(c, http.StatusBadRequest, "invalid_request", msg.T("Ungültige Anfrage.", "Invalid request."))
 			return
 		}
 	}
@@ -177,14 +177,14 @@ func (s *Server) createAPIToken(c *gin.Context) {
 		return
 	}
 	if len(existing) >= s.tokens.MaxPerUser {
-		abort(c, http.StatusConflict, "token_limit", fmt.Sprintf("Höchstens %d API-Tokens pro Person; zuerst ein altes löschen.", s.tokens.MaxPerUser))
+		abort(c, http.StatusConflict, "token_limit", msg.F("Höchstens %d API-Tokens pro Person; zuerst ein altes löschen.", "At most %d API tokens per person; delete an old one first.", s.tokens.MaxPerUser))
 		return
 	}
 	// CreatedBy is the admin acting on behalf, empty for one's own token: the person sees in their list who created it, and the record outlives the request log.
 	issued, err := s.tokens.Service.Issue(c.Request.Context(), subject, token.IssueOptions{TTL: ttl, ReadOnly: req.ReadOnly, Description: req.Description, CreatedBy: cl.Actor})
 	// The description is the caller's text: too long is a 400, and it is never echoed into the log.
 	if errors.Is(err, token.ErrDescriptionTooLong) {
-		abort(c, http.StatusBadRequest, "invalid_description", fmt.Sprintf("Die Beschreibung darf höchstens %d Zeichen lang sein.", token.MaxDescriptionLen))
+		abort(c, http.StatusBadRequest, "invalid_description", msg.F("Die Beschreibung darf höchstens %d Zeichen lang sein.", "The description must be at most %d characters long.", token.MaxDescriptionLen))
 		return
 	}
 	if err != nil {
@@ -197,17 +197,17 @@ func (s *Server) createAPIToken(c *gin.Context) {
 	c.JSON(http.StatusCreated, out)
 }
 
-// ttlMessage says which lifetime limit a request broke, in the language of the other error texts.
-func ttlMessage(err error, p token.TTLPolicy, onBehalf bool) string {
+// ttlMessage says which lifetime limit a request broke, in German and English like the other error texts.
+func ttlMessage(err error, p token.TTLPolicy, onBehalf bool) msg.Text {
 	switch {
 	case errors.Is(err, token.ErrNeverExpiresNotAllowed) && onBehalf:
-		return "Im Auftrag erstellte API-Tokens ohne Ablaufdatum gibt es nur lesend."
+		return msg.T("Im Auftrag erstellte API-Tokens ohne Ablaufdatum gibt es nur lesend.", "API tokens created on behalf of somebody without an expiry date can only read.")
 	case errors.Is(err, token.ErrNeverExpiresNotAllowed):
-		return "API-Tokens ohne Ablaufdatum gibt es nur lesend oder für Admins."
+		return msg.T("API-Tokens ohne Ablaufdatum gibt es nur lesend oder für Admins.", "API tokens without an expiry date can only read, or are for admins.")
 	case errors.Is(err, token.ErrTTLTooLong):
-		return fmt.Sprintf("Die Laufzeit darf höchstens %d Stunden betragen.", int(p.Max/time.Hour))
+		return msg.F("Die Laufzeit darf höchstens %d Stunden betragen.", "The lifetime must be at most %d hours.", int(p.Max/time.Hour))
 	default:
-		return "Ungültige Laufzeit: ttl_hours muss positiv sein, 0 für die Voreinstellung."
+		return msg.T("Ungültige Laufzeit: ttl_hours muss positiv sein, 0 für die Voreinstellung.", "Invalid lifetime: ttl_hours must be positive, 0 for the default.")
 	}
 }
 
@@ -227,7 +227,7 @@ func ttlMessage(err error, p token.TTLPolicy, onBehalf bool) string {
 func (s *Server) deleteAPIToken(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		abort(c, http.StatusBadRequest, "invalid_request", "Ungültige Token-ID.")
+		abort(c, http.StatusBadRequest, "invalid_request", msg.T("Ungültige Token-ID.", "Invalid token ID."))
 		return
 	}
 	subject := tokenSubject(c)
@@ -235,7 +235,7 @@ func (s *Server) deleteAPIToken(c *gin.Context) {
 	switch {
 	case errors.Is(err, token.ErrNotFound):
 		// Not found and not yours give the same answer, so the response cannot be used to discover which IDs exist.
-		abort(c, http.StatusNotFound, "not_found", "Token nicht gefunden.")
+		abort(c, http.StatusNotFound, "not_found", msg.T("Token nicht gefunden.", "Token not found."))
 	case err != nil:
 		s.fail(c, internalErrors, "revoke api token", err)
 	default:

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -418,10 +419,13 @@ func (s *Service) JobsEnabled() bool {
 	return s.jobs != nil && s.k8s != nil && s.cfg.Jobs.InitImage != ""
 }
 
-// JobRefused is a job the request does not allow; Reason is shown to the person.
-type JobRefused struct{ Reason string }
+// JobRefused is a job the request does not allow; Reason is shown to the person, in German or English.
+type JobRefused struct{ Reason msg.Text }
 
-func (e *JobRefused) Error() string { return e.Reason }
+func (e *JobRefused) Error() string { return e.Reason.String() }
+
+// Text is the reason in both languages (msg.Localized).
+func (e *JobRefused) Text() msg.Text { return e.Reason }
 
 var (
 	jobNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]{0,38}[a-z0-9])?$`)
@@ -454,31 +458,31 @@ func homeRel(p string) (string, bool) {
 // SubmitJob builds the job, records it and creates it; the project's queue is made first, so a project does not wait for the next reconcile of the fleet.
 func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 	if !s.JobsEnabled() {
-		return Job{}, &JobRefused{"Batch-Jobs sind in diesem Cluster nicht eingerichtet."}
+		return Job{}, &JobRefused{msg.T("Batch-Jobs sind in diesem Cluster nicht eingerichtet.", "Batch jobs are not set up in this cluster.")}
 	}
 	if sp.Name != "" && !jobNamePattern.MatchString(sp.Name) {
-		return Job{}, &JobRefused{"Name: bis 40 Zeichen, Kleinbuchstaben, Ziffern, Punkt, Bindestrich und Unterstrich, am Anfang und Ende Buchstabe oder Ziffer."}
+		return Job{}, &JobRefused{msg.T("Name: bis 40 Zeichen, Kleinbuchstaben, Ziffern, Punkt, Bindestrich und Unterstrich, am Anfang und Ende Buchstabe oder Ziffer.", "Name: up to 40 characters, lowercase letters, digits, dot, hyphen and underscore, a letter or digit at the start and the end.")}
 	}
 	if (strings.TrimSpace(sp.Command) == "") == (strings.TrimSpace(sp.Notebook) == "") {
-		return Job{}, &JobRefused{"Entweder einen Befehl oder ein Notebook angeben."}
+		return Job{}, &JobRefused{msg.T("Entweder einen Befehl oder ein Notebook angeben.", "Give either a command or a notebook.")}
 	}
 	if len(sp.Command) > 8192 {
-		return Job{}, &JobRefused{"Der Befehl ist länger als 8192 Zeichen; längeres in ein Skript im Home schreiben."}
+		return Job{}, &JobRefused{msg.T("Der Befehl ist länger als 8192 Zeichen; längeres in ein Skript im Home schreiben.", "The command is longer than 8192 characters; write anything longer into a script in the home.")}
 	}
 	wd, ok := homeRel(sp.WorkingDir)
 	if !ok {
-		return Job{}, &JobRefused{"Arbeitsverzeichnis außerhalb des Homes."}
+		return Job{}, &JobRefused{msg.T("Arbeitsverzeichnis außerhalb des Homes.", "Working directory outside the home.")}
 	}
 	sp.WorkingDir = wd
 	if sp.Notebook != "" {
 		nb, ok := homeRel(sp.Notebook)
 		if !ok || nb == "" || !strings.HasSuffix(nb, ".ipynb") {
-			return Job{}, &JobRefused{"Notebook: ein Pfad im Home, der auf .ipynb endet."}
+			return Job{}, &JobRefused{msg.T("Notebook: ein Pfad im Home, der auf .ipynb endet.", "Notebook: a path in the home that ends in .ipynb.")}
 		}
 		sp.Notebook = nb
 	}
 	if sp.GPUs != 1 {
-		return Job{}, &JobRefused{"Ein Job hat genau eine GPU."}
+		return Job{}, &JobRefused{msg.T("Ein Job hat genau eine GPU.", "A job has exactly one GPU.")}
 	}
 	if err := s.ensureProjectVolume(ctx, sp.Project, sp.StorageGB); err != nil {
 		return Job{}, fmt.Errorf("project volume: %w", err)
@@ -543,7 +547,7 @@ func (s *Service) SubmitJob(ctx context.Context, sp JobSpec) (Job, error) {
 // ensureProjectVolume makes the project's volume ws-<slug> or grows it to gb, as the hub does before a start (10-dhbw-storage): a job may come before any workspace of the project, and a volume never shrinks.
 func (s *Service) ensureProjectVolume(ctx context.Context, project string, gb int) error {
 	if gb <= 0 {
-		return &JobRefused{"Das Projekt hat keinen Workspace-Speicher; Jobs brauchen ihn für Daten und Ausgabe."}
+		return &JobRefused{msg.T("Das Projekt hat keinen Workspace-Speicher; Jobs brauchen ihn für Daten und Ausgabe.", "The project has no workspace storage; jobs need it for data and output.")}
 	}
 	path := "/api/v1/namespaces/" + s.workspaceNamespace() + "/persistentvolumeclaims"
 	size := fmt.Sprintf("%dGi", gb)

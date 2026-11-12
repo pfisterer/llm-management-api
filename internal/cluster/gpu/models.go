@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -238,27 +239,27 @@ var (
 // SaveModel adds or changes a catalogue model; the gap fillers that run it follow at the next reconcile.
 func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 	if s.models == nil {
-		return &ErrFleet{"Modellkatalog ist aus."}
+		return &ErrFleet{msg.T("Modellkatalog ist aus.", "The model catalogue is off.")}
 	}
 	m.Model = strings.TrimSpace(m.Model)
 	m.Engine = m.engine()
 	switch {
 	case !modelKeyPattern.MatchString(m.Key):
-		return &ErrFleet{"Kürzel: Kleinbuchstaben, Ziffern, Punkt und Bindestrich, höchstens 40 Zeichen."}
+		return &ErrFleet{msg.T("Kürzel: Kleinbuchstaben, Ziffern, Punkt und Bindestrich, höchstens 40 Zeichen.", "Short name: lowercase letters, digits, dot and hyphen, at most 40 characters.")}
 	case m.Engine != EngineVLLM && m.Engine != EngineStrata:
-		return &ErrFleet{"Engine: vllm oder strata."}
+		return &ErrFleet{msg.T("Engine: vllm oder strata.", "Engine: vllm or strata.")}
 	case m.Engine == EngineVLLM && !modelRepoPattern.MatchString(m.Model):
-		return &ErrFleet{"Modell: ein Hugging-Face-Repository wie Qwen/Qwen3-8B-AWQ."}
+		return &ErrFleet{msg.T("Modell: ein Hugging-Face-Repository wie Qwen/Qwen3-8B-AWQ.", "Model: a Hugging Face repository like Qwen/Qwen3-8B-AWQ.")}
 	case m.Engine == EngineStrata && !strataNamePattern.MatchString(m.Model):
-		return &ErrFleet{"Modell: der Name, den Strata in /v1/models meldet, z. B. qwen3.8-flash-next-iq3_s."}
+		return &ErrFleet{msg.T("Modell: der Name, den Strata in /v1/models meldet, z. B. qwen3.8-flash-next-iq3_s.", "Model: the name Strata reports in /v1/models, e.g. qwen3.8-flash-next-iq3_s.")}
 	case m.MinGB < 0:
-		return &ErrFleet{"GPU-Speicher darf nicht negativ sein."}
+		return &ErrFleet{msg.T("GPU-Speicher darf nicht negativ sein.", "GPU memory must not be negative.")}
 	case m.Category != "" && m.Category != "chat" && m.Category != "code" && m.Category != "fast" && m.Category != "general":
-		return &ErrFleet{"Kategorie: chat, code, fast oder general."}
+		return &ErrFleet{msg.T("Kategorie: chat, code, fast oder general.", "Category: chat, code, fast or general.")}
 	}
 	for _, q := range []string{m.CPU, m.MemoryReq, m.MemoryLimit} {
 		if q != "" && !quantityPattern.MatchString(q) {
-			return &ErrFleet{fmt.Sprintf("Menge %q ungültig (z. B. 2, 500m, 8Gi).", q)}
+			return &ErrFleet{msg.F("Menge %q ungültig (z. B. 2, 500m, 8Gi).", "Invalid quantity %q (e.g. 2, 500m, 8Gi).", q)}
 		}
 	}
 	if m.Engine == EngineStrata {
@@ -277,10 +278,10 @@ func (s *Service) SaveModel(ctx context.Context, m CatalogModel) error {
 			continue
 		}
 		if a == "--model" || a == "--port" || a == "--served-model-name" || strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--port=") {
-			return &ErrFleet{"--model, --served-model-name und --port setzt der Dienst selbst."}
+			return &ErrFleet{msg.T("--model, --served-model-name und --port setzt der Dienst selbst.", "--model, --served-model-name and --port are set by the service itself.")}
 		}
 		if requestLoggingArg(a) {
-			return &ErrFleet{fmt.Sprintf("%s würde Prompts oder Antworten ins Protokoll von vLLM schreiben; die Protokollierung von Anfragen bleibt aus.", a)}
+			return &ErrFleet{msg.F("%s würde Prompts oder Antworten ins Protokoll von vLLM schreiben; die Protokollierung von Anfragen bleibt aus.", "%s would write prompts or answers into vLLM's log; the logging of requests stays off.", a)}
 		}
 		args = append(args, a)
 	}
@@ -310,36 +311,36 @@ func strataSettings(args []string) (map[string]string, error) {
 		opt, val, ok := strings.Cut(fields[i], "=")
 		if !ok {
 			if i+1 >= len(fields) {
-				return nil, &ErrFleet{fmt.Sprintf("%s braucht einen Wert.", opt)}
+				return nil, &ErrFleet{msg.F("%s braucht einen Wert.", "%s needs a value.", opt)}
 			}
 			i++
 			val = fields[i]
 		}
 		env, known := strataOptions[opt]
 		if !known {
-			return nil, &ErrFleet{fmt.Sprintf("%s kennt der Strata-Dienst nicht; erlaubt sind --family, --quant, --context, --parallel und --ple-io.", opt)}
+			return nil, &ErrFleet{msg.F("%s kennt der Strata-Dienst nicht; erlaubt sind --family, --quant, --context, --parallel und --ple-io.", "The Strata service does not know %s; allowed are --family, --quant, --context, --parallel and --ple-io.", opt)}
 		}
 		if !strataValuePattern.MatchString(val) {
-			return nil, &ErrFleet{fmt.Sprintf("%s: Wert %q ungültig.", opt, val)}
+			return nil, &ErrFleet{msg.F("%s: Wert %q ungültig.", "%s: invalid value %q.", opt, val)}
 		}
 		switch opt {
 		case "--context":
 			if n, err := strconv.Atoi(val); err != nil || n < 4096 || n > 1048576 {
-				return nil, &ErrFleet{"--context: Tokens zwischen 4096 und 1048576."}
+				return nil, &ErrFleet{msg.T("--context: Tokens zwischen 4096 und 1048576.", "--context: tokens between 4096 and 1048576.")}
 			}
 		case "--parallel":
 			if n, err := strconv.Atoi(val); err != nil || n < 1 || n > 8 {
-				return nil, &ErrFleet{"--parallel: 1 bis 8 gleichzeitige Anfragen."}
+				return nil, &ErrFleet{msg.T("--parallel: 1 bis 8 gleichzeitige Anfragen.", "--parallel: 1 to 8 requests at the same time.")}
 			}
 		case "--ple-io":
 			if val != "ssd" && val != "ram" {
-				return nil, &ErrFleet{"--ple-io: ssd oder ram."}
+				return nil, &ErrFleet{msg.T("--ple-io: ssd oder ram.", "--ple-io: ssd or ram.")}
 			}
 		}
 		out[env] = val
 	}
 	if out["STRATA_FAMILY"] == "" || out["STRATA_QUANT"] == "" {
-		return nil, &ErrFleet{"Strata braucht --family und --quant, z. B. --family qwen --quant IQ3_S."}
+		return nil, &ErrFleet{msg.T("Strata braucht --family und --quant, z. B. --family qwen --quant IQ3_S.", "Strata needs --family and --quant, e.g. --family qwen --quant IQ3_S.")}
 	}
 	return out, nil
 }
@@ -363,7 +364,7 @@ func requestLoggingArg(a string) bool {
 // DeleteModel removes a model nothing uses (no tier default, no node).
 func (s *Service) DeleteModel(ctx context.Context, key string) error {
 	if s.models == nil {
-		return &ErrFleet{"Modellkatalog ist aus."}
+		return &ErrFleet{msg.T("Modellkatalog ist aus.", "The model catalogue is off.")}
 	}
 	_, tiers, err := s.catalogue(ctx)
 	if err != nil {
@@ -371,7 +372,7 @@ func (s *Service) DeleteModel(ctx context.Context, key string) error {
 	}
 	for t, k := range tiers {
 		if k == key {
-			return &ErrFleet{fmt.Sprintf("Das Modell ist Standard der Stufe %q.", t)}
+			return &ErrFleet{msg.F("Das Modell ist Standard der Stufe %q.", "The model is the default of tier %q.", t)}
 		}
 	}
 	if s.fleet != nil {
@@ -381,7 +382,7 @@ func (s *Service) DeleteModel(ctx context.Context, key string) error {
 		}
 		for _, a := range assigned {
 			if a.GapModel == key {
-				return &ErrFleet{fmt.Sprintf("Knoten %s nutzt das Modell.", a.Node)}
+				return &ErrFleet{msg.F("Knoten %s nutzt das Modell.", "Node %s uses the model.", a.Node)}
 			}
 		}
 	}
@@ -391,10 +392,10 @@ func (s *Service) DeleteModel(ctx context.Context, key string) error {
 // SetTierModel sets the default model of a tier ("" = none).
 func (s *Service) SetTierModel(ctx context.Context, tier, key string) error {
 	if s.models == nil {
-		return &ErrFleet{"Modellkatalog ist aus."}
+		return &ErrFleet{msg.T("Modellkatalog ist aus.", "The model catalogue is off.")}
 	}
 	if _, ok := tierByID(tier); !ok {
-		return &ErrFleet{fmt.Sprintf("Stufe %q gibt es nicht.", tier)}
+		return &ErrFleet{msg.F("Stufe %q gibt es nicht.", "There is no tier %q.", tier)}
 	}
 	if key != "" {
 		models, _, err := s.catalogue(ctx)
@@ -402,7 +403,7 @@ func (s *Service) SetTierModel(ctx context.Context, tier, key string) error {
 			return err
 		}
 		if _, ok := models[key]; !ok {
-			return &ErrFleet{fmt.Sprintf("Modell %q gibt es nicht.", key)}
+			return &ErrFleet{msg.F("Modell %q gibt es nicht.", "There is no model %q.", key)}
 		}
 	}
 	return s.models.SaveTierModel(ctx, TierModel{Tier: tier, Model: key})

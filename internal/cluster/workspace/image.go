@@ -104,12 +104,12 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	p.ProjectImage, p.ImageGitURL, p.ImageGitRef = strings.TrimSpace(p.ProjectImage), strings.TrimSpace(p.ImageGitURL), strings.TrimSpace(p.ImageGitRef)
 	if p.ImageGitURL != "" {
 		if s.builds == nil {
-			return refuse("Projekt-Images aus Git sind hier nicht eingerichtet.")
+			return refuse("Projekt-Images aus Git sind hier nicht eingerichtet.", "Project images from Git are not set up here.")
 		}
 		base, _ := s.base(p.ImageBase)
 		b, err := s.builds.BuildProjectImage(ctx, p.Slug, base.Image, p.ImageGitURL, p.ImageGitRef, false)
 		if err != nil {
-			return refuse("Projekt-Image: %v", err)
+			return refuse("Projekt-Image: %v", "Project image: %v", err)
 		}
 		p.ProjectImage, p.ImageDerived, p.ImageDigest, p.ImageUpdate = cur.ProjectImage, true, "", ""
 		if cur.ImageGitURL == "" || cur.ImageBase != p.ImageBase {
@@ -139,7 +139,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 		return nil
 	}
 	if !imageRE.MatchString(p.ProjectImage) {
-		return invalid("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", p.ProjectImage)
+		return invalid("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", "Project image %q is no image name like ghcr.io/org/course:2026.", p.ProjectImage)
 	}
 	p.ImageDigest, p.ImageUpdate = "", ""
 	s.clearImageFacts(p)
@@ -148,7 +148,7 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	}
 	img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
 	if err != nil {
-		return refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
+		return refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", "Image %s cannot be pulled (publicly, or with a credential of the project for %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
 	}
 	maxBytes, _ := s.imageLimits()
 	if err := imageRefusal(p.ProjectImage, img, maxBytes, asAdmin); err != nil {
@@ -170,11 +170,11 @@ func (s *Service) applyMaterial(ctx context.Context, p *Project, cur Project) er
 		return nil
 	}
 	if s.builds == nil {
-		return refuse("Material aus Git ist hier nicht eingerichtet.")
+		return refuse("Material aus Git ist hier nicht eingerichtet.", "Material from Git is not set up here.")
 	}
 	canonical, err := s.builds.CheckGitBranch(ctx, p.MaterialGitURL, p.MaterialGitRef, s.credentialFor(ctx, p.Slug, hostOfGit(p.MaterialGitURL)))
 	if err != nil {
-		return refuse("Material: %v", err)
+		return refuse("Material: %v", "Material: %v", err)
 	}
 	p.MaterialGitURL = canonical
 	return nil
@@ -288,11 +288,11 @@ func (s *Service) UpdateProjectImage(ctx context.Context, slug, by string) (Proj
 		return Project{}, err
 	}
 	if !finishedImage(p) || s.inspect == nil {
-		return Project{}, refuse("Das Projekt nutzt kein fertiges Image.")
+		return Project{}, refuse("Das Projekt nutzt kein fertiges Image.", "The project does not use a ready-made image.")
 	}
 	img, err := s.inspect(ctx, p.ProjectImage, s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)))
 	if err != nil {
-		return Project{}, refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
+		return Project{}, refuse("Image %s ist nicht abrufbar (öffentlich, oder mit einem Zugang des Projekts für %s): %v", "Image %s cannot be pulled (publicly, or with a credential of the project for %s): %v", p.ProjectImage, imageHost(p.ProjectImage), err)
 	}
 	if img.Digest != p.ImageDigest {
 		p.ImageScan = nil
@@ -315,12 +315,12 @@ func (s *Service) RebuildProjectImage(ctx context.Context, slug string) (ImageBu
 		return ImageBuild{}, err
 	}
 	if p.ImageGitURL == "" || s.builds == nil {
-		return ImageBuild{}, refuse("Das Projekt-Image kommt nicht aus Git.")
+		return ImageBuild{}, refuse("Das Projekt-Image kommt nicht aus Git.", "The project image does not come from Git.")
 	}
 	base, _ := s.base(p.ImageBase)
 	b, err := s.builds.BuildProjectImage(ctx, slug, base.Image, p.ImageGitURL, p.ImageGitRef, true)
 	if err != nil {
-		return ImageBuild{}, refuse("Projekt-Image: %v", err)
+		return ImageBuild{}, refuse("Projekt-Image: %v", "Project image: %v", err)
 	}
 	if b.Status == "ready" && b.Image != p.ProjectImage {
 		return b, s.ProjectImageBuilt(ctx, slug, p.ImageGitURL, b.Image)

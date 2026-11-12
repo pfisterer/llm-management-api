@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 )
 
@@ -45,7 +46,7 @@ func (s *Server) getModelCatalog(c *gin.Context) {
 func (s *Server) putCatalogModel(c *gin.Context) {
 	var m gpu.CatalogModel
 	if err := c.ShouldBindJSON(&m); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültige Anfrage.", "Invalid request."))
 		return
 	}
 	m.Key, m.UpdatedBy = c.Param("key"), caller(c).Email
@@ -98,7 +99,7 @@ type TierModelRequest struct {
 func (s *Server) putTierModel(c *gin.Context) {
 	var req TierModelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abort(c, http.StatusBadRequest, "invalid", "Ungültige Anfrage.")
+		abort(c, http.StatusBadRequest, "invalid", msg.T("Ungültige Anfrage.", "Invalid request."))
 		return
 	}
 	if !s.fleetDone(c, s.gpu.SetTierModel(c.Request.Context(), c.Param("tier"), req.Model)) {
