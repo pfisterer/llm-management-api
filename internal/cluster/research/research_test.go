@@ -241,3 +241,58 @@ func TestNilRecorder(t *testing.T) {
 	r.ServerEnding("a", "s", EndBudget)
 	r.QueueShown("u", 1, nil)
 }
+
+// The end hook is told once of every workload that ends, with what only the memory knows (pod name, kernel ID, the person even after its server is gone); not of pods already finished at the first sample.
+func TestOnEnd(t *testing.T) {
+	f := newFixture(t, "0123456789abcdef")
+	var got []Ended
+	f.rec.SetOnEnd(func(e Ended) { got = append(got, e) })
+	server := Pod{UID: "s1", Kind: KindCPUServer, Person: "a@dhbw.de", Created: t0, Phase: "Running"}
+	kernel := Pod{UID: "k1", Name: "kernel-0123abcd-aabbcc", KernelID: "0123abcd-0000", Kind: KindGPUKernel, Person: "a@dhbw.de", OwnerUID: "s1", Project: "kurs", GPUClass: "l4", Node: "gpu-1", Created: t0, RunningAt: at(time.Minute), Phase: "Running"}
+	old := Pod{UID: "old", Kind: KindGPUKernel, Created: t0, Phase: "Failed", StatusReason: "DeadlineExceeded", FinishedAt: at(-time.Hour)}
+	f.snap = Snapshot{Pods: []Pod{server, kernel, old}}
+	f.tick(t, 2*time.Minute)
+	if len(got) != 0 {
+		t.Fatalf("finished before the first sample: not told: %+v", got)
+	}
+	// The server goes first; the kernel, still listed while terminating, no longer gets a person from it.
+	deleting := kernel
+	deleting.Person, deleting.DeletingAt = "", at(3*time.Minute)
+	f.snap = Snapshot{Pods: []Pod{deleting, old}}
+	f.tick(t, 4*time.Minute)
+	f.snap = Snapshot{Pods: []Pod{old}}
+	f.tick(t, 5*time.Minute)
+	if len(got) != 2 {
+		t.Fatalf("server and kernel told once each: %+v", got)
+	}
+	var k Ended
+	for _, e := range got {
+		if e.UID == "k1" {
+			k = e
+		}
+	}
+	if k.Name != "kernel-0123abcd-aabbcc" || k.KernelID != "0123abcd-0000" || k.Person != "a@dhbw.de" || k.EndReason != EndServerStopped || !k.EndedAt.Equal(*at(3 * time.Minute)) || k.Node != "gpu-1" || k.GPUClass != "l4" {
+		t.Fatalf("kernel's end: %+v", k)
+	}
+}
+
+// Without a store the recorder only follows the workloads for the end hook.
+func TestNoStore(t *testing.T) {
+	now := t0
+	snap := Snapshot{Pods: []Pod{{UID: "k1", Kind: KindGPUKernel, Created: t0, Phase: "Running"}}}
+	rec := NewRecorder(nil, func(context.Context) (Snapshot, error) { return snap, nil }, nil, 0, time.Minute, zap.NewNop().Sugar())
+	rec.now = func() time.Time { return now }
+	var got []Ended
+	rec.SetOnEnd(func(e Ended) { got = append(got, e) })
+	if err := rec.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec.Ending("k1", EndIdleRelease)
+	snap, now = Snapshot{}, t0.Add(time.Minute)
+	if err := rec.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].EndReason != EndIdleRelease || len(rec.unsaved) != 0 {
+		t.Fatalf("ended without a store: %+v, unsaved %d", got, len(rec.unsaved))
+	}
+}

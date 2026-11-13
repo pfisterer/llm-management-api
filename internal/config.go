@@ -102,7 +102,7 @@ type Config struct {
 	APITokenAllowNeverExpires bool
 	MaxAPITokensPerUser       int
 
-	// Research log of the GPU cluster's workloads (internal/research): the key of the people's pseudonyms (RESEARCH_PSEUDONYM_KEY, HMAC-SHA256; empty = no person recorded at all) and how long rows are kept (RESEARCH_RETENTION_DAYS, default 730; 0 = no log).
+	// Research log of the GPU cluster's workloads (internal/research): the key of the people's pseudonyms (RESEARCH_PSEUDONYM_KEY, HMAC-SHA256; empty = no person recorded at all) and how long rows are kept (RESEARCH_RETENTION_DAYS, default 730; 0 = no rows, the sampler still runs for the "gpu kernel ended" log).
 	ResearchPseudonymKey  string
 	ResearchRetentionDays int
 }

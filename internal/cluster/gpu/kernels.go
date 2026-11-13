@@ -280,7 +280,7 @@ func (s *Service) StartKernel(ctx context.Context, o *KernelOwner, r KernelReque
 	if err := s.k8s.do(ctx, http.MethodPost, "/api/v1/namespaces/"+s.workspaceNamespace()+"/pods", pod, nil); err != nil {
 		return "", err
 	}
-	s.log.Infow("gpu kernel started", "pod", name, "owner", o.Pod, "person", o.Person, "project", o.Project)
+	s.log.Infow("gpu kernel started", "pod", name, "kernel_id", r.KernelID, "owner", o.Pod, "person", o.Person, "project", o.Project, "gpu_class", o.GPUClass)
 	return name, nil
 }
 

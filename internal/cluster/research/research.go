@@ -147,9 +147,11 @@ func Merge(dst *Workload, src Workload) {
 	}
 }
 
-// Pod is one pod as the cluster lists it at a sample. Person, Server and OwnerUID stay in memory: they connect the pod with what the service itself ends; only the pseudonym of Person is stored.
+// Pod is one pod as the cluster lists it at a sample. Person, Server, OwnerUID, Name and KernelID stay in memory: they connect the pod with what the service itself ends and name it in the end hook (SetOnEnd); only the pseudonym of Person is stored.
 type Pod struct {
 	UID, WorkloadUID, Kind string
+	Name                   string // the pod's name
+	KernelID               string // a GPU kernel's kernel ID (label kernel_id)
 	Person                 string // JupyterHub user name (e-mail)
 	Server                 string // JupyterHub server name of a workspace server
 	OwnerUID               string // a GPU kernel's server pod
@@ -221,6 +223,7 @@ type tracked struct {
 	row            Workload
 	person, server string
 	owner          string
+	name, kernelID string
 	restored       bool // loaded from the store after a restart: nothing in memory about it
 }
 
@@ -235,6 +238,14 @@ type shown struct {
 	at       time.Time
 }
 
+// Ended is a workload that has just ended, for the end hook (SetOnEnd): its row and what only the memory knows (empty for a row restored after a restart).
+type Ended struct {
+	Workload
+	Name     string // the pod's name
+	KernelID string // a GPU kernel's kernel ID
+	Person   string // JupyterHub user name (e-mail), not the pseudonym
+}
+
 // hintTTL is how long a reason the service gave for an end it caused waits for the pod to end.
 const hintTTL = 15 * time.Minute
 
@@ -247,9 +258,11 @@ type Recorder struct {
 	interval  time.Duration
 	now       func() time.Time
 	log       *zap.SugaredLogger
+	onEnd     func(Ended)
 
 	mu      sync.Mutex
 	loaded  bool
+	sampled bool // a sample was applied: from then on every end is new, before it a pod already finished at the first sample may have ended long ago
 	open    map[string]*tracked
 	done    map[string]time.Time // ended pods still listed (finished pods stay until deleted), and when they ended
 	unsaved map[string]Workload
@@ -259,10 +272,17 @@ type Recorder struct {
 	pruned  time.Time
 }
 
-// NewRecorder samples source every interval into store; key pseudonymises the people (empty = no person stored), retention is how long rows are kept.
+// NewRecorder samples source every interval into store; key pseudonymises the people (empty = no person stored), retention is how long rows are kept. A nil store keeps nothing: the recorder then only follows the workloads for the end hook (SetOnEnd).
 func NewRecorder(store Store, source Source, key []byte, retention, interval time.Duration, log *zap.SugaredLogger) *Recorder {
 	return &Recorder{store: store, source: source, key: key, retention: retention, interval: interval, now: time.Now, log: log,
 		open: map[string]*tracked{}, done: map[string]time.Time{}, unsaved: map[string]Workload{}, hints: map[string]hint{}, servers: map[string]hint{}, shown: map[string]shown{}}
+}
+
+// SetOnEnd sets what is told once of every workload that ends, after the sample that saw it end (e.g. the "gpu kernel ended" log line and its counter); not for pods that had already finished at the first sample after a start, whose end may be long past. Set it before Start.
+func (r *Recorder) SetOnEnd(f func(Ended)) {
+	if r != nil {
+		r.onEnd = f
+	}
 }
 
 // Ending notes why the service is about to end a pod (before it deletes it).
@@ -304,7 +324,7 @@ func serverKey(person, server string) string { return strings.ToLower(person) + 
 
 // Tick takes one sample and saves what changed; rows not saved (database away) are tried again at the next tick.
 func (r *Recorder) Tick(ctx context.Context) error {
-	if !r.loaded {
+	if !r.loaded && r.store != nil {
 		rows, err := r.store.Open(ctx)
 		if err != nil {
 			return err
@@ -322,12 +342,25 @@ func (r *Recorder) Tick(ctx context.Context) error {
 	}
 	now := r.now()
 	r.mu.Lock()
-	r.apply(snap, now)
+	r.loaded = true
+	ended := r.apply(snap, now)
 	rows := make([]Workload, 0, len(r.unsaved))
 	for _, w := range r.unsaved {
 		rows = append(rows, w)
 	}
+	if r.store == nil {
+		clear(r.unsaved)
+	}
 	r.mu.Unlock()
+	// Told before saving: a row that is not saved now is saved at a later tick, but it has ended in memory already and is not told again.
+	if r.onEnd != nil {
+		for _, e := range ended {
+			r.onEnd(e)
+		}
+	}
+	if r.store == nil {
+		return nil
+	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UID < rows[j].UID })
 	if err := r.store.Save(ctx, rows); err != nil {
 		return err
@@ -354,8 +387,11 @@ func (r *Recorder) Start(ctx context.Context) {
 	})
 }
 
-// apply brings the rows to the snapshot; r.mu is held.
-func (r *Recorder) apply(s Snapshot, now time.Time) {
+// apply brings the rows to the snapshot and returns the workloads that ended in it, for the end hook; r.mu is held.
+func (r *Recorder) apply(s Snapshot, now time.Time) []Ended {
+	var ended []Ended
+	first := !r.sampled
+	r.sampled = true
 	podOf := map[string]string{} // Workload UID → pod UID
 	for uid, t := range r.open {
 		if t.row.WorkloadUID != "" {
@@ -390,7 +426,9 @@ func (r *Recorder) apply(s Snapshot, now time.Time) {
 			t = &tracked{row: Workload{UID: p.UID}}
 			r.open[p.UID] = t
 		}
-		t.person, t.server, t.owner, t.restored = p.Person, p.Server, p.OwnerUID, false
+		// A kernel's person comes from its server pod; once that is gone, the one seen before stays.
+		t.person, t.server, t.owner, t.restored = firstOf(p.Person, t.person), p.Server, p.OwnerUID, false
+		t.name, t.kernelID = firstOf(p.Name, t.name), firstOf(p.KernelID, t.kernelID)
 		Merge(&t.row, Workload{WorkloadUID: p.WorkloadUID, Kind: p.Kind, GPUClass: p.GPUClass, Flavor: p.Flavor, GPUProduct: p.GPUProduct, GPUs: p.GPUs, Node: p.Node,
 			PriorityClass: p.PriorityClass, Priority: p.Priority, Project: p.Project, Person: Pseudonym(r.key, p.Person), Profile: p.Profile, Model: p.Model,
 			Created: p.Created, AdmittedAt: p.AdmittedAt, ScheduledAt: p.ScheduledAt, RunningAt: p.RunningAt, ReadyAt: p.ReadyAt, LastSeenAt: now})
@@ -405,6 +443,9 @@ func (r *Recorder) apply(s Snapshot, now time.Time) {
 		if t.row.EndedAt != nil {
 			delete(r.open, p.UID)
 			r.done[p.UID] = *t.row.EndedAt
+			if ok || !first {
+				ended = append(ended, t.ended())
+			}
 		}
 	}
 	// Servers before kernels: a kernel that vanished with its server ended when the server did.
@@ -427,6 +468,7 @@ func (r *Recorder) apply(s Snapshot, now time.Time) {
 		r.unsaved[uid] = t.row
 		delete(r.open, uid)
 		r.done[uid] = *t.row.EndedAt
+		ended = append(ended, t.ended())
 	}
 	for uid, at := range r.done {
 		if present[uid] == nil && now.Sub(at) > time.Hour {
@@ -448,6 +490,11 @@ func (r *Recorder) apply(s Snapshot, now time.Time) {
 			delete(r.shown, k)
 		}
 	}
+	return ended
+}
+
+func (t *tracked) ended() Ended {
+	return Ended{Workload: t.row, Name: t.name, KernelID: t.kernelID, Person: t.person}
 }
 
 // endOfListed is the end of a pod still listed: finished, or being deleted.

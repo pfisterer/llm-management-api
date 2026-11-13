@@ -44,6 +44,7 @@ func TestWorkspaceMetrics(t *testing.T) {
 		`aiaas_env_builds{status="ready"} 1` + "\n",
 		`aiaas_prepull_images{arch="amd64"} 3` + "\n",
 		"# TYPE aiaas_workspace_start_duration_seconds histogram\n",
+		`aiaas_gpu_kernels_ended_total{reason="idle_release"} 0` + "\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)

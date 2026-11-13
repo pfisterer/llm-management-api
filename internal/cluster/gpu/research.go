@@ -11,8 +11,11 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
-// SetResearch sets the research log (internal/research): it is told why the service itself ends a workspace pod and what JupyterLab shows a waiting GPU kernel. nil = none.
-func (s *Service) SetResearch(r *research.Recorder) { s.research = r }
+// SetResearch sets the research log (internal/research): it is told why the service itself ends a workspace pod and what JupyterLab shows a waiting GPU kernel, and it tells of every GPU kernel that ends (KernelEnded). nil = none.
+func (s *Service) SetResearch(r *research.Recorder) {
+	s.research = r
+	r.SetOnEnd(s.KernelEnded)
+}
 
 // kueueWorkload is the part of a Kueue Workload the research log reads.
 type kueueWorkload struct {
@@ -163,7 +166,7 @@ func (s *Service) ResearchSnapshot(ctx context.Context) (research.Snapshot, erro
 // researchPod turns a pod (and its Kueue Workload, if any) into what the research log keeps.
 func researchPod(p podInfo, w *kueueWorkload, personOf, productOf map[string]string) research.Pod {
 	labels := p.Metadata.Labels
-	out := research.Pod{UID: p.Metadata.UID, Project: labels["dhbw.cloud/project"], Profile: labels["dhbw.cloud/profile"], Created: p.Metadata.CreationTimestamp,
+	out := research.Pod{UID: p.Metadata.UID, Name: p.Metadata.Name, KernelID: labels["kernel_id"], Project: labels["dhbw.cloud/project"], Profile: labels["dhbw.cloud/profile"], Created: p.Metadata.CreationTimestamp,
 		Node: p.Spec.NodeName, Phase: p.Status.Phase, StatusReason: p.Status.Reason, PriorityClass: labels["kueue.x-k8s.io/priority-class"]}
 	if p.Spec.PriorityClassName != "" || p.Spec.Priority != 0 {
 		prio := p.Spec.Priority

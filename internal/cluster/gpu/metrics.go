@@ -109,6 +109,9 @@ func (m *WorkspaceMetrics) Render(ctx context.Context) ([]byte, error) {
 		}
 	}
 	m.svc.writeCleanupMetrics(&w)
+	if m.svc.kernelEnds != nil {
+		m.svc.kernelEnds.WriteTo(&w)
+	}
 	return w.Bytes(), nil
 }
 

@@ -522,15 +522,17 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		if gs, ok := st.usage.(usage.GPUStore); ok {
 			usage.NewGPUCollector(gs, gpuSource(gpuSvc), bookTo, time.Minute, log).Start(ctx)
 		}
-		// Research log (internal/research): every minute the GPU cluster's workloads from request to end, pseudonymous; RESEARCH_RETENTION_DAYS=0 switches it off.
+		// Research log (internal/research): every minute the GPU cluster's workloads from request to end, pseudonymous; RESEARCH_RETENTION_DAYS=0 switches the rows off. The sampler runs either way: it tells of the GPU kernels that end ("gpu kernel ended", aiaas_gpu_kernels_ended_total).
+		var researchStore research.Store
 		if cfg.ResearchRetentionDays > 0 {
-			rec := research.NewRecorder(st.research, gpuSvc.ResearchSnapshot, []byte(cfg.ResearchPseudonymKey), time.Duration(cfg.ResearchRetentionDays)*24*time.Hour, time.Minute, log)
-			gpuSvc.SetResearch(rec)
-			rec.Start(ctx)
+			researchStore = st.research
 			if cfg.ResearchPseudonymKey == "" {
 				log.Infow("research log: no RESEARCH_PSEUDONYM_KEY, the rows name no person")
 			}
 		}
+		rec := research.NewRecorder(researchStore, gpuSvc.ResearchSnapshot, []byte(cfg.ResearchPseudonymKey), time.Duration(cfg.ResearchRetentionDays)*24*time.Hour, time.Minute, log)
+		gpuSvc.SetResearch(rec)
+		rec.Start(ctx)
 		// GPU administration: every minute the node labels and the Kueue queues of the classes follow the assignments and the nodes (a node that joins or leaves changes the quota).
 		if gpuSvc.FleetEnabled() {
 			background.Every(ctx, log, "gpu_fleet", time.Minute, true, func(ctx context.Context) {

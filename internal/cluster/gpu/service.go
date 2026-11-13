@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/msg"
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/cluster/research"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
@@ -99,6 +100,8 @@ type Service struct {
 	cleanupLast atomic.Pointer[CleanupResult]
 	// research is the research log (research.go): told why the service ends a workspace pod and what a waiting GPU kernel was shown; nil = none.
 	research *research.Recorder
+	// kernelEnds counts the GPU kernels that ended by reason (kernel_ends.go), for the metrics.
+	kernelEnds *promtext.CounterVec
 	// files are the files pods of people's homes for their jobs' files (jobfiles.go).
 	files filesPods
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.
@@ -125,7 +128,7 @@ func New(cfg Config, store Store, log *zap.SugaredLogger) (*Service, error) {
 
 func newService(cfg Config, store Store, b builds, i images, s servers, r refResolver, log *zap.SugaredLogger) *Service {
 	cfg.withDefaults()
-	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log, tokens: newTokenCache(),
+	return &Service{cfg: cfg, store: store, builds: b, images: i, servers: s, refs: r, log: log, tokens: newTokenCache(), kernelEnds: newKernelEndCounter(),
 		files: filesPods{addr: defaultFilesAddr, http: &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second}}}}
 }
 

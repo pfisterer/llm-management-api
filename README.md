@@ -120,6 +120,7 @@ The WireGuard handshake is not known to the service; the hub's node-exporter tex
 | `aiaas_workspace_start_duration_seconds{profile}` | histogram: workspace pod created → Ready (Kueue wait, image pull, init containers); observed when a listing first sees the pod ready, so pods that come and go between two scrapes are missed and pods ready before a restart are not counted |
 | `aiaas_workspace_servers{profile,gpu_class,state}` | workspace pods (servers and GPU kernels) `running`, `starting` (on a node, not running yet) or `queued` (gated by Kueue or on no node) |
 | `aiaas_workspace_gpus{gpu_class,state}` | GPUs of those pods by state |
+| `aiaas_gpu_kernels_ended_total{reason}` | counter: GPU kernels that ended, by the research log's `end_reason` (`idle_release`, `stopped_person`, `server_stopped`, `max_runtime`, `evicted_node`, …, see below); seen by its sampler within a minute, counted since the service started |
 | `aiaas_workspace_projects{state}` | projects `active`, `llm_only` (active, LLM tokens only) or `ended` (not yet deleted by the tree) |
 | `aiaas_workspace_project_environments{kind}` | active projects by environment: `base`, `git` (built from Git) or `image` (finished image) |
 | `aiaas_workspace_project_images_unreachable` | active projects whose finished image did not answer at the last check |
@@ -155,7 +156,7 @@ For publications about the platform the service keeps one row per pod of the GPU
 
 `end_reason`: `completed`, `failed`, `oom`, `max_runtime` (upper bound of the release times), `evicted_node`, `node_failure`, `evicted_api`, `preempted`, `deactivated`, `evicted_kueue` (Kueue, from its Workload condition or its events `Stopped`/`Preempted`); `idle_release`, `stopped_person`, `cancelled`, `launch_timeout`, `stopped_server` (a GPU kernel its notebook server ended: `DELETE /gpu/kernels/{id}?reason=idle|person|cancel|timeout`, without `reason` the cause stays open); `stopped_portal`, `budget`, `project_deleted` (servers the service ended); `server_stopped` (a kernel whose server ended), `hub_stopped` (a server pod the hub deleted), `deleted`, `gone` (nothing known, e.g. ended while the service was down).
 
-Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RESEARCH_PSEUDONYM_KEY`, none at all without a key —, pod names (a server's carries the e-mail), prompts, code, file names, addresses. Rows are kept `RESEARCH_RETENTION_DAYS` (default 730), pruned daily by creation time. Read with SQL; there is no API endpoint (it would change the OpenAPI spec and the generated client). Needs list on Kueue workloads and on events in the workspace and inference namespaces (Ansible `tasks/jupyterhub.yaml`, `tasks/inference.yaml`).
+Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RESEARCH_PSEUDONYM_KEY`, none at all without a key —, pod names (a server's carries the e-mail), prompts, code, file names, addresses. Rows are kept `RESEARCH_RETENTION_DAYS` (default 730), pruned daily by creation time. The sampler also logs every GPU kernel that ends (info `gpu kernel ended` with `pod`, `kernel_id`, `person`, `project`, `gpu_class`, `node`, `reason`, `detail`, `duration` since the pod's creation, `runtime` since its container started; the counterpart of `gpu kernel started`) and counts it in `aiaas_gpu_kernels_ended_total`; it runs with `RESEARCH_RETENTION_DAYS=0` too, then without rows. Read with SQL; there is no API endpoint (it would change the OpenAPI spec and the generated client). Needs list on Kueue workloads and on events in the workspace and inference namespaces (Ansible `tasks/jupyterhub.yaml`, `tasks/inference.yaml`).
 
 ## Configuration
 
@@ -212,7 +213,7 @@ Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RE
 | `IMAGE_CLEANUP_ENABLED`, `IMAGE_CLEANUP_DRY_RUN`, `IMAGE_CLEANUP_MIN_AGE_DAYS`, `IMAGE_CLEANUP_INTERVAL_MINUTES` | deleting the images of environments that are gone from Harbor's `envs`: default on, as a dry run (only logs), artifacts pushed or pulled within 7 days stay, every 60 minutes |
 | `HARBOR_CLEANUP_USER`, `HARBOR_CLEANUP_TOKEN` | robot account that may delete in `envs`; without it the cleanup stays a dry run |
 | `RESEARCH_PSEUDONYM_KEY` | key of the people's pseudonyms in the research log (HMAC-SHA256, at least 16 characters); empty = the log names no person. A new key gives everybody new pseudonyms |
-| `RESEARCH_RETENTION_DAYS` | how long the research log's rows are kept, default 730; 0 = no research log |
+| `RESEARCH_RETENTION_DAYS` | how long the research log's rows are kept, default 730; 0 = no rows (the sampler still runs for the `gpu kernel ended` log) |
 
 ## Development
 
