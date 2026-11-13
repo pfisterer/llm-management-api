@@ -1,6 +1,8 @@
 # Image; the tag defaults to the chart's appVersion, so a pinned chart pins the image.
 image: ghcr.io/pfisterer/llm-management-api
 version: ""
+# Optional image digest, e.g. digest: "sha256:<64 hex>": the image is then pulled as <image>:<version>@<digest>, so a re-pushed tag cannot change what runs. Left unset on purpose (not even ""), so the checksum/values annotation and thus the pods stay as they are.
+# digest: ""
 imagePullPolicy: IfNotPresent
 replicas: 1
 
