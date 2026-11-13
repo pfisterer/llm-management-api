@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/httpx"
 	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
@@ -77,6 +78,7 @@ func MetricsRouter(o MetricsOptions) *gin.Engine {
 			o.Budgets.WriteMetrics(&w)
 		}
 		background.WriteMetrics(&w)
+		httpx.Retries.WriteTo(&w) // httpx_retries_total: whether repeating after DNS hiccups and broken connections is still needed (todo node_dns)
 		if len(parts) > 0 {
 			w.Header("aiaas_metrics_part_up", "gauge", "1 when a part of this page (workspaces: the projects from the database; workspace_pods: the workspace pods from the cluster) could be read at its last refresh; its series are missing while 0.")
 			for _, p := range parts {

@@ -8,7 +8,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/pfisterer/cloud-self-service-golib v0.21.0
+	github.com/pfisterer/cloud-self-service-golib v0.22.0
 	github.com/pfisterer/role-provider-service/client v0.1.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/sync v0.24.0
