@@ -333,7 +333,7 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (EnrollResponse
 			MTU: 1420, Keepalive: 25, Port: s.cfg.Port, ReenrollSeconds: s.cfg.ReenrollSeconds,
 			ScriptManifest: s.scripts.Manifest(s.cfg, serial),
 			ScriptBaseURL:  "https://" + s.cfg.EnrollHostname + "/scripts/",
-			OllamaVersion:  s.cfg.OllamaVersion,
+			OllamaVersion:  s.cfg.ollamaVersion(serial),
 			Profile: EnrollProfile{Name: a.Profile, Model: a.Model, WiredLimitMb: a.WiredLimitMb, Context: a.Context,
 				Gate: a.Gate, Enabled: a.Enabled},
 		}

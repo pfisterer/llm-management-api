@@ -142,6 +142,29 @@ func TestEnrollRules(t *testing.T) {
 	}
 }
 
+func TestOllamaVersionOverride(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := testService(t, func(c *Config) {
+		c.OllamaVersion = "0.32.5"
+		v := "0.40.16"
+		c.Overrides["CANARY0001"] = Override{OllamaVersion: &v}
+	})
+	if r := join(t, svc, mac("CANARY0001", key1, "a", 49152)); r.OllamaVersion != "0.40.16" {
+		t.Fatalf("override: %q", r.OllamaVersion)
+	}
+	if r := join(t, svc, mac("SERIAL0001", key2, "b", 49152)); r.OllamaVersion != "0.32.5" {
+		t.Fatalf("fleet default: %q", r.OllamaVersion)
+	}
+	if _, err := svc.Enroll(ctx, mac("CANARY0001", key1, "a", 49152)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{`{"ollamaVersion":"0.40.16;rm"}`, `{"overrides":{"X":{"ollamaVersion":"latest"}}}`} {
+		if _, _, err := ParseConfig(bad, ""); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}
+
 func TestNamesAndPool(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := testService(t, func(c *Config) { c.Pool = "10.90.4.0/30" }) // two host addresses

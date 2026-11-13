@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
 )
 
@@ -26,6 +27,8 @@ type Override struct {
 	Weight       *float64 `json:"weight"`
 	Gate         *string  `json:"gate"`
 	Enabled      *bool    `json:"enabled"`
+	// OllamaVersion pins this machine to another Ollama version than the fleet's, to try a new one on a test machine first (its GPU detection as a system service has to be checked by hand, see README-FLOTTE.md).
+	OllamaVersion *string `json:"ollamaVersion"`
 }
 
 // Config is the `fleet` block of the aiaas-deployment inventory, unchanged (env FLEET).
@@ -99,6 +102,15 @@ func ParseConfig(fleetJSON, wgJSON string) (Config, WireGuard, error) {
 		w.Network = "10.90.0.0/16"
 	}
 	sort.SliceStable(c.Profiles, func(i, j int) bool { return c.Profiles[i].MinRAMMb > c.Profiles[j].MinRAMMb })
+	// The version ends up in the download URL a machine fetches Ollama from as root, so nothing but x.y.z.
+	if c.OllamaVersion != "" && !ollamaVersionRE.MatchString(c.OllamaVersion) {
+		return c, w, fmt.Errorf("fleet ollamaVersion %q is not x.y.z", c.OllamaVersion)
+	}
+	for serial, o := range c.Overrides {
+		if o.OllamaVersion != nil && !ollamaVersionRE.MatchString(*o.OllamaVersion) {
+			return c, w, fmt.Errorf("fleet override %s: ollamaVersion %q is not x.y.z", serial, *o.OllamaVersion)
+		}
+	}
 	if !c.Enabled {
 		return c, w, nil
 	}
@@ -142,6 +154,16 @@ type Assignment struct {
 	Weight       float64
 	Gate         string
 	Enabled      bool
+}
+
+var ollamaVersionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// ollamaVersion is the Ollama version a machine is told to run: its override, else the fleet's ("" = the script's own minimum).
+func (c Config) ollamaVersion(serial string) string {
+	if o, ok := c.Overrides[serial]; ok && o.OllamaVersion != nil {
+		return *o.OllamaVersion
+	}
+	return c.OllamaVersion
 }
 
 // assignment applies the per-serial override of the inventory and then the model an admin set (modelOverride, empty = none) on top of the profile.
