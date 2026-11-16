@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -85,7 +86,28 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 	if err := migrateProjectGPUs(db); err != nil {
 		return nil, err
 	}
+	if err := migrateSharedWrite(db); err != nil {
+		return nil, err
+	}
 	return &GormStore{db: db}, nil
+}
+
+// migrateSharedWrite gives a project from before the setting (16.11.2026; before, the role reader alone decided who only reads the shared folder) its SharedWrite: SharedWriteManagers where it has readers, so they keep only reading, else SharedWriteAll. A no-op once every project has one.
+func migrateSharedWrite(db *gorm.DB) error {
+	var list []Project
+	if err := db.Where("shared_write IS NULL OR shared_write = ''").Find(&list).Error; err != nil {
+		return err
+	}
+	for _, p := range list {
+		v := SharedWriteAll
+		if slices.ContainsFunc(p.Members, func(m Member) bool { return m.Role == RoleReader }) {
+			v = SharedWriteManagers
+		}
+		if err := db.Model(&Project{}).Where("id = ?", p.ID).Update("shared_write", v).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateProjectGPUs turns the one number of GPUs a project could use at the same time (Limits.GPUs, which GORM named limit_gp_us) into a number per GPU class: the same number for each class the project allows. A no-op once the column is gone.

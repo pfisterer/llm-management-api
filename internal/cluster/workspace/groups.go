@@ -28,6 +28,8 @@ type Group struct {
 	Members  []string `json:"members" example:"user:a.b@dhbw.de"`
 	ReadOnly bool     `json:"read_only,omitempty"`
 	Archived bool     `json:"archived,omitempty"`
+	// StorageGB limits the group's folder (quotas.go); 0 = none, the project's volume is the bound.
+	StorageGB int `json:"storage_gb,omitempty"`
 }
 
 // Area is a folder of the project's volume as a person's pods mount it: Mount relative to the home (below AreasDir), Dir the subPath in the volume.
@@ -89,6 +91,9 @@ func validateGroups(p *Project) error {
 			}
 		}
 		g.Members = members
+		if g.StorageGB < 0 || (p.StorageGB > 0 && g.StorageGB > p.StorageGB) {
+			return invalid("Gruppe %q: Speichergrenze zwischen 0 und %d GB (der Speicher des Projekts).", "Group %q: storage limit between 0 and %d GB (the project's storage).", g.Name, p.StorageGB)
+		}
 	}
 	return nil
 }
@@ -105,20 +110,20 @@ func (g Group) inGroup(tokens []string) bool {
 	return false
 }
 
-// AreasFor are the folders a person with the tokens and role (RoleOf, or "admin") mounts in the project: the shared folder (read-only for readers), then each group the person belongs to (read-only for readers and in a read-only group), and for the managers (and admins) every group, writable so they can put material there, an archived one only to read. Members lose an archived group. A project without storage has no areas: its pods have no volume.
+// AreasFor are the folders a person with the tokens and role (RoleOf, or "admin") mounts in the project: the shared folder (read-only unless the person manages the project or SharedWrite lets every member write), then each group the person belongs to (read-only in a read-only group), and for the managers (and admins) every group, writable so they can put material there, an archived one only to read. Members lose an archived group. A project without storage has no areas: its pods have no volume.
 func (p Project) AreasFor(tokens []string, role string) []Area {
 	if p.StorageGB <= 0 || role == "" {
 		return nil
 	}
-	out := []Area{{Mount: ProjectArea, Dir: ProjectAreaDir, ReadOnly: role == RoleReader}}
 	manager := role == RoleManager || role == "admin"
+	out := []Area{{Mount: ProjectArea, Dir: ProjectAreaDir, ReadOnly: !manager && p.SharedWrite == SharedWriteManagers}}
 	for _, g := range p.Groups {
 		a := Area{Mount: GroupsArea + "/" + g.Name, Dir: GroupsDir + "/" + g.ID}
 		switch {
 		case manager:
 			a.ReadOnly = g.Archived
 		case !g.Archived && g.inGroup(tokens):
-			a.ReadOnly = g.ReadOnly || role == RoleReader
+			a.ReadOnly = g.ReadOnly
 		default:
 			continue
 		}

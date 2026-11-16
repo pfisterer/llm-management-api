@@ -103,6 +103,11 @@ type Project struct {
 	EndsAt   *time.Time `json:"ends_at,omitempty"` // after this day nobody can start in the project
 	// Groups are the project's groups of members with their own folder below ~/dhbw/groups (groups.go), kept by its managers; not the tree's.
 	Groups []Group `json:"groups" gorm:"column:work_groups;serializer:json"`
+	// SharedWrite is who writes the shared folder ~/dhbw/project: SharedWriteAll (every member) or SharedWriteManagers (material handed out); the managers always do. Empty = all. Kept by the managers.
+	SharedWrite string `json:"shared_write" gorm:"column:shared_write" enums:"all,managers"`
+	// StorageHomeGB is the limit of a member's home in the project's volume (quotas.go), StorageProjectGB that of the shared folder; 0 = home: automatic (AutoHomeGB), shared folder: none. Kept by the managers, at most StorageGB.
+	StorageHomeGB    int `json:"storage_home_gb" gorm:"column:storage_home_gb"`
+	StorageProjectGB int `json:"storage_project_gb" gorm:"column:storage_project_gb"`
 	// DefaultLLMProject is whose LLM tokens the project's workspaces use when the start chooses none (the managers' setting): empty = automatic (the project itself when it has LLM tokens, else the person's first LLM project), NoLLM = without LLM, else the slug of a project with LLM tokens. A person who is no member there starts without LLM, never with another project's tokens.
 	DefaultLLMProject string `json:"default_llm_project,omitempty" gorm:"column:default_llm_project" example:"none"`
 	// NoWorkspaces: the tree gives the project no workspace resources (LLM tokens only, docs/bauplan.md 8.14); it is then not offered for servers.

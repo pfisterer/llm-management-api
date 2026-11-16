@@ -375,6 +375,18 @@ func (s *Service) validate(p *Project) error {
 	if err := validateGroups(p); err != nil {
 		return err
 	}
+	switch p.SharedWrite {
+	case "":
+		p.SharedWrite = SharedWriteAll
+	case SharedWriteAll, SharedWriteManagers:
+	default:
+		return invalid("Schreibrecht im gemeinsamen Ordner: %q oder %q.", "Write access to the shared folder: %q or %q.", SharedWriteAll, SharedWriteManagers)
+	}
+	for _, gb := range []int{p.StorageHomeGB, p.StorageProjectGB} {
+		if gb < 0 || (p.StorageGB > 0 && gb > p.StorageGB) {
+			return invalid("Speichergrenzen zwischen 0 und %d GB (der Speicher des Projekts).", "Storage limits between 0 and %d GB (the project's storage).", p.StorageGB)
+		}
+	}
 	p.Profiles = s.knownProfiles(p.Profiles)
 	// The version is stored as chosen: an empty base or the id of a family from before versions becomes the version it stands for, so a new default version changes nothing for the project.
 	if len(s.cfg.Bases) > 0 {
@@ -453,7 +465,7 @@ func (s *Service) MayManage(ctx context.Context, tokens []string, admin bool, sl
 	return false, nil
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the groups, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the groups, who writes the shared folder, the storage limits inside the volume, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
@@ -461,8 +473,10 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 	}
 	if !asAdmin {
 		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm, groups := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject, p.Groups
+		sharedWrite, homeGB, projectGB := p.SharedWrite, p.StorageHomeGB, p.StorageProjectGB
 		p = cur
 		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject, p.Groups = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm, groups
+		p.SharedWrite, p.StorageHomeGB, p.StorageProjectGB = sharedWrite, homeGB, projectGB
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)

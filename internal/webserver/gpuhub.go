@@ -328,6 +328,50 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 			}
 			c.JSON(http.StatusOK, gin.H{"homes": len(rows)})
 		})
+		// The storage limits inside the projects' volumes (workspace quotas.go): the CronJob workspace-storage-quotas (tasks/juicefs.yaml) sends `juicefs quota list` and gets the steps back, one per line ("set <path> <GiB>", "delete <path>"), which it checks against the managed paths and carries out. The homes are the projects' members and the people who used them in the last year.
+		if o.Workspaces != nil {
+			r.POST("/workspaces/quota-plan", func(c *gin.Context) {
+				if !hubToken(c, o.Token) {
+					return
+				}
+				raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4<<20))
+				if err != nil {
+					abortMachine(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
+					return
+				}
+				current, ok := workspace.ParseQuotaTable(string(raw))
+				if !ok {
+					abortMachine(c, http.StatusBadRequest, "invalid", "Keine Tabelle von juicefs quota list.")
+					return
+				}
+				ctx := c.Request.Context()
+				now := time.Now()
+				rows, err := o.Usage.Range(ctx, now.AddDate(-1, 0, 0), now)
+				if err != nil {
+					abortMachine(c, http.StatusInternalServerError, "internal", "Nutzung nicht lesbar.")
+					return
+				}
+				used := map[string][]string{}
+				for _, r := range rows {
+					if strings.Contains(r.Person, "@") {
+						used[r.Project] = append(used[r.Project], r.Person)
+					}
+				}
+				plan, err := o.Workspaces.QuotaPlanFor(ctx, current, used, func(ctx context.Context, email string) workspace.Home {
+					tokens := []string{"user:" + email}
+					if o.Access != nil {
+						tokens = o.Access.Who(ctx, email).Tokens
+					}
+					return workspace.Home{Dir: gpu.HubUserSlug(email), Tokens: tokens}
+				})
+				if err != nil {
+					o.Log.Errorw("quota plan failed", "error", err)
+					abortMachine(c, http.StatusInternalServerError, "internal", "Plan nicht berechenbar.")
+					return
+				}
+				c.String(http.StatusOK, strings.Join(plan, "\n")+"\n")
+			})
+		}
 	}
 	if o.Keys != nil {
 		// Before a start: the LLM key of the person's workspaces in the project (keys.WorkspaceKey), with the API address and the models it may use, for VS Code's chat and OPENAI_API_KEY. The key draws from the LLM project chosen at the start, else from the project's setting default_llm_project, else from the workspace project's own LLM tokens, else from the person's first LLM project (llmProjectFor), and only for members. A person who is no member gets 403; a start without LLM (chosen or set for the project), a set LLM project the person may not draw from (or a person the LLM does not know yet) gets 200 with an empty key and the reason: the server starts without, and the hub removes a provider "DHBW" left in VS Code's settings. Only that answer means "definitely no key": anything that could not be found out (LiteLLM, projects not readable) is an error status, on which the hub keeps the settings as they are.

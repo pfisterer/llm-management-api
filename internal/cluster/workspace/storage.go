@@ -157,8 +157,9 @@ func ParseValkeyInfo(text string) (ValkeyMemory, bool) {
 	return m, found
 }
 
-// SetStorageDirs keeps the directories of the last `juicefs quota list`, in memory and, with a database, there too (LoadStorage).
+// SetStorageDirs keeps the directories of the last `juicefs quota list`, in memory and, with a database, there too (LoadStorage): the volumes only, not the limits inside them (quotas.go).
 func (s *Service) SetStorageDirs(ctx context.Context, dirs []StorageDir) error {
+	dirs = slices.DeleteFunc(slices.Clone(dirs), func(d StorageDir) bool { return !topLevel(d.Dir) })
 	now := s.now()
 	s.storage.mu.Lock()
 	s.storage.dirs, s.storage.dirsAt = slices.Clone(dirs), now

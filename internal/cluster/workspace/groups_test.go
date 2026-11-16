@@ -69,7 +69,7 @@ func TestAreasFor(t *testing.T) {
 	}{
 		"member of g1":         {[]string{"user:A@dhbw.de"}, RoleMember, []string{"dhbw/project=project-shared:rw", "dhbw/groups/g1=groups/0000aaaa:rw"}},
 		"member via group, ro": {[]string{"user:b@dhbw.de", "group:wwi24"}, RoleMember, []string{"dhbw/project=project-shared:rw", "dhbw/groups/g2=groups/0000bbbb:ro"}},
-		"reader in g1":         {[]string{"user:a@dhbw.de"}, RoleReader, []string{"dhbw/project=project-shared:ro", "dhbw/groups/g1=groups/0000aaaa:ro"}},
+		"reader in g1":         {[]string{"user:a@dhbw.de"}, RoleReader, []string{"dhbw/project=project-shared:rw", "dhbw/groups/g1=groups/0000aaaa:rw"}},
 		"no group":             {[]string{"user:c@dhbw.de"}, RoleMember, []string{"dhbw/project=project-shared:rw"}},
 		"manager sees all":     {[]string{"user:m@dhbw.de"}, RoleManager, []string{"dhbw/project=project-shared:rw", "dhbw/groups/g1=groups/0000aaaa:rw", "dhbw/groups/g2=groups/0000bbbb:rw", "dhbw/groups/alt=groups/0000cccc:ro"}},
 		"admin like a manager": {nil, "admin", []string{"dhbw/project=project-shared:rw", "dhbw/groups/g1=groups/0000aaaa:rw", "dhbw/groups/g2=groups/0000bbbb:rw", "dhbw/groups/alt=groups/0000cccc:ro"}},
@@ -78,6 +78,14 @@ func TestAreasFor(t *testing.T) {
 		if got := mounts(p.AreasFor(c.tokens, c.role)); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
 		}
+	}
+	// Only the managers write the shared folder.
+	p.SharedWrite = SharedWriteManagers
+	if got := mounts(p.AreasFor([]string{"user:a@dhbw.de"}, RoleMember)); got[0] != "dhbw/project=project-shared:ro" {
+		t.Errorf("member, managers write: %v", got)
+	}
+	if got := mounts(p.AreasFor([]string{"user:m@dhbw.de"}, RoleManager)); got[0] != "dhbw/project=project-shared:rw" {
+		t.Errorf("manager, managers write: %v", got)
 	}
 	if got := (Project{Groups: p.Groups}).AreasFor([]string{"user:a@dhbw.de"}, RoleMember); got != nil {
 		t.Errorf("without storage: %v", got)

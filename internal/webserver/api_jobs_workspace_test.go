@@ -381,11 +381,11 @@ func TestJobUploadRights(t *testing.T) {
 			t.Errorf("%s: want %d, got %d %s", c.path, c.want, code, body)
 		}
 	}
-	// The shared folder: members write it, readers only read it (the reader's upload pod mounts it read-only).
+	// The shared folder: with shared_write "all" (the default) every member writes it, the role reader too.
 	if code, body := upload("/v1/gpu/files?project=t-kurs&path=dhbw/project/daten/a.csv", "oidc:"+jzMember, "", "1,2"); code != created {
 		t.Errorf("member into dhbw/project: %d %s", code, body)
 	}
-	if code, body := upload("/v1/gpu/files?project=t-kurs&path=dhbw/project/a.csv", "oidc:"+jzReader, "", "1,2"); code != http.StatusBadRequest || !strings.Contains(string(body), "nur Lesen") {
+	if code, body := upload("/v1/gpu/files?project=t-kurs&path=dhbw/project/a.csv", "oidc:"+jzReader, "", "1,2"); code != created {
 		t.Errorf("reader into dhbw/project: %d %s", code, body)
 	}
 	if code, body := upload("/v1/gpu/files?project=t-kurs&path=notes/a.csv", "oidc:"+jzReader, "", "1,2"); code != created {
@@ -400,7 +400,7 @@ func TestJobUploadRights(t *testing.T) {
 		mounts := o["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["volumeMounts"].([]any)
 		home, shared := mounts[0].(map[string]any), mounts[1].(map[string]any)
 		ro, _ := shared["readOnly"].(bool)
-		if home["readOnly"] != false || shared["subPath"] != "project-shared" || shared["mountPath"] != "/data/dhbw/project" || ro != (home["subPath"] == "homes/"+gpu.HubUserSlug(jzReader)) {
+		if home["readOnly"] != false || shared["subPath"] != "project-shared" || shared["mountPath"] != "/data/dhbw/project" || ro {
 			t.Errorf("upload pod mounts: %v", mounts)
 		}
 	}

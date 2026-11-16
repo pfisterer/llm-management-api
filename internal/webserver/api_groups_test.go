@@ -67,7 +67,7 @@ func TestProjectGroups(t *testing.T) {
 	for email, want := range map[string]string{
 		jzMember:  "dhbw/project:rw dhbw/groups/gruppe-1:rw dhbw/groups/material:ro",
 		jzOther:   "dhbw/project:rw dhbw/groups/material:ro",
-		jzReader:  "dhbw/project:ro",
+		jzReader:  "dhbw/project:rw",
 		jzManager: "dhbw/project:rw dhbw/groups/gruppe-1:rw dhbw/groups/material:rw",
 	} {
 		if got := areas(email); got != want {

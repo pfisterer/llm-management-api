@@ -477,11 +477,11 @@ func TestJobInputsAndMounts(t *testing.T) {
 	if !strings.Contains(memberJob, `"subPath":"`+"homes/"+gpu.HubUserSlug(jzMember)+`"`) || !strings.Contains(readerJob, `"subPath":"`+"homes/"+gpu.HubUserSlug(jzReader)+`"`) {
 		t.Errorf("home mounts:\n%s\n%s", memberJob, readerJob)
 	}
-	if strings.Contains(memberJob, `"readOnly":true`) {
-		t.Errorf("a member's shared folder is read-only: %s", memberJob)
-	}
-	if !strings.Contains(readerJob, `{"mountPath":"/home/jovyan/dhbw/project","name":"home","readOnly":true,"subPath":"project-shared"}`) {
-		t.Errorf("a reader's shared folder is writable: %s", readerJob)
+	// Who writes the shared folder is the project's setting (shared_write, here every member), not the role: a reader writes it like a member.
+	for _, o := range []string{memberJob, readerJob} {
+		if strings.Contains(o, `"readOnly":true`) || !strings.Contains(o, `{"mountPath":"/home/jovyan/dhbw/project","name":"home","subPath":"project-shared"}`) {
+			t.Errorf("shared folder not writable: %s", o)
+		}
 	}
 	for _, o := range []string{memberJob, readerJob} {
 		for _, want := range []string{`"automountServiceAccountToken":false`, `"allowPrivilegeEscalation":false`, `"runAsUser":1000`, `"claimName":"ws-t-kurs"`} {
@@ -496,7 +496,7 @@ func TestJobInputsAndMounts(t *testing.T) {
 	if _ = json.Unmarshal(body, &j); code != http.StatusCreated {
 		t.Fatalf("admin as reader: %d %s", code, body)
 	}
-	if o := e.kube.jobObject(j.ID); !strings.Contains(o, "homes/"+gpu.HubUserSlug(jzReader)) || !strings.Contains(o, `"readOnly":true`) {
+	if o := e.kube.jobObject(j.ID); !strings.Contains(o, "homes/"+gpu.HubUserSlug(jzReader)) {
 		t.Errorf("job on behalf of a reader: %s", o)
 	}
 }

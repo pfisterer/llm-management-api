@@ -90,6 +90,10 @@ func HomeRows(ctx context.Context, st Store, used map[string]float64, project Pr
 	day := Day(now)
 	var rows []Row
 	for dir, gib := range used {
+		// A limit inside a volume (a home, a group, the shared folder; workspace quotas.go) is part of the volume's own figure.
+		if strings.Contains(dir, "/") {
+			continue
+		}
 		// A project's volume (ws-<slug>, homes of its members and the shared folder): booked to the project as a whole.
 		if slug, ok := strings.CutPrefix(dir, "ws-"); ok && slug != "" {
 			rows = append(rows, Row{Day: day, Project: slug, Person: ProjectStorage, Profile: "home", HomeGB: gib, UpdatedAt: now})
