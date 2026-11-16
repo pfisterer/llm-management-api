@@ -374,7 +374,7 @@ func TestJobUploadRights(t *testing.T) {
 		{"/v1/gpu/files?project=t-kurs&path=../other/x", http.StatusBadRequest},
 		{"/v1/gpu/files?project=t-kurs&path=/etc/passwd", http.StatusBadRequest},
 		{"/v1/gpu/files?project=t-kurs", http.StatusBadRequest},
-		{"/v1/gpu/files?project=t-kurs&path=project-shared", http.StatusBadRequest},
+		{"/v1/gpu/files?project=t-kurs&path=dhbw/project", http.StatusBadRequest},
 		{"/v1/gpu/files?project=t-unbekannt&path=x", refused},
 	} {
 		if code, body := upload(c.path, "oidc:"+jzMember, "", "x"); code != c.want {
@@ -382,11 +382,11 @@ func TestJobUploadRights(t *testing.T) {
 		}
 	}
 	// The shared folder: members write it, readers only read it (the reader's upload pod mounts it read-only).
-	if code, body := upload("/v1/gpu/files?project=t-kurs&path=project-shared/daten/a.csv", "oidc:"+jzMember, "", "1,2"); code != created {
-		t.Errorf("member into project-shared: %d %s", code, body)
+	if code, body := upload("/v1/gpu/files?project=t-kurs&path=dhbw/project/daten/a.csv", "oidc:"+jzMember, "", "1,2"); code != created {
+		t.Errorf("member into dhbw/project: %d %s", code, body)
 	}
-	if code, body := upload("/v1/gpu/files?project=t-kurs&path=project-shared/a.csv", "oidc:"+jzReader, "", "1,2"); code != http.StatusBadRequest || !strings.Contains(string(body), "nur Lesen") {
-		t.Errorf("reader into project-shared: %d %s", code, body)
+	if code, body := upload("/v1/gpu/files?project=t-kurs&path=dhbw/project/a.csv", "oidc:"+jzReader, "", "1,2"); code != http.StatusBadRequest || !strings.Contains(string(body), "nur Lesen") {
+		t.Errorf("reader into dhbw/project: %d %s", code, body)
 	}
 	if code, body := upload("/v1/gpu/files?project=t-kurs&path=notes/a.csv", "oidc:"+jzReader, "", "1,2"); code != created {
 		t.Errorf("reader into the own home: %d %s", code, body)

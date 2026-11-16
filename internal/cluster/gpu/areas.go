@@ -10,28 +10,23 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
-// areaDirsScript runs in the init container dhbw-dirs with the volume at /ws, as the person: it makes the home ($1), each area's folder in the volume and its mount point in the home (the remaining arguments, home-relative mount and volume dir in turns), so that none appears as root's (Kubernetes would create a missing subPath or mount point as root), writes the README of ~/dhbw and replaces the old mount point ~/project-shared, which is empty in the volume, by a link to dhbw/project (a folder someone filled stays).
+// areaDirsScript runs in the init container dhbw-dirs with the volume at /ws, as the person: it makes the home ($1), each area's folder in the volume and its mount point in the home (the remaining arguments, home-relative mount and volume dir in turns), so that none appears as root's (Kubernetes would create a missing subPath or mount point as root), and writes the README of ~/dhbw. The empty mount point ~/project-shared of the shared folder's former place goes.
 const areaDirsScript = `set -e
 h="/ws/$1"; shift
 mkdir -p "$h"
 while [ $# -ge 2 ]; do mkdir -p "$h/$1" "/ws/$2"; shift 2; done
-if [ -d "$h/dhbw" ]; then
-  [ -f "$h/dhbw/README.txt" ] || printf '%s\n' "$DHBW_AREAS_README" > "$h/dhbw/README.txt" || true
-  if [ -d "$h/dhbw/project" ] && [ ! -L "$h/project-shared" ]; then
-    rmdir "$h/project-shared" 2>/dev/null || true
-    [ -e "$h/project-shared" ] || ln -s dhbw/project "$h/project-shared" || true
-  fi
-fi
+[ ! -d "$h/dhbw" ] || [ -f "$h/dhbw/README.txt" ] || printf '%s\n' "$DHBW_AREAS_README" > "$h/dhbw/README.txt" || true
+rmdir "$h/project-shared" 2>/dev/null || true
 `
 
 // AreasReadme is what ~/dhbw/README.txt says.
 const AreasReadme = `Hier haengt die DHBW Cloud gemeinsame Ordner ein:
-  project/          der gemeinsame Ordner des Projekts (frueher ~/project-shared)
+  project/          der gemeinsame Ordner des Projekts
   groups/<gruppe>/  die Ordner der eigenen Gruppen
 Was hier liegt, sehen auch andere. Eigene Dateien gehoeren direkt ins Home.
 
 The DHBW Cloud mounts shared folders here:
-  project/          the project's shared folder (formerly ~/project-shared)
+  project/          the project's shared folder
   groups/<group>/   the folders of your groups
 Others see what is here. Keep your own files in your home.`
 
@@ -75,17 +70,6 @@ func areasKey(areas []workspace.Area) string {
 		h.Write([]byte(a.Mount + "\x00" + a.Dir + "\x00" + ro + "\x00"))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
-}
-
-// AreaRel maps a home-relative path through the old place of the shared folder (SharedDir, ~/project-shared until 16.11.2026) to its area (dhbw/project), so paths of before keep working in the API and the CLI.
-func AreaRel(rel string) string {
-	switch {
-	case rel == SharedDir:
-		return workspace.ProjectArea
-	case strings.HasPrefix(rel, SharedDir+"/"):
-		return workspace.ProjectArea + strings.TrimPrefix(rel, SharedDir)
-	}
-	return rel
 }
 
 // areaOf is the area rel lies in or is (false: none); rel is home-relative and cleaned.

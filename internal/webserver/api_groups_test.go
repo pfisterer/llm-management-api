@@ -74,6 +74,19 @@ func TestProjectGroups(t *testing.T) {
 			t.Errorf("areas of %s: %q, want %q", email, got, want)
 		}
 	}
+	// Who is in which group only the managers see; a member sees the groups they belong to.
+	names := func(email string) string {
+		out := []string{}
+		for _, g := range project(email).Groups {
+			out = append(out, g.Name)
+		}
+		return strings.Join(out, " ")
+	}
+	for email, want := range map[string]string{jzManager: "gruppe-1 material", jzMember: "gruppe-1 material", jzOther: "material", jzReader: ""} {
+		if got := names(email); got != want {
+			t.Errorf("groups %s sees: %q, want %q", email, got, want)
+		}
+	}
 	// A job mounts the person's areas: the member's group, never at another member's job.
 	g1 := "groups/" + saved.Groups[0].ID
 	memberJob := e.kube.jobObject(e.submit(t, jzMember, SubmitJobRequest{Project: "t-kurs", Command: "x"}))
@@ -101,7 +114,6 @@ func TestProjectGroups(t *testing.T) {
 		{"dhbw/groups/material/a.csv", jzManager, http.StatusCreated},
 		{"dhbw/a.csv", jzMember, http.StatusBadRequest},
 		{"dhbw/project/a.csv", jzOther, http.StatusCreated},
-		{"project-shared/a.csv", jzOther, http.StatusCreated},
 	} {
 		if code, body := upload(c.path, c.email); code != c.want {
 			t.Errorf("upload %s as %s: %d %s, want %d", c.path, c.email, code, body, c.want)

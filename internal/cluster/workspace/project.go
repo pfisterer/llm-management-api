@@ -10,7 +10,7 @@ import (
 
 // Roles in a project.
 const (
-	RoleReader  = "reader"  // uses the project; its shared folder (project-shared) only reads
+	RoleReader  = "reader"  // uses the project; its shared folder (~/dhbw/project) only reads
 	RoleMember  = "member"  // uses the project and writes its shared folder
 	RoleManager = "manager" // edits members, images and the description; sees the project's usage
 )

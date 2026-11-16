@@ -322,6 +322,10 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if m.Areas == nil {
 			m.Areas = []Area{}
 		}
+		// Who is in which group is the managers' business: everybody else sees only the groups they belong to.
+		if role != RoleManager && role != "admin" {
+			m.Groups = slices.DeleteFunc(slices.Clone(m.Groups), func(g Group) bool { return g.Archived || !g.inGroup(tokens) })
+		}
 		if p.ImageGitURL != "" && s.builds != nil {
 			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
 				m.ImageBuild = b

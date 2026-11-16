@@ -160,7 +160,7 @@ dhbw-cloud job upload --project ki-kurs --to daten messung.csv bilder/   # nach 
 dhbw-cloud job submit --project ki-kurs --files train.py -- python train.py --data ~/daten
 ```
 
-Daten für alle im Projekt gehören in den gemeinsamen Ordner: `dhbw-cloud job upload --to dhbw/project/daten …` legt sie nach `~/dhbw/project/daten`, wo jeder Job und Workspace des Projekts sie sieht. Das geht wie im Workspace nicht mit der Rolle „Lesend“. Daten einer Gruppe gehören nach `dhbw/groups/<gruppe>/…`; das geht für Mitglieder der Gruppe und für die Verwaltenden des Projekts. Der alte Pfad `project-shared/…` funktioniert weiter. Sonst wird nur ins eigene Home hochgeladen, höchstens 5 GB je Datei; der Platz zählt zur Speichergrenze des Projekts.
+Daten für alle im Projekt gehören in den gemeinsamen Ordner: `dhbw-cloud job upload --to dhbw/project/daten …` legt sie nach `~/dhbw/project/daten`, wo jeder Job und Workspace des Projekts sie sieht. Das geht wie im Workspace nicht mit der Rolle „Lesend“. Daten einer Gruppe gehören nach `dhbw/groups/<gruppe>/…`; das geht für Mitglieder der Gruppe und für die Verwaltenden des Projekts. Sonst wird nur ins eigene Home hochgeladen, höchstens 5 GB je Datei; der Platz zählt zur Speichergrenze des Projekts.
 
 ### Ergebnisse holen
 

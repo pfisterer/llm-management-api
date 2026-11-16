@@ -308,7 +308,7 @@ func TestPutJobFile(t *testing.T) {
 		t.Errorf("too large: %v", err)
 	}
 	// Below ~/dhbw only into a writable area: not the folder itself, not a read-only group, not beside the areas; refused before any pod.
-	for _, rel := range []string{"dhbw/notes.txt", "dhbw/groups/g2/a.txt", "dhbw/groups/other/a.txt", "dhbw/groups/g1", "project-shared"} {
+	for _, rel := range []string{"dhbw/notes.txt", "dhbw/groups/g2/a.txt", "dhbw/groups/other/a.txt", "dhbw/groups/g1"} {
 		if _, err := put(rel, "x"); !errors.As(err, &refused) {
 			t.Errorf("%s: %v", rel, err)
 		}
@@ -333,9 +333,9 @@ func TestPutJobFile(t *testing.T) {
 			t.Errorf("reading pod lacks %s: %s", want, ro)
 		}
 	}
-	// A reader of the project writes the home, never the shared folder (also by its old path): refused before any pod, and its upload pod mounts the shared folder read-only.
+	// A reader of the project writes the home, never the shared folder: refused before any pod, and its upload pod mounts the shared folder read-only.
 	var refusedShared *JobRefused
-	for _, rel := range []string{"project-shared/x", "dhbw/project/x"} {
+	for _, rel := range []string{"dhbw/project/x"} {
 		if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", rel, reader, strings.NewReader("x"), 1); !errors.As(err, &refusedShared) {
 			t.Errorf("reader into %s: %v", rel, err)
 		}

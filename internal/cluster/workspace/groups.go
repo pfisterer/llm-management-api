@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// The areas below the home (AreasDir): the project's shared folder at ProjectArea (in the volume still project-shared, as before 16.11.2026 at ~/project-shared), the groups at GroupsArea/<name> (in the volume groups/<id>).
+// The areas below the home (AreasDir): the project's shared folder at ProjectArea (in the volume project-shared), the groups at GroupsArea/<name> (in the volume groups/<id>).
 const (
 	AreasDir       = "dhbw"
 	ProjectArea    = AreasDir + "/project"

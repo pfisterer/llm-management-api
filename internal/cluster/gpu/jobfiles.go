@@ -40,8 +40,6 @@ const (
 	// JobFileMaxBytes is the largest file a download serves; JobFileTimeout how long one may take. Larger results belong into S3 or a workspace.
 	JobFileMaxBytes = 5 << 30
 	JobFileTimeout  = 30 * time.Minute
-	// SharedDir is where the project's shared folder was in the home until 16.11.2026 (now workspace.ProjectArea, ~/dhbw/project; in the volume still project-shared): paths under it are mapped there (AreaRel), and the pods keep a link of that name.
-	SharedDir = "project-shared"
 )
 
 // filesAccess is what a files pod may do: read the home and the areas, or write the home and the areas the person may write (workspace.Area.ReadOnly).
@@ -100,11 +98,10 @@ func JobFilePath(p, root string) (string, bool) {
 	return rel, true
 }
 
-// ListJobFiles lists a folder of the home of the job's person in its project's volume, with the areas mounted below ~/dhbw (nil = none, for someone who only sees the job's folder); rel is relative to the home (JobFilePath has checked it), a path of the old shared folder is mapped (AreaRel).
+// ListJobFiles lists a folder of the home of the job's person in its project's volume, with the areas mounted below ~/dhbw (nil = none, for someone who only sees the job's folder); rel is relative to the home (JobFilePath has checked it).
 func (s *Service) ListJobFiles(ctx context.Context, j Job, rel string, areas []workspace.Area) (JobFiles, error) {
 	ctx, cancel := context.WithTimeout(ctx, filesStart+30*time.Second)
 	defer cancel()
-	rel = AreaRel(rel)
 	resp, err := s.filesDo(ctx, j.Project, j.Person, filesRead, areas, "/list", rel, nil, 0)
 	if err != nil {
 		return JobFiles{}, err
@@ -131,7 +128,7 @@ func (s *Service) ListJobFiles(ctx context.Context, j Job, rel string, areas []w
 
 // OpenJobFile opens a file of the home of the job's person (with the areas, as ListJobFiles) for reading, with its size; the caller closes it. A file over JobFileMaxBytes is refused before anything is read.
 func (s *Service) OpenJobFile(ctx context.Context, j Job, rel string, areas []workspace.Area) (io.ReadCloser, int64, error) {
-	resp, err := s.filesDo(ctx, j.Project, j.Person, filesRead, areas, "/file", AreaRel(rel), nil, 0)
+	resp, err := s.filesDo(ctx, j.Project, j.Person, filesRead, areas, "/file", rel, nil, 0)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -147,12 +144,11 @@ func (s *Service) OpenJobFile(ctx context.Context, j Job, rel string, areas []wo
 	return resp.Body, size, nil
 }
 
-// PutJobFile writes a file of size bytes from body into the home of the person in the project or into one of their areas below ~/dhbw that they may write (areas: workspace.AreasFor); rel is relative to the home (JobFilePath has checked it, not the home itself), a path of the old shared folder is mapped (AreaRel). Below ~/dhbw only into a writable area: anything else there would land unseen in the home. Missing folders are made; an existing file is replaced only once the new one is complete. The person's upload pod writes it, the only files pod that may.
+// PutJobFile writes a file of size bytes from body into the home of the person in the project or into one of their areas below ~/dhbw that they may write (areas: workspace.AreasFor); rel is relative to the home (JobFilePath has checked it, not the home itself). Below ~/dhbw only into a writable area: anything else there would land unseen in the home. Missing folders are made; an existing file is replaced only once the new one is complete. The person's upload pod writes it, the only files pod that may.
 func (s *Service) PutJobFile(ctx context.Context, project, person, rel string, areas []workspace.Area, body io.Reader, size int64) (JobFile, error) {
 	if size > JobFileMaxBytes {
 		return JobFile{}, &JobRefused{msg.F("Die Datei ist größer als %d GB; große Daten besser über S3 oder einen Workspace holen.", "The file is larger than %d GB; better bring large data through S3 or a workspace.", JobFileMaxBytes>>30)}
 	}
-	rel = AreaRel(rel)
 	a, inArea := areaOf(rel, areas)
 	switch {
 	case rel == workspace.AreasDir || (inArea && rel == a.Mount):

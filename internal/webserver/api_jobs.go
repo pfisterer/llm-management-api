@@ -415,7 +415,7 @@ func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, []workspace.Area, boo
 //
 //	@ID				listGPUJobFiles
 //	@Summary		Files of a batch job
-//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home, with their areas below dhbw/ (the project's shared folder at dhbw/project, their groups at dhbw/groups/<name>; the old path project-shared/ still works), while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
+//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home, with their areas below dhbw/ (the project's shared folder at dhbw/project, their groups at dhbw/groups/<name>), while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
 //	@Tags			gpu
 //	@Produce		json
 //	@Security		BearerAuth
@@ -487,7 +487,7 @@ func (s *Server) downloadJobFile(c *gin.Context) {
 //
 //	@ID				uploadGPUFile
 //	@Summary		Upload a file into the own home of a project
-//	@Description	For batch jobs without a workspace (dhbw-cloud job submit --files, dhbw-cloud job upload): the body is written as path into the caller's home in the project, where the caller's jobs run, or below dhbw/ into one of the caller's areas they may write: dhbw/project/ (the project's shared folder, also as project-shared/; not for the role reader, as in a workspace), dhbw/groups/<name>/ (the caller's groups; managers all of them). Missing folders are made, an existing file is replaced once the new one is complete. Only the caller's own home and areas, in an active project with workspace access; at most 5 GB and 30 minutes, Content-Length required. The first request may take a few seconds.
+//	@Description	For batch jobs without a workspace (dhbw-cloud job submit --files, dhbw-cloud job upload): the body is written as path into the caller's home in the project, where the caller's jobs run, or below dhbw/ into one of the caller's areas they may write: dhbw/project/ (the project's shared folder; not for the role reader, as in a workspace), dhbw/groups/<name>/ (the caller's groups; managers all of them). Missing folders are made, an existing file is replaced once the new one is complete. Only the caller's own home and areas, in an active project with workspace access; at most 5 GB and 30 minutes, Content-Length required. The first request may take a few seconds.
 //	@Tags			gpu
 //	@Accept			octet-stream
 //	@Produce		json

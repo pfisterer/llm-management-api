@@ -1,6 +1,6 @@
 package workspace
 
-// Local storage (docs/architektur.md, "Lokaler Speicher"): what a workspace or a GPU kernel may write outside its home and the project's shared folder — the container's writable layer (packages installed into the image's environment, /tmp), its logs and its emptyDirs. Kubernetes counts it as ephemeral storage and evicts a pod above its limit; the home and ~/project-shared are the project's volume (JuiceFS) and do not count. The budget tree sends the most a project gets (TreeProject.WorkspaceScratchGB, the smallest value along its chain of budgets); without one the configured default applies, never more than the configured upper bound.
+// Local storage (docs/architektur.md, "Lokaler Speicher"): what a workspace or a GPU kernel may write outside its home and the project's shared folder — the container's writable layer (packages installed into the image's environment, /tmp), its logs and its emptyDirs. Kubernetes counts it as ephemeral storage and evicts a pod above its limit; the home and the folders below ~/dhbw are the project's volume (JuiceFS) and do not count. The budget tree sends the most a project gets (TreeProject.WorkspaceScratchGB, the smallest value along its chain of budgets); without one the configured default applies, never more than the configured upper bound.
 
 // Defaults of Config.ScratchDefaultGB and Config.ScratchMaxGB.
 const (
