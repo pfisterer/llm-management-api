@@ -35,7 +35,7 @@ Für `--project` genügt statt der ID auch der Name des Projekts oder ein eindeu
 
 ## Batch-Jobs
 
-Ein Job läuft auf einer GPU einer Klasse, die das Projekt hat, in der Umgebung des Projekts, mit dem eigenen Home und `~/project-shared` des Projekts. Er wartet in der Warteschlange des Projekts, bis eine GPU frei ist. Die Ausgabe landet zusätzlich in `~/jobs/<name>/output-<n>.log`, für jeden Versuch eine eigene Datei.
+Ein Job läuft auf einer GPU einer Klasse, die das Projekt hat, in der Umgebung des Projekts, mit dem eigenen Home und den gemeinsamen Ordnern unter `~/dhbw` (`~/dhbw/project` für das ganze Projekt, `~/dhbw/groups/<gruppe>` für die eigenen Gruppen). Er wartet in der Warteschlange des Projekts, bis eine GPU frei ist. Die Ausgabe landet zusätzlich in `~/jobs/<name>/output-<n>.log`, für jeden Versuch eine eigene Datei.
 
 Ob ein Projekt Jobs erlaubt, wie viele je Person, wie lange einer höchstens läuft und ob ein Workspace ihn verdrängen darf, legen die Einstellungen des Projekts und sein Budget fest. Was ein Job höchstens braucht (GPUs × Höchstlaufzeit), wird beim Abschicken vom Budget vorgemerkt; reicht es nicht, wird der Job abgelehnt.
 
@@ -160,11 +160,11 @@ dhbw-cloud job upload --project ki-kurs --to daten messung.csv bilder/   # nach 
 dhbw-cloud job submit --project ki-kurs --files train.py -- python train.py --data ~/daten
 ```
 
-Daten für alle im Projekt gehören in den gemeinsamen Ordner: `dhbw-cloud job upload --to project-shared/daten …` legt sie nach `~/project-shared/daten`, wo jeder Job und Workspace des Projekts sie sieht. Das geht wie im Workspace nicht mit der Rolle „Lesend“. Sonst wird nur ins eigene Home hochgeladen, höchstens 5 GB je Datei; der Platz zählt zur Speichergrenze des Projekts.
+Daten für alle im Projekt gehören in den gemeinsamen Ordner: `dhbw-cloud job upload --to dhbw/project/daten …` legt sie nach `~/dhbw/project/daten`, wo jeder Job und Workspace des Projekts sie sieht. Das geht wie im Workspace nicht mit der Rolle „Lesend“. Daten einer Gruppe gehören nach `dhbw/groups/<gruppe>/…`; das geht für Mitglieder der Gruppe und für die Verwaltenden des Projekts. Der alte Pfad `project-shared/…` funktioniert weiter. Sonst wird nur ins eigene Home hochgeladen, höchstens 5 GB je Datei; der Platz zählt zur Speichergrenze des Projekts.
 
 ### Ergebnisse holen
 
-Die Dateien eines Jobs lassen sich auch ohne Workspace holen, während er läuft und nach seinem Ende. Pfade sind relativ zum Home, wie `dhbw-cloud job files` sie zeigt. Die Person, die den Job abgeschickt hat, sieht ihr ganzes Home im Projekt samt `project-shared`; Verwaltende des Projekts sehen nur den Ordner des Jobs `~/jobs/<name>`. Die erste Anfrage dauert einige Sekunden. Eine Datei darf höchstens 5 GB groß sein; größere Ergebnisse über S3 oder einen Workspace holen.
+Die Dateien eines Jobs lassen sich auch ohne Workspace holen, während er läuft und nach seinem Ende. Pfade sind relativ zum Home, wie `dhbw-cloud job files` sie zeigt. Die Person, die den Job abgeschickt hat, sieht ihr ganzes Home im Projekt samt den Ordnern unter `dhbw/`; Verwaltende des Projekts sehen nur den Ordner des Jobs `~/jobs/<name>`. Die erste Anfrage dauert einige Sekunden. Eine Datei darf höchstens 5 GB groß sein; größere Ergebnisse über S3 oder einen Workspace holen.
 
 ```
 dhbw-cloud job files j-4f3a9c0d2e                         # Ordner des Jobs, ~/jobs/<name>

@@ -475,13 +475,13 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 
 	mcpserve.AddTool(srv, cl, false, &mcp.Tool{
 		Name:        "list_job_files",
-		Description: "The files of a folder in the home a batch job ran in, also after it ended: by default the job's folder jobs/<name> with its output and checkpoints. The job's person sees their whole home (the project's shared folder at project-shared) while a member of the project; managers and admins only the job's folder. The first call may take a few seconds. Downloads are made with the CLI dhbw-cloud, not here.",
+		Description: "The files of a folder in the home a batch job ran in, also after it ended: by default the job's folder jobs/<name> with its output and checkpoints. The job's person sees their whole home (the project's shared folder at dhbw/project, their groups at dhbw/groups/<name>) while a member of the project; managers and admins only the job's folder. The first call may take a few seconds. Downloads are made with the CLI dhbw-cloud, not here.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobFilesInput) (*mcp.CallToolResult, gpu.JobFiles, error) {
 		j, err := visibleJob(ctx, s.ws, s.gpu, a, in.ID)
 		if err != nil {
 			return nil, gpu.JobFiles{}, s.mcpFail(jobErrors, "files", err)
 		}
-		root := jobFilesRoot(ctx, s.ws, a, j)
+		root, areas := jobFilesAccess(ctx, s.ws, a, j)
 		p := in.Path
 		if p == "" {
 			p = "jobs/" + j.Name
@@ -490,7 +490,7 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 		if !ok {
 			return nil, gpu.JobFiles{}, msg.Err(onlyPathsIn(root))
 		}
-		list, err := s.gpu.ListJobFiles(ctx, j, rel)
+		list, err := s.gpu.ListJobFiles(ctx, j, rel, areas)
 		if errors.Is(err, gpu.ErrNotFound) {
 			return nil, gpu.JobFiles{}, msg.Errorf("Ordner nicht gefunden.", "Folder not found.")
 		}

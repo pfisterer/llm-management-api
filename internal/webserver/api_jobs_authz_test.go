@@ -480,7 +480,7 @@ func TestJobInputsAndMounts(t *testing.T) {
 	if strings.Contains(memberJob, `"readOnly":true`) {
 		t.Errorf("a member's shared folder is read-only: %s", memberJob)
 	}
-	if !strings.Contains(readerJob, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`) {
+	if !strings.Contains(readerJob, `{"mountPath":"/home/jovyan/dhbw/project","name":"home","readOnly":true,"subPath":"project-shared"}`) {
 		t.Errorf("a reader's shared folder is writable: %s", readerJob)
 	}
 	for _, o := range []string{memberJob, readerJob} {

@@ -136,7 +136,7 @@ func checkAndSubmitJob(ctx context.Context, ws *workspace.Service, g *gpu.Servic
 		return gpu.Job{}, &workspace.Refusal{Reason: noActiveProject(req.Project)}
 	}
 	spec := gpu.JobSpec{Name: req.Name, Person: a.person, Project: req.Project, Class: grant.GPUClass, GPUs: 1, MaxHours: grant.MaxHours, Guaranteed: grant.Guaranteed && !req.Preemptible,
-		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, SharedReadOnly: hp.SharedReadOnly, ScratchGB: hp.ScratchGB, StorageGB: hp.StorageGB,
+		Image: hp.ProjectImage, Archs: hp.ImageArchs, PullSecret: hp.PullSecret, Areas: hp.Areas, ScratchGB: hp.ScratchGB, StorageGB: hp.StorageGB,
 		Command: req.Command, Notebook: req.Notebook, WorkingDir: req.WorkingDir}
 	if err := jobLLMKey(ctx, ws, k, a, req, &spec); err != nil {
 		return gpu.Job{}, err
@@ -376,26 +376,29 @@ func (s *Server) cancelJob(c *gin.Context) {
 	c.JSON(http.StatusOK, j)
 }
 
-// jobFilesRoot is the part of the home of the job's person that the actor may read, relative to the home: the whole home for that person while a member of the job's project (their own files, as in a workspace), else only the job's folder jobs/<name> (its output and checkpoints) — for the project's managers and admins, and for the person after leaving the project.
-func jobFilesRoot(ctx context.Context, ws *workspace.Service, a jobActor, j gpu.Job) string {
+// jobFilesAccess is the part of the home of the job's person that the actor may read, relative to the home: the whole home for that person while a member of the job's project (their own files, as in a workspace), else only the job's folder jobs/<name> (its output and checkpoints) — for the project's managers and admins, and for the person after leaving the project.
+// jobFilesAccess is also the areas below ~/dhbw the files pod mounts: the person's own (workspace.AreasFor) when they may read their whole home, else none (only the job's folder is readable anyway).
+func jobFilesAccess(ctx context.Context, ws *workspace.Service, a jobActor, j gpu.Job) (string, []workspace.Area) {
 	if strings.EqualFold(j.Person, a.person) {
-		if p, err := ws.Get(ctx, j.Project); err == nil && p.RoleOf(a.tokens) != "" {
-			return ""
+		if p, err := ws.Get(ctx, j.Project); err == nil {
+			if role := p.RoleOf(a.tokens); role != "" {
+				return "", p.AreasFor(a.tokens, role)
+			}
 		}
 	}
-	return "jobs/" + j.Name
+	return "jobs/" + j.Name, nil
 }
 
-// jobFile is the visible job and the checked path of a file request: in the readable part of the home (jobFilesRoot), the job's folder when path is empty.
-func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
+// jobFile is the visible job, the checked path of a file request (in the readable part of the home, jobFilesAccess; the job's folder when path is empty) and the areas its files pod mounts.
+func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, []workspace.Area, bool) {
 	ctx := c.Request.Context()
 	a := s.jobActor(c)
 	j, err := visibleJob(ctx, s.ws, s.gpu, a, c.Param("id"))
 	if err != nil {
 		s.fail(c, jobErrors, "files", err)
-		return gpu.Job{}, "", false
+		return gpu.Job{}, "", nil, false
 	}
-	root := jobFilesRoot(ctx, s.ws, a, j)
+	root, areas := jobFilesAccess(ctx, s.ws, a, j)
 	p := c.Query("path")
 	if p == "" {
 		p = "jobs/" + j.Name
@@ -403,16 +406,16 @@ func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
 	rel, ok := gpu.JobFilePath(p, root)
 	if !ok {
 		abort(c, http.StatusBadRequest, "invalid", onlyPathsIn(root))
-		return gpu.Job{}, "", false
+		return gpu.Job{}, "", nil, false
 	}
-	return j, rel, true
+	return j, rel, areas, true
 }
 
 // listJobFiles godoc
 //
 //	@ID				listGPUJobFiles
 //	@Summary		Files of a batch job
-//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home, with the project's shared folder at project-shared, while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
+//	@Description	A folder of the home the job ran in (the person's home in the project's volume), read by a short-lived pod, also when the job has ended and without a workspace. path is relative to the home; without it the job's folder ~/jobs/<name> (output, checkpoints). The job's person reads their whole home, with their areas below dhbw/ (the project's shared folder at dhbw/project, their groups at dhbw/groups/<name>; the old path project-shared/ still works), while a member of the project; the project's managers and admins, and the person after leaving it, only the job's folder. Symbolic links are listed, not followed. The first request may take a few seconds.
 //	@Tags			gpu
 //	@Produce		json
 //	@Security		BearerAuth
@@ -423,11 +426,11 @@ func (s *Server) jobFile(c *gin.Context) (gpu.Job, string, bool) {
 //	@Failure		404		{object}	ErrorResponse
 //	@Router			/v1/gpu/jobs/{id}/files [get]
 func (s *Server) listJobFiles(c *gin.Context) {
-	j, rel, ok := s.jobFile(c)
+	j, rel, areas, ok := s.jobFile(c)
 	if !ok {
 		return
 	}
-	list, err := s.gpu.ListJobFiles(c.Request.Context(), j, rel)
+	list, err := s.gpu.ListJobFiles(c.Request.Context(), j, rel, areas)
 	if errors.Is(err, gpu.ErrNotFound) {
 		abort(c, http.StatusNotFound, "not_found", msg.T("Ordner nicht gefunden.", "Folder not found."))
 		return
@@ -458,13 +461,13 @@ func (s *Server) downloadJobFile(c *gin.Context) {
 		abort(c, http.StatusBadRequest, "invalid", msg.T("path fehlt.", "path is missing."))
 		return
 	}
-	j, rel, ok := s.jobFile(c)
+	j, rel, areas, ok := s.jobFile(c)
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), gpu.JobFileTimeout)
 	defer cancel()
-	body, size, err := s.gpu.OpenJobFile(ctx, j, rel)
+	body, size, err := s.gpu.OpenJobFile(ctx, j, rel, areas)
 	if errors.Is(err, gpu.ErrNotFound) {
 		abort(c, http.StatusNotFound, "not_found", msg.T("Datei nicht gefunden.", "File not found."))
 		return
@@ -484,7 +487,7 @@ func (s *Server) downloadJobFile(c *gin.Context) {
 //
 //	@ID				uploadGPUFile
 //	@Summary		Upload a file into the own home of a project
-//	@Description	For batch jobs without a workspace (dhbw-cloud job submit --files, dhbw-cloud job upload): the body is written as path into the caller's home in the project, where the caller's jobs run, or under project-shared/ into the project's shared folder (not for the role reader, as in a workspace). Missing folders are made, an existing file is replaced once the new one is complete. Only the caller's own home and the shared folder, in an active project with workspace access; at most 5 GB and 30 minutes, Content-Length required. The first request may take a few seconds.
+//	@Description	For batch jobs without a workspace (dhbw-cloud job submit --files, dhbw-cloud job upload): the body is written as path into the caller's home in the project, where the caller's jobs run, or below dhbw/ into one of the caller's areas they may write: dhbw/project/ (the project's shared folder, also as project-shared/; not for the role reader, as in a workspace), dhbw/groups/<name>/ (the caller's groups; managers all of them). Missing folders are made, an existing file is replaced once the new one is complete. Only the caller's own home and areas, in an active project with workspace access; at most 5 GB and 30 minutes, Content-Length required. The first request may take a few seconds.
 //	@Tags			gpu
 //	@Accept			octet-stream
 //	@Produce		json
@@ -525,10 +528,9 @@ func (s *Server) uploadJobFile(c *gin.Context) {
 		s.fail(c, jobErrors, "upload", &workspace.Refusal{Reason: noActiveProject(project)})
 		return
 	}
-	sharedRO := hps[i].SharedReadOnly
 	ctx, cancel := context.WithTimeout(ctx, gpu.JobFileTimeout)
 	defer cancel()
-	f, err := s.gpu.PutJobFile(ctx, project, a.person, rel, sharedRO, c.Request.Body, c.Request.ContentLength)
+	f, err := s.gpu.PutJobFile(ctx, project, a.person, rel, hps[i].Areas, c.Request.Body, c.Request.ContentLength)
 	if errors.Is(err, gpu.ErrNotFound) {
 		// The files pod refuses a path that leaves the home through a symbolic link.
 		abort(c, http.StatusBadRequest, "invalid", msg.T("Pfad einer Datei im Home angeben.", "Give the path of a file in the home."))

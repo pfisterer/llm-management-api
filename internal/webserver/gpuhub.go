@@ -72,6 +72,8 @@ type HubProject struct {
 	GPUClasses []HubGPUClass `json:"gpu_classes"`
 	// SharedReadOnly: the person only reads the project's shared folder (role reader); the hub mounts it read-only, the GPU kernel pod follows the server.
 	SharedReadOnly bool `json:"shared_read_only"`
+	// Areas are the folders of the project's volume the person's pods mount below ~/dhbw (workspace.AreasFor): the shared folder and the person's groups; empty without storage. The hub mounts them, the GPU kernel pods take the server's mounts, jobs and files pods get the same.
+	Areas []workspace.Area `json:"areas"`
 	// EndsAt and DeleteAt: the project's last day and the day its files are deleted, for the warning in the start form; nil = none.
 	EndsAt   *time.Time `json:"ends_at,omitempty"`
 	DeleteAt *time.Time `json:"delete_at,omitempty"`
@@ -200,7 +202,7 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 		if ws.HasCredentials(ctx, m.Slug) {
 			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
 		}
-		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: offeredProfiles(m), ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), SplitNeedsBase: splitNeedsBase(m), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
+		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: offeredProfiles(m), ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), SplitNeedsBase: splitNeedsBase(m), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, SharedReadOnly: m.Role == workspace.RoleReader, Areas: m.Areas, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
 	}
 	return out
 }

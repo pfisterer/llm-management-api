@@ -1,6 +1,6 @@
 """dhbw-cloud: the DHBW Cloud from the command line. `dhbw-cloud login` stores the API token for every command (inside a workspace of the DHBW Cloud it is not needed: the workspace's own hub token is used, with the person's rights in their projects); `dhbw-cloud project list` shows the caller's projects with the project id that --project takes (a name or a unique part of it works too); `dhbw-cloud job …` are the batch jobs (docs/architektur.md "Batch-Jobs" in aiaas-deployment). Further areas of the API come as further subcommands.
 
-A job runs in the project's environment with the person's home and ~/project-shared on one GPU of a class the project has, through the project's queue; its output also lands in ~/jobs/<name>/output-<attempt>.log, and `dhbw-cloud job files|get` fetch its files without a workspace, `job submit --files` and `job upload` bring files into the home. Paths are relative to the home: inside a workspace the current directory is the default working directory, and the project is DHBW_PROJECT when the workspace sets it."""
+A job runs in the project's environment with the person's home and the folders below ~/dhbw (~/dhbw/project, the person's groups in ~/dhbw/groups) on one GPU of a class the project has, through the project's queue; its output also lands in ~/jobs/<name>/output-<attempt>.log, and `dhbw-cloud job files|get` fetch its files without a workspace, `job submit --files` and `job upload` bring files into the home. Paths are relative to the home: inside a workspace the current directory is the default working directory, and the project is DHBW_PROJECT when the workspace sets it."""
 
 import argparse
 import json
@@ -449,9 +449,9 @@ def main(argv=None):
     s.add_argument("-f", "--follow", action="store_true", help="danach die Ausgabe verfolgen")
     s.add_argument("command", nargs=argparse.REMAINDER, help="Befehl nach --")
     s.set_defaults(func=cmd_submit)
-    s = jobs.add_parser("upload", help="Dateien ins eigene Home des Projekts oder nach project-shared hochladen: dhbw-cloud job upload --to project-shared/daten messung.csv")
+    s = jobs.add_parser("upload", help="Dateien ins eigene Home des Projekts oder in einen gemeinsamen Ordner unter dhbw/ hochladen: dhbw-cloud job upload --to dhbw/project/daten messung.csv")
     s.add_argument("--project", help="Projekt wie bei submit; Standard DHBW_PROJECT")
-    s.add_argument("--to", help="Ordner im Home, project-shared/… für den gemeinsamen Ordner des Projekts; Standard das Home selbst")
+    s.add_argument("--to", help="Ordner im Home; dhbw/project/… für den gemeinsamen Ordner des Projekts, dhbw/groups/<gruppe>/… für den einer eigenen Gruppe; Standard das Home selbst")
     s.add_argument("paths", nargs="+", metavar="PFAD", help="lokale Dateien und Ordner (Ordner mit Inhalt)")
     s.set_defaults(func=cmd_upload)
     s = jobs.add_parser("list", help="laufende und wartende Jobs")

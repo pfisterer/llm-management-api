@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"io"
 	"net"
 	"net/http"
@@ -167,7 +168,7 @@ func TestJobFiles(t *testing.T) {
 	ctx := context.Background()
 	j := Job{ID: "j-0123456789", Name: "train", Person: "a@dhbw.de", Project: "t-kurs"}
 
-	list, err := s.ListJobFiles(ctx, j, "jobs/train")
+	list, err := s.ListJobFiles(ctx, j, "jobs/train", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +180,7 @@ func TestJobFiles(t *testing.T) {
 		t.Errorf("listing: %+v", list)
 	}
 	read := func(rel string) (string, error) {
-		body, _, err := s.OpenJobFile(ctx, j, rel)
+		body, _, err := s.OpenJobFile(ctx, j, rel, nil)
 		if err != nil {
 			return "", err
 		}
@@ -202,7 +203,7 @@ func TestJobFiles(t *testing.T) {
 	if _, err := read("jobs/train"); !errors.As(err, &refused) {
 		t.Errorf("folder as file: %v", err)
 	}
-	if _, err := s.ListJobFiles(ctx, j, "jobs/train/out.txt"); !errors.As(err, &refused) {
+	if _, err := s.ListJobFiles(ctx, j, "jobs/train/out.txt", nil); !errors.As(err, &refused) {
 		t.Errorf("file as folder: %v", err)
 	}
 
@@ -218,7 +219,7 @@ func TestJobFiles(t *testing.T) {
 		}
 	}
 	// While a download runs, the pod stays however long it takes; unused for filesIdle after it, the pod is deleted.
-	body, _, err := s.OpenJobFile(ctx, j, "jobs/train/out.txt")
+	body, _, err := s.OpenJobFile(ctx, j, "jobs/train/out.txt", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,8 +264,10 @@ func TestPutJobFile(t *testing.T) {
 		return addrs[name]
 	}
 	ctx := context.Background()
+	member := []workspace.Area{{Mount: workspace.ProjectArea, Dir: workspace.ProjectAreaDir}, {Mount: "dhbw/groups/g1", Dir: "groups/0000aaaa"}, {Mount: "dhbw/groups/g2", Dir: "groups/0000bbbb", ReadOnly: true}}
+	reader := []workspace.Area{{Mount: workspace.ProjectArea, Dir: workspace.ProjectAreaDir, ReadOnly: true}}
 	put := func(rel, content string) (JobFile, error) {
-		return s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", rel, false, strings.NewReader(content), int64(len(content)))
+		return s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", rel, member, strings.NewReader(content), int64(len(content)))
 	}
 	if f, err := put("jobs/train/train.py", "print(1)"); err != nil || f.Size != 8 || f.Path != "jobs/train/train.py" {
 		t.Fatalf("upload: %+v %v", f, err)
@@ -295,18 +298,24 @@ func TestPutJobFile(t *testing.T) {
 		t.Error("written outside the home")
 	}
 	// A body shorter than announced is refused and leaves nothing behind.
-	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "short.txt", false, strings.NewReader("ab"), 5); err == nil {
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "short.txt", member, strings.NewReader("ab"), 5); err == nil {
 		t.Error("short body accepted")
 	}
 	if _, err := os.Stat(filepath.Join(home, "short.txt")); err == nil {
 		t.Error("short body written")
 	}
-	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "big", false, bytes.NewReader(nil), JobFileMaxBytes+1); !errors.As(err, &refused) {
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "big", member, bytes.NewReader(nil), JobFileMaxBytes+1); !errors.As(err, &refused) {
 		t.Errorf("too large: %v", err)
+	}
+	// Below ~/dhbw only into a writable area: not the folder itself, not a read-only group, not beside the areas; refused before any pod.
+	for _, rel := range []string{"dhbw/notes.txt", "dhbw/groups/g2/a.txt", "dhbw/groups/other/a.txt", "dhbw/groups/g1", "project-shared"} {
+		if _, err := put(rel, "x"); !errors.As(err, &refused) {
+			t.Errorf("%s: %v", rel, err)
+		}
 	}
 
 	// The upload pod may write and says so; the reading pod, started for a listing, mounts read-only and refuses PUT.
-	if _, err := s.ListJobFiles(ctx, Job{Project: "t-kurs", Person: "a@dhbw.de"}, "jobs"); err != nil {
+	if _, err := s.ListJobFiles(ctx, Job{Project: "t-kurs", Person: "a@dhbw.de"}, "jobs", member); err != nil {
 		t.Fatal(err)
 	}
 	if len(k.created) != 2 {
@@ -314,28 +323,30 @@ func TestPutJobFile(t *testing.T) {
 	}
 	up, _ := json.Marshal(k.created[0])
 	ro, _ := json.Marshal(k.created[1])
-	for _, want := range []string{`"component":"upload"`, `"mountPath":"/data","name":"home","readOnly":false`, `"mountPath":"/data/project-shared","name":"home","readOnly":false,"subPath":"project-shared"`, `"rw"]`, `mkdir -p \"/ws/$DHBW_HOME_DIR/project-shared\" /ws/project-shared`} {
+	for _, want := range []string{`"component":"upload"`, `"mountPath":"/data","name":"home","readOnly":false`, `{"mountPath":"/data/dhbw/project","name":"home","subPath":"project-shared"}`, `{"mountPath":"/data/dhbw/groups/g1","name":"home","subPath":"groups/0000aaaa"}`, `{"mountPath":"/data/dhbw/groups/g2","name":"home","readOnly":true,"subPath":"groups/0000bbbb"}`, `"rw"]`, `"dhbw-dirs","homes/a-dhbw-de`, `"dhbw/project","project-shared","dhbw/groups/g1","groups/0000aaaa","dhbw/groups/g2","groups/0000bbbb"]`} {
 		if !strings.Contains(string(up), want) {
 			t.Errorf("upload pod lacks %s: %s", want, up)
 		}
 	}
-	for _, want := range []string{`"component":"files"`, `"mountPath":"/data","name":"home","readOnly":true`, `"mountPath":"/data/project-shared","name":"home","readOnly":true`, `"ro"]`} {
+	for _, want := range []string{`"component":"files"`, `"mountPath":"/data","name":"home","readOnly":true`, `{"mountPath":"/data/dhbw/project","name":"home","readOnly":true,"subPath":"project-shared"}`, `{"mountPath":"/data/dhbw/groups/g1","name":"home","readOnly":true,"subPath":"groups/0000aaaa"}`, `"ro"]`} {
 		if !strings.Contains(string(ro), want) {
 			t.Errorf("reading pod lacks %s: %s", want, ro)
 		}
 	}
-	// A reader of the project writes the home, never the shared folder: refused before any pod, and its upload pod mounts the shared folder read-only.
+	// A reader of the project writes the home, never the shared folder (also by its old path): refused before any pod, and its upload pod mounts the shared folder read-only.
 	var refusedShared *JobRefused
-	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "project-shared/x", true, strings.NewReader("x"), 1); !errors.As(err, &refusedShared) {
-		t.Errorf("reader into project-shared: %v", err)
+	for _, rel := range []string{"project-shared/x", "dhbw/project/x"} {
+		if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", rel, reader, strings.NewReader("x"), 1); !errors.As(err, &refusedShared) {
+			t.Errorf("reader into %s: %v", rel, err)
+		}
 	}
-	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "notes.md", true, strings.NewReader("x"), 1); err != nil {
+	if _, err := s.PutJobFile(ctx, "t-kurs", "a@dhbw.de", "notes.md", reader, strings.NewReader("x"), 1); err != nil {
 		t.Fatal(err)
 	}
 	if len(k.created) != 3 {
 		t.Fatalf("pods created: %d, want a third for the reader's access", len(k.created))
 	}
-	if b, _ := json.Marshal(k.created[2]); !strings.Contains(string(b), `"mountPath":"/data/project-shared","name":"home","readOnly":true`) {
+	if b, _ := json.Marshal(k.created[2]); !strings.Contains(string(b), `{"mountPath":"/data/dhbw/project","name":"home","readOnly":true,"subPath":"project-shared"}`) {
 		t.Errorf("reader's upload pod writes the shared folder: %s", b)
 	}
 	roName := k.created[1]["metadata"].(map[string]any)["name"].(string)

@@ -282,6 +282,9 @@ func (p Project) withLists() Project {
 	if p.GPUsByClass == nil {
 		p.GPUsByClass = map[string]int{}
 	}
+	if p.Groups == nil {
+		p.Groups = []Group{}
+	}
 	return p
 }
 
@@ -296,6 +299,8 @@ type Mine struct {
 	ReleaseEffective EffectiveRelease `json:"release_effective"`
 	// ScratchEffectiveGB is the local storage in GB its servers and GPU kernels get (the budget's or the default; scratch.go).
 	ScratchEffectiveGB int `json:"scratch_effective_gb" example:"1"`
+	// Areas are the folders below ~/dhbw the person's servers, GPU kernels, jobs and file transfers mount in the project (AreasFor); empty without storage.
+	Areas []Area `json:"areas"`
 }
 
 // ForPerson lists the active projects the person belongs to; admins (all=true) get every project, with role "admin" where they are no member.
@@ -313,7 +318,10 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if role == "" || (!all && !p.Active(s.now())) || p.NoWorkspaces {
 			continue
 		}
-		m := Mine{Project: p.withLists(), Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p), ScratchEffectiveGB: s.ScratchGB(p)}
+		m := Mine{Project: p.withLists(), Role: role, BudgetStatus: []BudgetStatus{}, ReleaseCeiling: s.ReleaseCeiling(p), ReleaseEffective: s.EffectiveRelease(p), ScratchEffectiveGB: s.ScratchGB(p), Areas: p.AreasFor(tokens, role)}
+		if m.Areas == nil {
+			m.Areas = []Area{}
+		}
 		if p.ImageGitURL != "" && s.builds != nil {
 			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
 				m.ImageBuild = b
@@ -359,6 +367,9 @@ func (s *Service) validate(p *Project) error {
 			return invalid("Rolle %q unbekannt (reader, member, manager).", "Unknown role %q (reader, member, manager).", m.Role)
 		}
 		p.Members[i] = m
+	}
+	if err := validateGroups(p); err != nil {
+		return err
 	}
 	p.Profiles = s.knownProfiles(p.Profiles)
 	// The version is stored as chosen: an empty base or the id of a family from before versions becomes the version it stands for, so a new default version changes nothing for the project.
@@ -438,16 +449,16 @@ func (s *Service) MayManage(ctx context.Context, tokens []string, admin bool, sl
 	return false, nil
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the groups, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
 	if !asAdmin {
-		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject
+		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm, groups := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject, p.Groups
 		p = cur
-		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm
+		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject, p.Groups = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm, groups
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)

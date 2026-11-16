@@ -165,13 +165,13 @@ type JobSpec struct {
 	GPUs       int
 	MaxHours   float64
 	Guaranteed bool
-	// The project's environment, as the hub starts it (HubProject): image, architectures, pull secret; the project's volume ws-<slug> and whether the person only reads its shared folder.
-	Image          string
-	Archs          []string
-	PullSecret     string
-	SharedReadOnly bool
-	ScratchGB      int
-	StorageGB      int // the project's volume ws-<slug>, made or grown to this size before the job
+	// The project's environment, as the hub starts it (HubProject): image, architectures, pull secret; the project's volume ws-<slug> and the person's areas in it below ~/dhbw (workspace.AreasFor: the shared folder, their groups).
+	Image      string
+	Archs      []string
+	PullSecret string
+	Areas      []workspace.Area
+	ScratchGB  int
+	StorageGB  int // the project's volume ws-<slug>, made or grown to this size before the job
 	// LLMKey is the person's LLM key for the job (keys.WorkspaceKey, as their workspaces in the project get it), drawn from LLMProject; it goes into a Secret <id>-llm owned by the Job, never into the Job itself or the job's row. LLMBaseURL is the LLM API as people reach it. Empty = no key.
 	LLMKey     string
 	LLMProject string
@@ -737,19 +737,9 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 	}
 	sec := map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}
 	home := "homes/" + user
-	// As the hub's init container dhbw-dirs: the home and the shared folder, created as the person in the init image, which alone sees the whole volume.
-	spec["initContainers"] = []any{map[string]any{
-		"name": "dhbw-dirs", "image": s.cfg.Jobs.InitImage,
-		"command":         []any{"sh", "-c", `mkdir -p "/ws/$DHBW_HOME_DIR" /ws/project-shared`},
-		"env":             []any{envVar("DHBW_HOME_DIR", home)},
-		"securityContext": map[string]any{"runAsUser": 1000, "runAsGroup": 100, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}},
-		"resources":       map[string]any{"requests": map[string]any{"cpu": "10m", "memory": "32Mi"}, "limits": map[string]any{"memory": "128Mi"}},
-		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": "/ws"}},
-	}}
-	shared := map[string]any{"name": "home", "mountPath": HomeDir + "/project-shared", "subPath": "project-shared"}
-	if sp.SharedReadOnly {
-		shared["readOnly"] = true
-	}
+	// As the hub's init container dhbw-dirs: the home, the areas and their mount points, created as the person in the init image, which alone sees the whole volume.
+	spec["initContainers"] = []any{areaDirsInit(s.cfg.Jobs.InitImage, home, sp.Areas, map[string]any{"runAsUser": 1000, "runAsGroup": 100, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}})}
+	mounts := append([]any{map[string]any{"name": "home", "mountPath": HomeDir, "subPath": home}}, areaMounts(HomeDir, sp.Areas, false)...)
 	spec["containers"] = []any{map[string]any{
 		"name":    "job",
 		"image":   r.Image,
@@ -759,7 +749,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 		"workingDir":      HomeDir,
 		"securityContext": sec,
 		"resources":       map[string]any{"requests": requests, "limits": limits},
-		"volumeMounts":    []any{map[string]any{"name": "home", "mountPath": HomeDir, "subPath": home}, shared, shmMount},
+		"volumeMounts":    append(mounts, shmMount),
 	}}
 	if sp.LLMKey != "" {
 		// The key from its Secret, so that it is in neither the Job nor the pod spec; the address as it is, like OPENAI_BASE_URL in a workspace.

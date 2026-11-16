@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"errors"
+	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 	"regexp"
 	"strings"
 	"testing"
@@ -91,7 +92,7 @@ func TestSubmitAndSyncJob(t *testing.T) {
 	ctx := context.Background()
 	s, k := jobTestService(t)
 	sp := JobSpec{Name: "training-1", Person: "dennis.pfisterer@dhbw.de", Project: "t-a", Class: "general-small", GPUs: 1, MaxHours: 2, Image: "reg/envs/t-a:1", Archs: []string{"amd64"},
-		SharedReadOnly: true, ScratchGB: 5, StorageGB: 10, Command: "python train.py", WorkingDir: "/home/jovyan/projects/kurs"}
+		Areas: []workspace.Area{{Mount: workspace.ProjectArea, Dir: workspace.ProjectAreaDir, ReadOnly: true}, {Mount: "dhbw/groups/g1", Dir: "groups/0000aaaa"}}, ScratchGB: 5, StorageGB: 10, Command: "python train.py", WorkingDir: "/home/jovyan/projects/kurs"}
 	for name, bad := range map[string]JobSpec{
 		"no command":  {GPUs: 1, StorageGB: 1},
 		"both":        {GPUs: 1, Command: "x", Notebook: "a.ipynb"},
@@ -117,7 +118,7 @@ func TestSubmitAndSyncJob(t *testing.T) {
 	obj := dump(k.objects["/apis/batch/v1/namespaces/jupyterhub/jobs/"+j.ID])
 	for _, want := range []string{
 		`"kueue.x-k8s.io/queue-name":"job-t-a--general-small"`, `"kueue.x-k8s.io/priority-class":"batch"`, `"suspend":true`, `"activeDeadlineSeconds":7200`, `"ttlSecondsAfterFinished":86400`,
-		`"subPath":"homes/dennis-pfisterer-dhbw-de---c771a8ee"`, `"mountPath":"/home/jovyan/project-shared","name":"home","readOnly":true`, `"claimName":"ws-t-a"`,
+		`"subPath":"homes/dennis-pfisterer-dhbw-de---c771a8ee"`, `{"mountPath":"/home/jovyan/dhbw/project","name":"home","readOnly":true,"subPath":"project-shared"}`, `{"mountPath":"/home/jovyan/dhbw/groups/g1","name":"home","subPath":"groups/0000aaaa"}`, `"dhbw/groups/g1","groups/0000aaaa"]`, `"claimName":"ws-t-a"`,
 		`"nvidia.com/gpu":"1"`, `"ephemeral-storage":"5Gi"`, `"kubernetes.io/arch":"amd64"`, `"component":"job"`, `"dhbw.cloud/profile":"job"`, `"hub.jupyter.org/username":"dennis.pfisterer@dhbw.de"`,
 		`"name":"DHBW_JOB_WORKDIR","value":"projects/kurs"`, `"image":"reg/platform/base-python:v2.7.2@sha256:abc"`, `"terminationGracePeriodSeconds":120`,
 		`"emptyDir":{"medium":"Memory","sizeLimit":"5616Mi"},"name":"dshm"`, `"mountPath":"/dev/shm","name":"dshm"`,
