@@ -27,6 +27,13 @@ func TestUpsertFromTree(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 	p, _ := s.Get(ctx, st.Slug)
+	// The same again (the tree sends every project on each pass) writes nothing: the version a manager loaded stays valid.
+	if _, err := s.UpsertFromTree(ctx, node, tp); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := s.Get(ctx, st.Slug); !sameVersion(again.UpdatedAt, p.UpdatedAt) {
+		t.Fatalf("an unchanged project was written again: %v → %v", p.UpdatedAt, again.UpdatedAt)
+	}
 	if !p.Managed() || !slices.Contains(p.Profiles, "gpu") || !slices.Contains(p.Profiles, "cpu") || p.Limits.GPUsPerPerson != 1 || p.GPUsByClass["l4-3q"] != 4 || len(p.Budgets) != 2 || p.LLMRPM != 120 || p.LLMTPM != 400000 || !slices.Equal(p.LLMModels, []string{"all-proxy-models", "code"}) {
 		t.Fatalf("created project = %+v", p)
 	}

@@ -103,6 +103,9 @@ type Project struct {
 	EndsAt   *time.Time `json:"ends_at,omitempty"` // after this day nobody can start in the project
 	// Groups are the project's groups of members with their own folder below ~/dhbw/groups (groups.go), kept by its managers; not the tree's.
 	Groups []Group `json:"groups" gorm:"column:work_groups;serializer:json"`
+	// GroupChoice opens the group choice (groups.go, JoinGroup): while it is on, every member or reader of the project may join one of its groups and leave it again on their own, and the group folders are mounted only for the managers, so nobody joins a group for a moment to read its files. Off: only the managers assign. GroupMaxMembers is how many people (user tokens) a group takes in the choice; 0 = no limit. The managers' assignment is not bound by it. Kept by the managers.
+	GroupChoice     bool `json:"group_choice" gorm:"column:group_choice"`
+	GroupMaxMembers int  `json:"group_max_members" gorm:"column:group_max_members"`
 	// SharedWrite is who writes the shared folder ~/dhbw/project: SharedWriteAll (every member) or SharedWriteManagers (material handed out); the managers always do. Empty = all. Kept by the managers.
 	SharedWrite string `json:"shared_write" gorm:"column:shared_write" enums:"all,managers"`
 	// StorageHomeGB is the limit of a member's home in the project's volume (quotas.go), StorageProjectGB that of the shared folder; 0 = home: automatic (AutoHomeGB), shared folder: none. Kept by the managers, at most StorageGB.
@@ -120,6 +123,7 @@ type Project struct {
 	CreatedBy string    `json:"created_by,omitempty"`
 	UpdatedBy string    `json:"updated_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt is also the project's version for saving it (Service.Update): a client that sends the updated_at it loaded is refused with ErrConflict when the project changed since; without one nothing is checked.
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -168,7 +172,14 @@ func (p Project) AllowsGPUClass(class string) bool { return slices.Contains(p.GP
 var (
 	ErrNotFound = errors.New("project not found")
 	ErrExists   = errors.New("project exists")
+	// ErrConflict: the project changed after the client loaded it (UpdatedAt differs); the client loads it again instead of overwriting what somebody else saved.
+	ErrConflict = errors.New("project changed meanwhile")
 )
+
+// sameVersion compares two versions (UpdatedAt) at the precision the database keeps (microseconds), so a time from a save compares equal to the same time read back.
+func sameVersion(a, b time.Time) bool {
+	return a.Truncate(time.Microsecond).Equal(b.Truncate(time.Microsecond))
+}
 
 // Store keeps the projects.
 type Store interface {
@@ -176,5 +187,7 @@ type Store interface {
 	Get(ctx context.Context, slug string) (Project, error)
 	Create(ctx context.Context, p *Project) error
 	Update(ctx context.Context, p *Project) error
+	// Modify changes one project atomically: fn gets the stored project and changes it in place, and nobody else writes the project between that read and the write (a row lock in the database, the mutex in memory); an error of fn writes nothing and is returned as it is. The answer is the project as written, with its new UpdatedAt.
+	Modify(ctx context.Context, slug string, fn func(p *Project) error) (Project, error)
 	Delete(ctx context.Context, slug string) error
 }

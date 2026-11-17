@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // MemoryStore is for development and tests.
@@ -26,7 +27,7 @@ func (s *MemoryStore) List(context.Context) ([]Project, error) {
 	defer s.mu.Unlock()
 	out := make([]Project, 0, len(s.m))
 	for _, p := range s.m {
-		out = append(out, p)
+		out = append(out, cloneProject(p))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	return out, nil
@@ -39,7 +40,7 @@ func (s *MemoryStore) Get(_ context.Context, slug string) (Project, error) {
 	if !ok {
 		return Project{}, ErrNotFound
 	}
-	return p, nil
+	return cloneProject(p), nil
 }
 
 func (s *MemoryStore) Create(_ context.Context, p *Project) error {
@@ -62,9 +63,43 @@ func (s *MemoryStore) Update(_ context.Context, p *Project) error {
 	if !ok {
 		return ErrNotFound
 	}
-	p.ID, p.CreatedAt, p.CreatedBy, p.UpdatedAt = cur.ID, cur.CreatedAt, cur.CreatedBy, time.Now().UTC()
-	s.m[p.Slug] = *p
+	s.write(p, cur)
 	return nil
+}
+
+// write stores p over cur with a new version: microseconds like the database, and always later than cur's, so two writes in the same microsecond are still two versions.
+func (s *MemoryStore) write(p *Project, cur Project) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if !now.After(cur.UpdatedAt) {
+		now = cur.UpdatedAt.Add(time.Microsecond)
+	}
+	p.ID, p.Slug, p.CreatedAt, p.CreatedBy, p.UpdatedAt = cur.ID, cur.Slug, cur.CreatedAt, cur.CreatedBy, now
+	s.m[p.Slug] = *p
+}
+
+func (s *MemoryStore) Modify(_ context.Context, slug string, fn func(p *Project) error) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.m[slug]
+	if !ok {
+		return Project{}, ErrNotFound
+	}
+	p := cloneProject(cur)
+	if err := fn(&p); err != nil {
+		return Project{}, err
+	}
+	s.write(&p, cur)
+	return p, nil
+}
+
+// cloneProject copies the lists a caller changes in place (members, groups and theirs), so neither a refused change nor a caller editing what Get handed out alters the project the memory store holds, as with a database.
+func cloneProject(p Project) Project {
+	p.Groups = slices.Clone(p.Groups)
+	for i := range p.Groups {
+		p.Groups[i].Members = slices.Clone(p.Groups[i].Members)
+	}
+	p.Members = slices.Clone(p.Members)
+	return p
 }
 
 func (s *MemoryStore) Delete(_ context.Context, slug string) error {
@@ -169,7 +204,39 @@ func (s *GormStore) Update(ctx context.Context, p *Project) error {
 		return err
 	}
 	p.ID, p.CreatedAt, p.CreatedBy = cur.ID, cur.CreatedAt, cur.CreatedBy
-	return s.db.WithContext(ctx).Save(p).Error
+	if err := s.db.WithContext(ctx).Save(p).Error; err != nil {
+		return err
+	}
+	// Postgres keeps microseconds (the driver cuts the rest off): the version handed out must be the one read back later.
+	p.UpdatedAt = p.UpdatedAt.Truncate(time.Microsecond)
+	return nil
+}
+
+// Modify reads the project with SELECT … FOR UPDATE inside a transaction, so concurrent changes of the same project (two people joining the last free place of a group, a join and a manager's save) run one after the other; other projects and plain reads are not held up.
+func (s *GormStore) Modify(ctx context.Context, slug string, fn func(p *Project) error) (Project, error) {
+	var out Project
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var cur Project
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cur, "slug = ?", slug).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		p := cur
+		if err := fn(&p); err != nil {
+			return err
+		}
+		p.ID, p.Slug, p.CreatedAt, p.CreatedBy = cur.ID, cur.Slug, cur.CreatedAt, cur.CreatedBy
+		if err := tx.Save(&p).Error; err != nil {
+			return err
+		}
+		p.UpdatedAt = p.UpdatedAt.Truncate(time.Microsecond)
+		out = p
+		return nil
+	})
+	return out, err
 }
 
 func (s *GormStore) Delete(ctx context.Context, slug string) error {

@@ -132,3 +132,107 @@ func TestProjectGroups(t *testing.T) {
 		t.Errorf("manager after archiving: %q", got)
 	}
 }
+
+// The group choice over HTTP (decided 17.11.2026): the managers open it, members and readers join and leave a group with a place on their own, see how full the groups are and only their own group's members, and nobody mounts a group folder while it is open; a manager's save over a stale version is a 409 conflict, a new group token a 400.
+func TestGroupChoiceAPI(t *testing.T) {
+	e := newJobEnv(t, func(o *Options, _ *gpu.Config) { o.Usage = usage.NewMemoryStore() })
+	project := func(email string) workspace.Mine {
+		t.Helper()
+		code, body := call(t, e.h, "GET", "/v1/workspaces/projects", "oidc:"+email, "", nil)
+		var list struct {
+			Items []workspace.Mine `json:"items"`
+		}
+		if err := json.Unmarshal(body, &list); code != http.StatusOK || err != nil {
+			t.Fatalf("projects of %s: %d %s", email, code, body)
+		}
+		for _, m := range list.Items {
+			if m.Slug == "t-kurs" {
+				return m
+			}
+		}
+		t.Fatalf("%s: no t-kurs in %s", email, body)
+		return workspace.Mine{}
+	}
+	loaded := project(jzManager).Project
+	p := loaded
+	p.GroupChoice, p.GroupMaxMembers = true, 1
+	p.Groups = []workspace.Group{{Name: "gruppe-1"}, {Name: "gruppe-2"}}
+	code, body := call(t, e.h, "PUT", "/v1/workspaces/projects/t-kurs", "oidc:"+jzManager, "", p)
+	if code != http.StatusOK {
+		t.Fatalf("manager opens the choice: %d %s", code, body)
+	}
+	// The same version again: somebody else's change is not overwritten.
+	p.Description = "veraltet"
+	code, body = call(t, e.h, "PUT", "/v1/workspaces/projects/t-kurs", "oidc:"+jzManager, "", p)
+	var fail ErrorResponse
+	_ = json.Unmarshal(body, &fail)
+	if code != http.StatusConflict || fail.Code != "conflict" || !strings.Contains(fail.Error, "inzwischen geändert") {
+		t.Fatalf("stale save: %d %s", code, body)
+	}
+	saved := project(jzManager)
+	g1, g2 := saved.Groups[0].ID, saved.Groups[1].ID
+	membership := func(method, email, group string) (int, []byte) {
+		return call(t, e.h, method, "/v1/workspaces/projects/t-kurs/groups/"+group+"/membership", "oidc:"+email, "", nil)
+	}
+	if code, body := membership("POST", jzMember, g1); code != http.StatusOK {
+		t.Fatalf("member joins: %d %s", code, body)
+	}
+	for _, c := range []struct {
+		name, method, email, group string
+		want                       int
+	}{
+		{"full", "POST", jzOther, g1, http.StatusConflict},
+		{"second group", "POST", jzMember, g2, http.StatusConflict},
+		{"manager", "POST", jzManager, g2, http.StatusConflict},
+		{"outsider", "POST", jzOutsider, g2, http.StatusNotFound},
+		{"unknown group", "POST", jzOther, "0000ffff", http.StatusConflict},
+		{"reader joins", "POST", jzReader, g2, http.StatusOK},
+	} {
+		if code, body := membership(c.method, c.email, c.group); code != c.want {
+			t.Errorf("%s: %d %s, want %d", c.name, code, body, c.want)
+		}
+	}
+	// What a member sees: counts of every group, names only in their own; no group folder while the choice is open.
+	m := project(jzMember)
+	if len(m.GroupSeats) != 2 || !m.GroupSeats[0].Mine || m.GroupSeats[0].Count != 1 || m.GroupSeats[0].Max != 1 || len(m.GroupSeats[0].Members) != 1 {
+		t.Fatalf("member's seats: %+v", m.GroupSeats)
+	}
+	if m.GroupSeats[1].Mine || m.GroupSeats[1].Count != 1 || m.GroupSeats[1].Members != nil {
+		t.Fatalf("another group shown in full: %+v", m.GroupSeats[1])
+	}
+	if len(m.Groups) != 1 || m.Groups[0].Name != "gruppe-1" || m.UpdatedBy != "" {
+		t.Fatalf("the reader's group or who chose last leaks to a member: groups %+v, updated_by %q", m.Groups, m.UpdatedBy)
+	}
+	for _, a := range m.Areas {
+		if strings.HasPrefix(a.Mount, "dhbw/groups/") {
+			t.Fatalf("group folder mounted during the choice: %+v", m.Areas)
+		}
+	}
+	if got := len(project(jzManager).Areas); got != 3 {
+		t.Fatalf("manager's areas during the choice: %d", got)
+	}
+	// Leaving frees the place for another.
+	if code, body := membership("DELETE", jzMember, g1); code != http.StatusOK {
+		t.Fatalf("leave: %d %s", code, body)
+	}
+	if code, body := membership("POST", jzOther, g1); code != http.StatusOK {
+		t.Fatalf("join the freed place: %d %s", code, body)
+	}
+	// The manager closes the choice with the version just loaded; the members have their folders again. A whole course as a group member is refused.
+	p = project(jzManager).Project
+	p.GroupChoice = false
+	p.Groups[1].Members = append(p.Groups[1].Members, "group:kurs-leitung")
+	if code, body := call(t, e.h, "PUT", "/v1/workspaces/projects/t-kurs", "oidc:"+jzManager, "", p); code != http.StatusBadRequest {
+		t.Fatalf("group token: %d %s", code, body)
+	}
+	p.Groups[1].Members = p.Groups[1].Members[:len(p.Groups[1].Members)-1]
+	if code, body := call(t, e.h, "PUT", "/v1/workspaces/projects/t-kurs", "oidc:"+jzManager, "", p); code != http.StatusOK {
+		t.Fatalf("close: %d %s", code, body)
+	}
+	if code, _ := membership("DELETE", jzOther, g1); code != http.StatusConflict {
+		t.Fatalf("leave while closed: %d", code)
+	}
+	if m := project(jzOther); m.GroupSeats != nil || len(m.Areas) != 2 {
+		t.Fatalf("after closing: seats %+v areas %+v", m.GroupSeats, m.Areas)
+	}
+}

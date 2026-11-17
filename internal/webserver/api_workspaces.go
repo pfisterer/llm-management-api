@@ -161,7 +161,7 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 //
 //	@ID				updateWorkspaceProject
 //	@Summary		Change a workspace project
-//	@Description	Admins change everything; the project's managers only the description, the members, the project image (project_image, or image_git_url and image_git_ref to build it from Git), the material, the project's release times (release, within release_max: the budget's, which admins set while the budget tree sends none) and the LLM project of its workspaces (default_llm_project: empty = automatic, "none", or a project with LLM tokens; 400 otherwise).
+//	@Description	Admins change everything; the project's managers only the description, the members, the groups with their group choice (group_choice, group_max_members), who writes the shared folder and the storage limits, the project image (project_image, or image_git_url and image_git_ref to build it from Git), the material, the project's release times (release, within release_max: the budget's, which admins set while the budget tree sends none) and the LLM project of its workspaces (default_llm_project: empty = automatic, "none", or a project with LLM tokens; 400 otherwise). A group takes persons (user:<e-mail>); a group token it did not have before is refused (400). updated_at is the version the client loaded: when the project changed since (another manager, somebody choosing a group, the budget tree, a finished build), 409 with code "conflict" and nothing is saved; reload and apply the change again. Without updated_at nothing is checked.
 //	@Tags			workspaces
 //	@Accept			json
 //	@Produce		json
@@ -172,6 +172,7 @@ func (s *Server) listWorkspaceProjects(c *gin.Context) {
 //	@Failure		400		{object}	ErrorResponse
 //	@Failure		403		{object}	ErrorResponse
 //	@Failure		404		{object}	ErrorResponse
+//	@Failure		409		{object}	ErrorResponse
 //	@Router			/v1/workspaces/projects/{slug} [put]
 func (s *Server) updateWorkspaceProject(c *gin.Context) {
 	cl := caller(c)
@@ -190,6 +191,57 @@ func (s *Server) updateWorkspaceProject(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// GroupChoiceResponse is the project's groups as the caller sees them after joining or leaving one (workspace.GroupSeat): how full each is, which is theirs, and the members of their own only.
+type GroupChoiceResponse struct {
+	GroupSeats []workspace.GroupSeat `json:"group_seats"`
+}
+
+// joinWorkspaceGroup godoc
+//
+//	@ID				joinWorkspaceGroup
+//	@Summary		Join a group of a workspace project
+//	@Description	While the project's group choice is open (group_choice), a member or reader of the project joins one of its groups on their own: only their own user token is added, only into a group that is not archived and has a free place (group_max_members, 0 = no limit), and only when they are in no other group of the project (leave that first). Joining one's own group again changes nothing. Managers assign the groups in the project's settings instead (409). While the choice is open the group folders are mounted only for the managers. 404 for a project the caller has no part in.
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string	true	"short name"
+//	@Param			group	path		string	true	"the group's id"
+//	@Success		200		{object}	GroupChoiceResponse
+//	@Failure		404		{object}	ErrorResponse
+//	@Failure		409		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/groups/{group}/membership [post]
+func (s *Server) joinWorkspaceGroup(c *gin.Context) {
+	cl := caller(c)
+	seats, err := s.ws.JoinGroup(c.Request.Context(), cl.Tokens, cl.Email, c.Param("slug"), c.Param("group"))
+	if s.fail(c, projectErrors, "workspace group", err) {
+		return
+	}
+	c.JSON(http.StatusOK, GroupChoiceResponse{GroupSeats: seats})
+}
+
+// leaveWorkspaceGroup godoc
+//
+//	@ID				leaveWorkspaceGroup
+//	@Summary		Leave a group of a workspace project
+//	@Description	While the project's group choice is open, a member or reader leaves the group they joined: only their own user token is removed. Leaving a group one is not in changes nothing; one entered through a course group only the managers change (409).
+//	@Tags			workspaces
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			slug	path		string	true	"short name"
+//	@Param			group	path		string	true	"the group's id"
+//	@Success		200		{object}	GroupChoiceResponse
+//	@Failure		404		{object}	ErrorResponse
+//	@Failure		409		{object}	ErrorResponse
+//	@Router			/v1/workspaces/projects/{slug}/groups/{group}/membership [delete]
+func (s *Server) leaveWorkspaceGroup(c *gin.Context) {
+	cl := caller(c)
+	seats, err := s.ws.LeaveGroup(c.Request.Context(), cl.Tokens, cl.Email, c.Param("slug"), c.Param("group"))
+	if s.fail(c, projectErrors, "workspace group", err) {
+		return
+	}
+	c.JSON(http.StatusOK, GroupChoiceResponse{GroupSeats: seats})
 }
 
 // manager lets admins and the project's managers through, the one place for this rule (decided 10.11.2026), for REST and MCP alike: no project given is 400; a project that does not exist, or in which the caller has no part, is 404, so nobody learns which projects exist; a member who may not manage it gets 403. The answer is an apiError, an error of the projects classified as projectErrors.

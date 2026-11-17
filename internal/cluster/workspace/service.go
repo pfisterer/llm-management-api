@@ -301,6 +301,8 @@ type Mine struct {
 	ScratchEffectiveGB int `json:"scratch_effective_gb" example:"1"`
 	// Areas are the folders below ~/dhbw the person's servers, GPU kernels, jobs and file transfers mount in the project (AreasFor); empty without storage.
 	Areas []Area `json:"areas"`
+	// GroupSeats are the project's groups for choosing one (GroupSeat: how full, whether one's own, members only of one's own) while its group choice is open; missing when it is closed.
+	GroupSeats []GroupSeat `json:"group_seats,omitempty"`
 }
 
 // ForPerson lists the active projects the person belongs to; admins (all=true) get every project, with role "admin" where they are no member.
@@ -322,10 +324,12 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if m.Areas == nil {
 			m.Areas = []Area{}
 		}
-		// Who is in which group is the managers' business: everybody else sees only the groups they belong to.
+		// Who is in which group is the managers' business: everybody else sees only the groups they belong to, and not who changed the project last (during the group choice, who chose last).
 		if role != RoleManager && role != "admin" {
 			m.Groups = slices.DeleteFunc(slices.Clone(m.Groups), func(g Group) bool { return g.Archived || !g.inGroup(tokens) })
+			m.UpdatedBy = ""
 		}
+		m.GroupSeats = p.GroupSeats(tokens)
 		if p.ImageGitURL != "" && s.builds != nil {
 			if b, err := s.builds.ProjectImageBuild(ctx, p.Slug); err == nil {
 				m.ImageBuild = b
@@ -465,23 +469,32 @@ func (s *Service) MayManage(ctx context.Context, tokens []string, admin bool, sl
 	return false, nil
 }
 
-// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the groups, who writes the shared folder, the storage limits inside the volume, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+// Update replaces a project. A manager (asAdmin=false) may change only the description, the members, the groups and their group choice, who writes the shared folder, the storage limits inside the volume, the environment (base, project image, its automatic updates), the material, the project's release times (within the budget's) and the LLM project of its workspaces, in every project; everything else is kept. In a tree-managed project the tree's fields (keepTreeFields) stay the tree's whoever writes, so there the members do too; admins set the rest (limits, profiles, own budgets).
+//
+// p.UpdatedAt is the version the client loaded (decided 17.11.2026): when set and the stored project's differs, the project changed meanwhile (another manager, somebody joining a group, the tree, a finished build) and Update refuses with ErrConflict instead of overwriting it; checked once at the start and again under the lock of the write (Store.Modify), so a change during the slower checks in between is not lost either. Without a version (older clients, admin tools) nothing is checked and the last write wins, as before.
 func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool) (Project, error) {
+	version := p.UpdatedAt
 	cur, err := s.store.Get(ctx, p.Slug)
 	if err != nil {
 		return Project{}, err
 	}
+	if !version.IsZero() && !sameVersion(version, cur.UpdatedAt) {
+		return Project{}, ErrConflict
+	}
 	if !asAdmin {
 		desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm, groups := p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject, p.Groups
-		sharedWrite, homeGB, projectGB := p.SharedWrite, p.StorageHomeGB, p.StorageProjectGB
+		sharedWrite, homeGB, projectGB, choice, places := p.SharedWrite, p.StorageHomeGB, p.StorageProjectGB, p.GroupChoice, p.GroupMaxMembers
 		p = cur
 		p.Description, p.Members, p.ImageBase, p.ProjectImage, p.ImageGitURL, p.ImageGitRef, p.ImageAutoUpdate, p.MaterialGitURL, p.MaterialGitRef, p.Release, p.DefaultLLMProject, p.Groups = desc, members, base, image, gitURL, gitRef, auto, material, materialRef, release, llm, groups
-		p.SharedWrite, p.StorageHomeGB, p.StorageProjectGB = sharedWrite, homeGB, projectGB
+		p.SharedWrite, p.StorageHomeGB, p.StorageProjectGB, p.GroupChoice, p.GroupMaxMembers = sharedWrite, homeGB, projectGB, choice, places
 	}
 	if cur.Managed() {
 		keepTreeFields(&p, cur)
 	}
 	if err := s.validate(&p); err != nil {
+		return Project{}, err
+	}
+	if err := newGroupTokens(p, cur); err != nil {
 		return Project{}, err
 	}
 	if b, _ := s.base(p.ImageBase); b.Deprecated() && b.ID != cur.ImageBase {
@@ -513,7 +526,13 @@ func (s *Service) Update(ctx context.Context, p Project, by string, asAdmin bool
 		}
 	}
 	p.UpdatedBy = by
-	return p, s.store.Update(ctx, &p)
+	return s.store.Modify(ctx, p.Slug, func(stored *Project) error {
+		if !version.IsZero() && !sameVersion(version, stored.UpdatedAt) {
+			return ErrConflict
+		}
+		*stored = p
+		return nil
+	})
 }
 
 // checkDefaultLLM: the LLM project of the workspaces is empty, NoLLM or a project with LLM tokens. Whether each member may draw from it is decided at every start.

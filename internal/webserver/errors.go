@@ -63,7 +63,10 @@ var (
 	// gatewayErrors: LiteLLM, the LLM gateway.
 	gatewayErrors = area("", apiError{Status: http.StatusBadGateway, Code: "litellm", Msg: msg.T("Das Gateway ist gerade nicht erreichbar.", "The gateway is not reachable right now.")})
 	// projectErrors: the workspace projects.
-	projectErrors = area("", internalFallback, append(refusalRules, apierr.Is(workspace.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Projekt nicht gefunden.", "Project not found.")))...)
+	projectErrors = area("", internalFallback, append(refusalRules,
+		apierr.Is(workspace.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Projekt nicht gefunden.", "Project not found.")),
+		// The project changed after the client loaded it (workspace.Service.Update): reload, not correct the input.
+		apierr.Is(workspace.ErrConflict, http.StatusConflict, "conflict", msg.T("Das Projekt wurde inzwischen geändert, bitte neu laden.", "The project has been changed in the meantime, please reload.")))...)
 	// gpuErrors: the servers in JupyterHub and the GPU cluster.
 	gpuErrors = area("", clusterFallback, append([]apierr.Rule{apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Nicht gefunden.", "Not found."))}, hubRules...)...)
 	// jobErrors: the batch jobs.

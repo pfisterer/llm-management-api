@@ -67,6 +67,7 @@ func TestScratchFromTree(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		p = out
 		if out.ScratchGB != 5 {
 			t.Errorf("admin=%v changed the tree's value: %d", admin, out.ScratchGB)
 		}

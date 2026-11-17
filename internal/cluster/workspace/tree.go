@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"maps"
 	"regexp"
 	"slices"
@@ -187,6 +189,10 @@ func (s *Service) UpsertFromTree(ctx context.Context, node string, tp TreeProjec
 		return TreeStatus{}, err
 	}
 	p.UpdatedBy = "tree"
+	if exists && sameContent(p, cur) {
+		// The tree sends every project on each pass; an unchanged one is not written, so its version (UpdatedAt) stays and a manager editing it meanwhile is not refused for nothing (Update, ErrConflict).
+		return s.treeStatus(ctx, cur)
+	}
 	if exists {
 		err = s.store.Update(ctx, &p)
 	} else {
@@ -395,3 +401,24 @@ type LLMUsed func(ctx context.Context, slugs []string) (map[string]float64, erro
 
 // SetLLMUsed lets the tree status report the LLM pools.
 func (s *Service) SetLLMUsed(f LLMUsed) { s.llm = f }
+
+// sameContent tells whether two states of a project say the same, apart from who wrote them and when: compared as the API shows them (empty lists as lists), the days in UTC, since the database may hand them back in another zone.
+func sameContent(a, b Project) bool {
+	norm := func(p Project) []byte {
+		p = p.withLists()
+		p.UpdatedBy, p.UpdatedAt, p.CreatedAt = "", time.Time{}, time.Time{}
+		for _, t := range []**time.Time{&p.EndsAt, &p.DeleteAt} {
+			if *t != nil {
+				u := (*t).UTC()
+				*t = &u
+			}
+		}
+		out, err := json.Marshal(p)
+		if err != nil {
+			return nil
+		}
+		return out
+	}
+	x, y := norm(a), norm(b)
+	return x != nil && bytes.Equal(x, y)
+}

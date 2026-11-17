@@ -230,7 +230,7 @@ func TestMaterial(t *testing.T) {
 	}
 	// Unchanged material is not checked again; removing it drops the branch too.
 	checked := f.checked
-	if _, err := s.Update(ctx, out, "a@dhbw.de", false); err != nil || f.checked != checked {
+	if out, err = s.Update(ctx, out, "a@dhbw.de", false); err != nil || f.checked != checked {
 		t.Fatalf("checked again: %v %d", err, f.checked)
 	}
 	out.MaterialGitURL = ""
