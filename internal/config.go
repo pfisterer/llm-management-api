@@ -69,6 +69,8 @@ type Config struct {
 	// Listener for JupyterHub's access questions (GPU part), and its token.
 	GPUHubBind  string
 	GPUHubToken string
+	// GroupDirsRemove: the folders of removed workspace groups are deleted by the job workspace-group-dirs (WORKSPACE_GROUP_DIRS_REMOVE, default off: the job only logs what it would remove).
+	GroupDirsRemove bool
 	// Workspaces (docs/bauplan.md, Stufe 4): profile catalogue and GPU classes as JSON (workspace.Config); empty = defaults from the GPU part.
 	WorkspacesJSON string
 	// WorkspaceCredentialsKey seals the projects' tokens for private repositories and registries (base64, 32 bytes); empty = no credentials.
@@ -212,6 +214,7 @@ func LoadConfig() (Config, error) {
 		}
 	}
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
+	cfg.GroupDirsRemove = envconf.Bool("WORKSPACE_GROUP_DIRS_REMOVE", false)
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
 	cfg.LLMDefaultRPM = envconf.Int("LLM_DEFAULT_RPM", 60)
 	cfg.LLMDefaultTPM = envconf.Int("LLM_DEFAULT_TPM", 200000)

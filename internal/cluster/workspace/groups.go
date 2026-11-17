@@ -23,7 +23,7 @@ const (
 	MaxGroups = 200
 )
 
-// Group is a group of a project's members with its own folder (~/dhbw/groups/<name>), kept by the project's managers or, during the group choice (Project.GroupChoice), filled by the members themselves. ID names its folder in the volume and never changes, so renaming moves nothing; Members are people of the project as user:<e-mail> tokens. A group token (group:<group>) is no longer taken (decided 17.11.2026: a workspace group holds persons, a course is resolved to its people when dealing them out); one a group had before stays as long as it is not removed, and still counts its people in. ReadOnly gives them the folder only to read (material for one group). Archived: the members lose the folder, the managers keep reading it, until the project ends or the group is removed for good.
+// Group is a group of a project's members with its own folder (~/dhbw/groups/<name>), kept by the project's managers or, during the group choice (Project.GroupChoice), filled by the members themselves. ID names its folder in the volume and never changes, so renaming moves nothing; Members are people of the project as user:<e-mail> tokens. A group token (group:<group>) is no longer taken (decided 17.11.2026: a workspace group holds persons, a course is resolved to its people when dealing them out); one a group had before stays as long as it is not removed, and still counts its people in. ReadOnly gives them the folder only to read (material for one group). Archived: the members lose the folder, the managers keep reading it, until the project ends or the group is removed. A removed group's folder is deleted with everything in it (group_dirs.go), so the UI asks first and offers archiving instead.
 type Group struct {
 	ID       string   `json:"id" example:"3f9a1c2e"`
 	Name     string   `json:"name" example:"gruppe-1"`
@@ -32,6 +32,8 @@ type Group struct {
 	Archived bool     `json:"archived,omitempty"`
 	// StorageGB limits the group's folder (quotas.go); 0 = none, the project's volume is the bound.
 	StorageGB int `json:"storage_gb,omitempty"`
+	// UsedGiB is how much the group's folder holds, from the last listing of the group folders (group_dirs.go), for the managers in their project list (so they know what removing it deletes); missing while unknown. Never stored, whatever a client sends.
+	UsedGiB *float64 `json:"used_gib,omitempty"`
 }
 
 // Area is a folder of the project's volume as a person's pods mount it: Mount relative to the home (below AreasDir), Dir the subPath in the volume.
@@ -67,6 +69,7 @@ func validateGroups(p *Project) error {
 	for i := range p.Groups {
 		g := &p.Groups[i]
 		g.Name = strings.ToLower(strings.TrimSpace(g.Name))
+		g.UsedGiB = nil
 		if !groupNameRE.MatchString(g.Name) {
 			return invalid("Gruppenname %q ungültig: Kleinbuchstaben, Ziffern, Punkt, Binde- und Unterstrich, höchstens 40 Zeichen (er wird zum Ordnernamen).", "Invalid group name %q: lowercase letters, digits, dot, hyphen and underscore, at most 40 characters (it becomes the folder's name).", g.Name)
 		}

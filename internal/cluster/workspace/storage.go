@@ -54,6 +54,9 @@ type storageState struct {
 	dirsAt   time.Time
 	valkey   *ValkeyMemory
 	valkeyAt time.Time
+	// groups are the group folders of the last listing by the job workspace-group-dirs (group_dirs.go).
+	groups   []GroupDir
+	groupsAt time.Time
 	// missing are volumes whose project was not found in the last pass, with the time it was first missed.
 	missing map[string]time.Time
 }
@@ -205,6 +208,9 @@ func (s *Service) LoadStorage(ctx context.Context) error {
 		if json.Unmarshal([]byte(r.Body), &dirs) == nil {
 			s.storage.dirs, s.storage.dirsAt = dirs, r.At
 		}
+	}
+	if r, ok := reports["groups"]; ok {
+		s.loadGroupDirs(r)
 	}
 	if r, ok := reports["valkey"]; ok {
 		var m ValkeyMemory

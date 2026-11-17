@@ -121,6 +121,8 @@ gpu:
   imageMaxGB: ""
   imageHintGB: ""
   harborScanUser: ""
+  # Folders of removed workspace groups (workspace/group_dirs.go): the hourly job workspace-group-dirs (aiaas-deployment) lists ws-*/groups/* and deletes (into JuiceFS' trash) the folders of groups their project no longer has, only with this on; off, the plan says "would-remove" and the job only logs. Off by default: the first rollout shows what would go, the folders of groups removed before included, before anything is deleted.
+  groupDirsRemove: false
   # Image cleanup (docs/todo.md image_cleanup): a sweep every intervalMinutes deletes from Harbor's project envs the artifacts no environment and no project names any more, once they were neither pushed nor pulled for minAgeDays; dryRun only logs what would go (metrics aiaas_image_cleanup_*). Deleting needs user and secrets.harborCleanupToken: a robot account with list and delete on repositories and artifacts in envs (robot$envs+cleanup); without it the cleanup stays a dry run. Never touches other projects (platform).
   imageCleanup:
     enabled: true

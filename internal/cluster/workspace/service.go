@@ -328,6 +328,14 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if role != RoleManager && role != "admin" {
 			m.Groups = slices.DeleteFunc(slices.Clone(m.Groups), func(g Group) bool { return g.Archived || !g.inGroup(tokens) })
 			m.UpdatedBy = ""
+		} else {
+			// What each group's folder holds, so removing one (which deletes its folder) is not a surprise.
+			m.Groups = slices.Clone(m.Groups)
+			for i, g := range m.Groups {
+				if gib, ok := s.groupUsedGiB(p.Slug, g.ID); ok {
+					m.Groups[i].UsedGiB = &gib
+				}
+			}
 		}
 		m.GroupSeats = p.GroupSeats(tokens)
 		if p.ImageGitURL != "" && s.builds != nil {

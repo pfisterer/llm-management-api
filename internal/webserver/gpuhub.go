@@ -45,6 +45,8 @@ type GPUHubOptions struct {
 	}
 	// GPU kernels (/gpu/kernels): the notebook servers of "CPU + GPU-Kernel" ask here for their kernel pods, with their own hub token instead of the shared one. nil = routes off.
 	Kernels *gpu.Service
+	// GroupDirsRemove lets the plan of the group folders (POST /workspaces/group-dirs) answer "remove" for the folders of removed groups; off, it answers "would-remove" and the job only logs them (WORKSPACE_GROUP_DIRS_REMOVE, default off, so the first rollout shows what would go, folders of groups removed before included).
+	GroupDirsRemove bool
 	// API is the main API, whose batch-job routes (and start options) a workspace reaches here under /v1 with its own hub token instead of a personal API token (workspaceCaller); nil or without Kernels = off.
 	API *Server
 	Log *zap.SugaredLogger
@@ -367,6 +369,31 @@ func GPUHubRouter(o GPUHubOptions, devMode bool) *gin.Engine {
 				if err != nil {
 					o.Log.Errorw("quota plan failed", "error", err)
 					abortMachine(c, http.StatusInternalServerError, "internal", "Plan nicht berechenbar.")
+					return
+				}
+				c.String(http.StatusOK, strings.Join(plan, "\n")+"\n")
+			})
+			// The group folders of the projects' volumes (workspace group_dirs.go): the hourly CronJob workspace-group-dirs (tasks/juicefs.yaml) sends what it found below ws-*/groups/ with sizes (`du -sk`), and gets back the folders of groups their project no longer has ("remove <path>", or "would-remove <path>" while GroupDirsRemove is off). An empty answer when nothing is to go; a 500 when the projects cannot be read, on which the job removes nothing.
+			r.POST("/workspaces/group-dirs", func(c *gin.Context) {
+				if !hubToken(c, o.Token) {
+					return
+				}
+				raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4<<20))
+				if err != nil {
+					abortMachine(c, http.StatusBadRequest, "invalid", "Body nicht lesbar.")
+					return
+				}
+				plan, err := o.Workspaces.GroupDirPlanFor(c.Request.Context(), workspace.ParseGroupDirs(string(raw)), o.GroupDirsRemove)
+				if err != nil {
+					o.Log.Errorw("group folder plan failed", "error", err)
+					abortMachine(c, http.StatusInternalServerError, "internal", "Plan nicht berechenbar.")
+					return
+				}
+				for _, step := range plan {
+					o.Log.Infow("group folder", "step", step)
+				}
+				if len(plan) == 0 {
+					c.String(http.StatusOK, "")
 					return
 				}
 				c.String(http.StatusOK, strings.Join(plan, "\n")+"\n")

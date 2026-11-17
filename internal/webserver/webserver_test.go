@@ -616,3 +616,42 @@ func TestBodyLimit(t *testing.T) {
 		}
 	}
 }
+
+// The group folders' plan on the hub listener: the hub token only, the folders of removed groups only, "would-remove" while removal is off.
+func TestGroupDirsRoute(t *testing.T) {
+	ctx := context.Background()
+	ws := workspace.NewService(workspace.NewMemoryStore(), workspace.Config{}, func(context.Context) ([]workspace.Running, error) { return nil, nil })
+	st, err := ws.UpsertFromTree(ctx, "p_g", workspace.TreeProject{Name: "Kurs", Members: []workspace.Member{{Token: "user:m@dhbw.de", Role: workspace.RoleManager}}, StorageGB: 10, Workspaces: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := ws.Get(ctx, st.Slug)
+	p.Groups = []workspace.Group{{Name: "g1"}}
+	if p, err = ws.Update(ctx, p, "admin", true); err != nil {
+		t.Fatal(err)
+	}
+	body := "ws-" + st.Slug + "/groups/" + p.Groups[0].ID + " 10\nws-" + st.Slug + "/groups/0000ffff 20\nws-" + st.Slug + "/homes/x 5\n"
+	for _, remove := range []bool{false, true} {
+		r := GPUHubRouter(GPUHubOptions{Workspaces: ws, Usage: usage.NewMemoryStore(), Project: func(context.Context, string) string { return "" }, Token: "secret", GroupDirsRemove: remove, Log: zap.NewNop().Sugar()}, true)
+		for _, token := range []string{"", "wrong"} {
+			req := httptest.NewRequest(http.MethodPost, "/workspaces/group-dirs", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("token %q: %d", token, w.Code)
+			}
+		}
+		req := httptest.NewRequest(http.MethodPost, "/workspaces/group-dirs", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		want := "would-remove ws-" + st.Slug + "/groups/0000ffff\n"
+		if remove {
+			want = "remove ws-" + st.Slug + "/groups/0000ffff\n"
+		}
+		if w.Code != http.StatusOK || w.Body.String() != want {
+			t.Errorf("remove=%v: %d %q, want %q", remove, w.Code, w.Body.String(), want)
+		}
+	}
+}

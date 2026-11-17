@@ -89,6 +89,7 @@ For JupyterHub and the workspaces in the GPU cluster, reached only through the W
 |---|---|
 | `GET /gpu/hub/access?user=` (projects, GPUs, LLM projects of a person), `POST /gpu/hub/spawn-check` (may this start happen now), `POST /gpu/hub/workspace-key` (the LLM key of a person's workspaces in a project) | JupyterHub, with `GPU_HUB_TOKEN` |
 | `POST /workspaces/homes`, `POST /workspaces/valkey` (the hourly storage job's report) | the storage CronJob, with `GPU_HUB_TOKEN` |
+| `POST /workspaces/group-dirs` (the group folders found, answered with those of removed groups to delete) | the CronJob workspace-group-dirs, with `GPU_HUB_TOKEN` |
 | `POST/GET /gpu/kernels`, `GET/DELETE /gpu/kernels/{id}` (GPU kernels of "CPU + GPU-Kernel") | the server pod at the request's source address with its own hub token, its own kernels only |
 | `/v1/gpu/jobs…`, `PUT /v1/gpu/files`, `GET /v1/gpu/start-options` (see Batch jobs) | a workspace server pod with its own hub token, as its person, never with platform roles |
 
@@ -215,6 +216,7 @@ Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RE
 | `WORKSPACE_CREDENTIALS_KEY` | seals the projects' tokens for private repositories and registries (base64, 32 bytes); empty = no credentials |
 | `WORKSPACE_IMAGE_MAX_GB`, `WORKSPACE_IMAGE_HINT_GB` | compressed size above which a project image is refused (admins may save larger ones) and from which it gets a hint |
 | `HARBOR_SCAN_USER`, `HARBOR_SCAN_TOKEN` | robot account that reads Harbor's vulnerability scans of project images; empty = anonymously |
+| `WORKSPACE_GROUP_DIRS_REMOVE` | deleting the folders of removed workspace groups (`POST /workspaces/group-dirs` on the hub listener answers `remove <path>` instead of `would-remove <path>`): default off, the job workspace-group-dirs then only logs what would go |
 | `IMAGE_CLEANUP_ENABLED`, `IMAGE_CLEANUP_DRY_RUN`, `IMAGE_CLEANUP_MIN_AGE_DAYS`, `IMAGE_CLEANUP_INTERVAL_MINUTES` | deleting the images of environments that are gone from Harbor's `envs`: default on, as a dry run (only logs), artifacts pushed or pulled within 7 days stay, every 60 minutes |
 | `HARBOR_CLEANUP_USER`, `HARBOR_CLEANUP_TOKEN` | robot account that may delete in `envs`; without it the cleanup stays a dry run |
 | `RESEARCH_PSEUDONYM_KEY` | key of the people's pseudonyms in the research log (HMAC-SHA256, at least 16 characters); empty = the log names no person. A new key gives everybody new pseudonyms |
