@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,7 +134,7 @@ func TestProjectGroups(t *testing.T) {
 	}
 }
 
-// The group choice over HTTP (decided 17.11.2026): the managers open it, members and readers join and leave a group with a place on their own, see how full the groups are and only their own group's members, and nobody mounts a group folder while it is open; a manager's save over a stale version is a 409 conflict, a new group token a 400.
+// The group choice over HTTP (decided 17.11.2026): the managers open it, members and readers join a group with a place on their own and for good (there is no leaving route), see how full the groups are and only their own group's members, and have its folder at once; a manager's save over a stale version is a 409 conflict, a new group token a 400.
 func TestGroupChoiceAPI(t *testing.T) {
 	e := newJobEnv(t, func(o *Options, _ *gpu.Config) { o.Usage = usage.NewMemoryStore() })
 	project := func(email string) workspace.Mine {
@@ -192,7 +193,7 @@ func TestGroupChoiceAPI(t *testing.T) {
 			t.Errorf("%s: %d %s, want %d", c.name, code, body, c.want)
 		}
 	}
-	// What a member sees: counts of every group, names only in their own; no group folder while the choice is open.
+	// What a member sees: counts of every group, names only in their own; the group's folder at once.
 	m := project(jzMember)
 	if len(m.GroupSeats) != 2 || !m.GroupSeats[0].Mine || m.GroupSeats[0].Count != 1 || m.GroupSeats[0].Max != 1 || len(m.GroupSeats[0].Members) != 1 {
 		t.Fatalf("member's seats: %+v", m.GroupSeats)
@@ -203,20 +204,12 @@ func TestGroupChoiceAPI(t *testing.T) {
 	if len(m.Groups) != 1 || m.Groups[0].Name != "gruppe-1" || m.UpdatedBy != "" {
 		t.Fatalf("the reader's group or who chose last leaks to a member: groups %+v, updated_by %q", m.Groups, m.UpdatedBy)
 	}
-	for _, a := range m.Areas {
-		if strings.HasPrefix(a.Mount, "dhbw/groups/") {
-			t.Fatalf("group folder mounted during the choice: %+v", m.Areas)
-		}
+	if !slices.ContainsFunc(m.Areas, func(a workspace.Area) bool { return a.Mount == "dhbw/groups/gruppe-1" }) || len(m.Areas) != 2 {
+		t.Fatalf("member's areas after joining: %+v", m.Areas)
 	}
-	if got := len(project(jzManager).Areas); got != 3 {
-		t.Fatalf("manager's areas during the choice: %d", got)
-	}
-	// Leaving frees the place for another.
-	if code, body := membership("DELETE", jzMember, g1); code != http.StatusOK {
-		t.Fatalf("leave: %d %s", code, body)
-	}
-	if code, body := membership("POST", jzOther, g1); code != http.StatusOK {
-		t.Fatalf("join the freed place: %d %s", code, body)
+	// Binding: there is no route to leave.
+	if code, _ := membership("DELETE", jzMember, g1); code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
+		t.Fatalf("leave: %d", code)
 	}
 	// The manager closes the choice with the version just loaded; the members have their folders again. A whole course as a group member is refused.
 	p = project(jzManager).Project
@@ -229,10 +222,10 @@ func TestGroupChoiceAPI(t *testing.T) {
 	if code, body := call(t, e.h, "PUT", "/v1/workspaces/projects/t-kurs", "oidc:"+jzManager, "", p); code != http.StatusOK {
 		t.Fatalf("close: %d %s", code, body)
 	}
-	if code, _ := membership("DELETE", jzOther, g1); code != http.StatusConflict {
-		t.Fatalf("leave while closed: %d", code)
+	if code, _ := membership("POST", jzOther, g1); code != http.StatusConflict {
+		t.Fatalf("join while closed: %d", code)
 	}
-	if m := project(jzOther); m.GroupSeats != nil || len(m.Areas) != 2 {
+	if m := project(jzMember); m.GroupSeats != nil || len(m.Areas) != 2 {
 		t.Fatalf("after closing: seats %+v areas %+v", m.GroupSeats, m.Areas)
 	}
 }

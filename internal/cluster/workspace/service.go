@@ -301,7 +301,7 @@ type Mine struct {
 	ScratchEffectiveGB int `json:"scratch_effective_gb" example:"1"`
 	// Areas are the folders below ~/dhbw the person's servers, GPU kernels, jobs and file transfers mount in the project (AreasFor); empty without storage.
 	Areas []Area `json:"areas"`
-	// GroupSeats are the project's groups for choosing one (GroupSeat: how full, whether one's own, members only of one's own) while its group choice is open; missing when it is closed.
+	// GroupSeats are the project's groups for joining one (GroupSeat: how full, whether one's own, members only of one's own) while joining is open; missing when it is closed.
 	GroupSeats []GroupSeat `json:"group_seats,omitempty"`
 }
 

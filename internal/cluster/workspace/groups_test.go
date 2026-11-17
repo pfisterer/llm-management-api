@@ -96,21 +96,16 @@ func TestAreasFor(t *testing.T) {
 	if got := (Project{Groups: p.Groups}).AreasFor([]string{"user:a@dhbw.de"}, RoleMember); got != nil {
 		t.Errorf("without storage: %v", got)
 	}
-	// While the group choice is open, the group folders are the managers' alone; closed again, the members have theirs back.
+	// Whether joining is open changes nothing about the folders: a group's members have theirs either way.
 	p.SharedWrite = SharedWriteAll
-	p.GroupChoice = true
-	if got := mounts(p.AreasFor([]string{"user:a@dhbw.de"}, RoleMember)); !slices.Equal(got, []string{"dhbw/project=project-shared:rw"}) {
-		t.Errorf("member during the choice: %v", got)
-	}
-	if got := mounts(p.AreasFor([]string{"user:a@dhbw.de"}, RoleReader)); !slices.Equal(got, []string{"dhbw/project=project-shared:rw"}) {
-		t.Errorf("reader during the choice: %v", got)
-	}
-	if got := p.AreasFor([]string{"user:m@dhbw.de"}, RoleManager); len(got) != 4 {
-		t.Errorf("manager during the choice: %v", mounts(got))
-	}
-	p.GroupChoice = false
-	if got := mounts(p.AreasFor([]string{"user:a@dhbw.de"}, RoleMember)); len(got) != 2 {
-		t.Errorf("member after the choice: %v", got)
+	for _, open := range []bool{true, false} {
+		p.GroupChoice = open
+		if got := mounts(p.AreasFor([]string{"user:a@dhbw.de"}, RoleMember)); !slices.Equal(got, []string{"dhbw/project=project-shared:rw", "dhbw/groups/g1=groups/0000aaaa:rw"}) {
+			t.Errorf("member, joining open=%v: %v", open, got)
+		}
+		if got := p.AreasFor([]string{"user:m@dhbw.de"}, RoleManager); len(got) != 4 {
+			t.Errorf("manager, joining open=%v: %v", open, mounts(got))
+		}
 	}
 }
 
@@ -234,7 +229,7 @@ func TestUpdateConflictAtWrite(t *testing.T) {
 	}
 }
 
-// The group choice: members and readers join one open group with a free place and leave it again, only with their own token; managers, outsiders, a closed choice, a full or archived group and a second group are refused.
+// Joining a group: members and readers join one open group with a free place, only with their own token and for good (no leaving or switching by themselves, the managers change it); managers, outsiders, closed joining, a full or archived group and a second group are refused.
 func TestGroupChoice(t *testing.T) {
 	ctx := context.Background()
 	s := service()
@@ -298,8 +293,8 @@ func TestGroupChoice(t *testing.T) {
 	if err := join(b, "b@dhbw.de", "0000bbbb"); err != nil {
 		t.Fatalf("reader joins: %v", err)
 	}
-	// Once in a group, another one only after leaving; the own group again changes nothing.
-	if err := join(a, "a@dhbw.de", "0000bbbb"); !strings.Contains(reason(err), "Schon in Gruppe „g1“") {
+	// Once in a group, no other one: the choice is binding; the own group again changes nothing.
+	if err := join(a, "a@dhbw.de", "0000bbbb"); !strings.Contains(reason(err), "Schon in Gruppe „g1“") || !strings.Contains(reason(err), "verbindlich") {
 		t.Fatalf("second group: %v", err)
 	}
 	before, _ := s.Get(ctx, "kurs")
@@ -309,26 +304,18 @@ func TestGroupChoice(t *testing.T) {
 	if after, _ := s.Get(ctx, "kurs"); !sameVersion(after.UpdatedAt, before.UpdatedAt) {
 		t.Fatal("joining one's own group again wrote the project")
 	}
-	// In a group through the course group: counted as in it, not to be left here.
+	// In a group through the course group: counted as in it.
 	if err := join(c, "c@dhbw.de", "0000bbbb"); !strings.Contains(reason(err), "kursgruppe") {
 		t.Fatalf("in a group through the course: %v", err)
 	}
-	if _, err := s.LeaveGroup(ctx, c, "c@dhbw.de", "kurs", "0000dddd"); !strings.Contains(reason(err), "Kursgruppe") {
-		t.Fatalf("leaving the course's group: %v", err)
-	}
-	// Leaving takes out only the person's own token; then the other group is open to them.
-	seats, err = s.LeaveGroup(ctx, a, "a@dhbw.de", "kurs", "0000aaaa")
-	if err != nil || seats[0].Mine || seats[0].Count != 1 || seats[0].Members != nil {
-		t.Fatalf("leave: %+v %v", seats, err)
-	}
-	if got, _ := s.Get(ctx, "kurs"); !slices.Equal(got.Groups[0].Members, []string{"user:x@dhbw.de"}) || got.UpdatedBy != "a@dhbw.de" {
-		t.Fatalf("after leaving: %+v", got.Groups[0])
-	}
-	if _, err := s.LeaveGroup(ctx, a, "a@dhbw.de", "kurs", "0000aaaa"); err != nil {
-		t.Fatalf("leaving again: %v", err)
+	// A change is the managers': they take a out of g1, then a may join another.
+	p, _ = s.Get(ctx, "kurs")
+	p.Groups[0].Members = []string{"user:x@dhbw.de"}
+	if _, err := s.Update(ctx, p, "m@dhbw.de", false); err != nil {
+		t.Fatal(err)
 	}
 	if err := join(a, "a@dhbw.de", "0000bbbb"); err != nil {
-		t.Fatalf("join after leaving: %v", err)
+		t.Fatalf("join after the managers' change: %v", err)
 	}
 	// The members see the seats in their projects; the managers too, besides every group.
 	mine, _ := s.ForPerson(ctx, a, "a@dhbw.de", false)
@@ -344,8 +331,8 @@ func TestGroupChoice(t *testing.T) {
 	if _, err := s.Update(ctx, p, "m@dhbw.de", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.LeaveGroup(ctx, a, "a@dhbw.de", "kurs", "0000bbbb"); !strings.Contains(reason(err), "nicht offen") {
-		t.Fatalf("leave while closed: %v", err)
+	if err := join(b, "b@dhbw.de", "0000cccc"); !strings.Contains(reason(err), "nicht offen") {
+		t.Fatalf("join while closed: %v", err)
 	}
 	if mine, _ := s.ForPerson(ctx, a, "a@dhbw.de", false); mine[0].GroupSeats != nil {
 		t.Fatalf("seats while closed: %+v", mine[0].GroupSeats)

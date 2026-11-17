@@ -103,7 +103,7 @@ type Project struct {
 	EndsAt   *time.Time `json:"ends_at,omitempty"` // after this day nobody can start in the project
 	// Groups are the project's groups of members with their own folder below ~/dhbw/groups (groups.go), kept by its managers; not the tree's.
 	Groups []Group `json:"groups" gorm:"column:work_groups;serializer:json"`
-	// GroupChoice opens the group choice (groups.go, JoinGroup): while it is on, every member or reader of the project may join one of its groups and leave it again on their own, and the group folders are mounted only for the managers, so nobody joins a group for a moment to read its files. Off: only the managers assign. GroupMaxMembers is how many people (user tokens) a group takes in the choice; 0 = no limit. The managers' assignment is not bound by it. Kept by the managers.
+	// GroupChoice opens joining (groups.go, JoinGroup): while it is on, every member or reader of the project who is in no group yet may join one with a free place, once and for good (decided 17.11.2026: the choice is binding, a change is the managers'); off, nobody joins. It changes nothing else: a group's folder is its members' either way. GroupMaxMembers is how many people (user tokens) a group takes by joining; 0 = no limit. The managers' assignment is not bound by it. Kept by the managers.
 	GroupChoice     bool `json:"group_choice" gorm:"column:group_choice"`
 	GroupMaxMembers int  `json:"group_max_members" gorm:"column:group_max_members"`
 	// SharedWrite is who writes the shared folder ~/dhbw/project: SharedWriteAll (every member) or SharedWriteManagers (material handed out); the managers always do. Empty = all. Kept by the managers.

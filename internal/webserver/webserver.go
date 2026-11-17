@@ -202,9 +202,8 @@ func (s *Server) Router() *gin.Engine {
 		w.GET("/catalog", s.getWorkspaceCatalog)
 		w.GET("/projects", s.listWorkspaceProjects)
 		w.PUT("/projects/:slug", s.updateWorkspaceProject)
-		// A member's own choice of a group (the project's group choice), not a manager's act: the service checks membership and the rules.
+		// A member's own, binding choice of a group (while joining is open in the project), not a manager's act: the service checks membership and the rules. No leaving: a change is the managers'.
 		w.POST("/projects/:slug/groups/:group/membership", s.joinWorkspaceGroup)
-		w.DELETE("/projects/:slug/groups/:group/membership", s.leaveWorkspaceGroup)
 		w.POST("/projects/:slug/image/rebuild", s.rebuildProjectImage)
 		w.POST("/projects/:slug/image/update", s.updateProjectImage)
 		w.GET("/projects/:slug/credentials", s.listProjectCredentials)

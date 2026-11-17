@@ -23,7 +23,7 @@ const (
 	MaxGroups = 200
 )
 
-// Group is a group of a project's members with its own folder (~/dhbw/groups/<name>), kept by the project's managers or, during the group choice (Project.GroupChoice), filled by the members themselves. ID names its folder in the volume and never changes, so renaming moves nothing; Members are people of the project as user:<e-mail> tokens. A group token (group:<group>) is no longer taken (decided 17.11.2026: a workspace group holds persons, a course is resolved to its people when dealing them out); one a group had before stays as long as it is not removed, and still counts its people in. ReadOnly gives them the folder only to read (material for one group). Archived: the members lose the folder, the managers keep reading it, until the project ends or the group is removed. A removed group's folder is deleted with everything in it (group_dirs.go), so the UI asks first and offers archiving instead.
+// Group is a group of a project's members with its own folder (~/dhbw/groups/<name>), kept by the project's managers; while joining is open (Project.GroupChoice), members also put themselves into one, for good. ID names its folder in the volume and never changes, so renaming moves nothing; Members are people of the project as user:<e-mail> tokens. A group token (group:<group>) is no longer taken (decided 17.11.2026: a workspace group holds persons, a course is resolved to its people when dealing them out); one a group had before stays as long as it is not removed, and still counts its people in. ReadOnly gives them the folder only to read (material for one group). Archived: the members lose the folder, the managers keep reading it, until the project ends or the group is removed. A removed group's folder is deleted with everything in it (group_dirs.go), so the UI asks first and offers archiving instead.
 type Group struct {
 	ID       string   `json:"id" example:"3f9a1c2e"`
 	Name     string   `json:"name" example:"gruppe-1"`
@@ -137,7 +137,7 @@ func (g Group) inGroup(tokens []string) bool {
 	return false
 }
 
-// AreasFor are the folders a person with the tokens and role (RoleOf, or "admin") mounts in the project: the shared folder (read-only unless the person manages the project or SharedWrite lets every member write), then each group the person belongs to (read-only in a read-only group), and for the managers (and admins) every group, writable so they can put material there, an archived one only to read. Members lose an archived group, and every group while the group choice is open (GroupChoice): otherwise somebody could join a group for a moment, start a workspace and keep reading its files after leaving. A project without storage has no areas: its pods have no volume.
+// AreasFor are the folders a person with the tokens and role (RoleOf, or "admin") mounts in the project: the shared folder (read-only unless the person manages the project or SharedWrite lets every member write), then each group the person belongs to (read-only in a read-only group), and for the managers (and admins) every group, writable so they can put material there, an archived one only to read. Members lose an archived group. Whether joining is open (GroupChoice) changes nothing here: joining is binding, so nobody can join a group for a moment to read its files. A project without storage has no areas: its pods have no volume.
 func (p Project) AreasFor(tokens []string, role string) []Area {
 	if p.StorageGB <= 0 || role == "" {
 		return nil
@@ -149,7 +149,7 @@ func (p Project) AreasFor(tokens []string, role string) []Area {
 		switch {
 		case manager:
 			a.ReadOnly = g.Archived
-		case !g.Archived && !p.GroupChoice && g.inGroup(tokens):
+		case !g.Archived && g.inGroup(tokens):
 			a.ReadOnly = g.ReadOnly
 		default:
 			continue
@@ -201,17 +201,8 @@ func (p Project) GroupSeats(tokens []string) []GroupSeat {
 	return out
 }
 
-// JoinGroup puts the person (their own user token, nobody else) into a group of the project during the group choice: only a member or reader of the project (by their tokens; managers assign in the settings), only into an open group with a free place (GroupMaxMembers), and only when they are in no other open group of the project, so leaving comes first. Joining the group one is in already changes nothing. Read, checked and written in one Store.Modify, so two people taking the last place one after the other get it once. A project the person has no part in is ErrNotFound, as elsewhere. The answer is the groups as the person sees them now.
+// JoinGroup puts the person (their own user token, nobody else) into a group of the project while joining is open: only a member or reader of the project (by their tokens; managers assign in the settings), only into an open group with a free place (GroupMaxMembers), and only when they are in no open group of the project yet. Binding (decided 17.11.2026): there is no leaving or switching by oneself, the managers change an assignment. Joining the group one is in already changes nothing. Read, checked and written in one Store.Modify, so two people taking the last place one after the other get it once. A project the person has no part in is ErrNotFound, as elsewhere. The answer is the groups as the person sees them now.
 func (s *Service) JoinGroup(ctx context.Context, tokens []string, person, slug, groupID string) ([]GroupSeat, error) {
-	return s.changeOwnGroup(ctx, tokens, person, slug, groupID, true)
-}
-
-// LeaveGroup takes the person's own user token out of a group of the project during the group choice; the same rules as JoinGroup. Leaving a group one is not in changes nothing; one entered through a course group (a group token from before) cannot be left here, only by the managers.
-func (s *Service) LeaveGroup(ctx context.Context, tokens []string, person, slug, groupID string) ([]GroupSeat, error) {
-	return s.changeOwnGroup(ctx, tokens, person, slug, groupID, false)
-}
-
-func (s *Service) changeOwnGroup(ctx context.Context, tokens []string, person, slug, groupID string, join bool) ([]GroupSeat, error) {
 	person = strings.ToLower(strings.TrimSpace(person))
 	if person == "" {
 		return nil, refuse("Ohne E-Mail-Adresse ist keine Gruppenwahl möglich.", "Choosing a group needs an e-mail address.")
@@ -237,24 +228,12 @@ func (s *Service) changeOwnGroup(ctx context.Context, tokens []string, person, s
 			return refuse("Diese Gruppe gibt es im Projekt nicht (mehr).", "This group does not exist in the project (any more).")
 		}
 		g := &p.Groups[i]
-		own := slices.IndexFunc(g.Members, func(m string) bool { return strings.EqualFold(m, me) })
-		if !join {
-			if own < 0 {
-				if g.inGroup(tokens) {
-					return refuse("In Gruppe „%s“ über eine Kursgruppe eingetragen; das ändert nur die Verwaltung des Projekts.", "In group “%s” through a course group; only the project's managers change that.", g.Name)
-				}
-				return errUnchanged
-			}
-			g.Members = slices.Delete(g.Members, own, own+1)
-			p.UpdatedBy = person
-			return nil
-		}
 		if g.inGroup(tokens) {
 			return errUnchanged
 		}
 		for j, other := range p.Groups {
 			if j != i && !other.Archived && other.inGroup(tokens) {
-				return refuse("Schon in Gruppe „%s“; zuerst diese verlassen.", "Already in group “%s”; leave it first.", other.Name)
+				return refuse("Schon in Gruppe „%s“; die Wahl ist verbindlich, einen Wechsel nimmt die Verwaltung des Projekts vor.", "Already in group “%s”; the choice is binding, the project's managers make a change.", other.Name)
 			}
 		}
 		if p.GroupMaxMembers > 0 && g.people() >= p.GroupMaxMembers {
@@ -273,5 +252,5 @@ func (s *Service) changeOwnGroup(ctx context.Context, tokens []string, person, s
 	return p.GroupSeats(tokens), nil
 }
 
-// errUnchanged ends a Store.Modify that has nothing to write (joining one's own group again, leaving a group one is not in).
+// errUnchanged ends a Store.Modify that has nothing to write (joining one's own group again).
 var errUnchanged = errors.New("unchanged")
