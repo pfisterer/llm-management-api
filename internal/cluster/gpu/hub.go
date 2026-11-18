@@ -12,8 +12,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/httpx"
 )
 
-// hub talks to JupyterHub's REST API with the token of the hub service
-// gpu-management-api (scopes admin:servers, admin:users, read:users).
+// hub talks to JupyterHub's REST API with the token of the hub service gpu-management-api (scopes servers, read:users and custom:dhbw:create-users; no admin:users). ensureUser's POST /users/<name> without a body is what the custom scope allows: the hub creates the person, never as admin (aiaas-deployment, jupyterhub-values.yaml.j2, 05-dhbw-access).
 type hub struct {
 	base  string // https://jupyter.gpu.services.dhbw.cloud
 	token string
@@ -77,7 +76,7 @@ func (h *hub) user(ctx context.Context, name string) (*hubUser, error) {
 	return &u, err
 }
 
-// ensureUser creates the person in JupyterHub if they never logged in there.
+// ensureUser creates the person in JupyterHub if they never logged in there. The request must stay without a body: the hub refuses any field (admin among them) for this token.
 func (h *hub) ensureUser(ctx context.Context, name string) error {
 	_, err := h.user(ctx, name)
 	if errors.Is(err, ErrNotFound) {
