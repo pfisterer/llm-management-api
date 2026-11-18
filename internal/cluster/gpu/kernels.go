@@ -121,7 +121,7 @@ func (s *Service) SetKernelCheck(f func(ctx context.Context, o *KernelOwner) err
 // DefaultKernelMax is how long a GPU kernel runs at the latest without SetKernelMax: 4 hours, as before release times per project.
 const DefaultKernelMax = 4 * time.Hour
 
-// SetKernelMax sets how long a GPU kernel of the owner's project may run at the latest (its release times, docs/todo.md idle_release); 0 = no upper bound (the project's own GPUs). The kernel pod's activeDeadlineSeconds.
+// SetKernelMax sets how long a GPU kernel of the owner's project may run at the latest (its release times, dhbw-deployment/__TODOS.md idle_release); 0 = no upper bound (the project's own GPUs). The kernel pod's activeDeadlineSeconds.
 func (s *Service) SetKernelMax(f func(ctx context.Context, o *KernelOwner) time.Duration) {
 	s.kernelMax = f
 }

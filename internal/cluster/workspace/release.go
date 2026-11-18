@@ -6,7 +6,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
-// Release times (docs/todo.md idle_release): when a workspace or a GPU kernel goes back, per kind of use (CPU, GPU). Counted is idle time, not runtime: nothing computes (no running cell, no CPU or GPU load of its kernels and processes), with an open tab or without one; a training keeps its GPU as long as it runs, up to the optional upper bound. The budget sets the most a project may have (ReleaseMax, from the budget tree), the project chooses within it (Release); an empty field takes the budget's value, and where the budget sets none, today's value of the kind of workspace (Profile.IdleMinutes and MaxHours from the inventory, 5 min and 4 h for a GPU kernel).
+// Release times (dhbw-deployment/__TODOS.md idle_release): when a workspace or a GPU kernel goes back, per kind of use (CPU, GPU). Counted is idle time, not runtime: nothing computes (no running cell, no CPU or GPU load of its kernels and processes), with an open tab or without one; a training keeps its GPU as long as it runs, up to the optional upper bound. The budget sets the most a project may have (ReleaseMax, from the budget tree), the project chooses within it (Release); an empty field takes the budget's value, and where the budget sets none, today's value of the kind of workspace (Profile.IdleMinutes and MaxHours from the inventory, 5 min and 4 h for a GPU kernel).
 
 // ReleaseTimes are the three times of one kind of use; nil = not set (inherited).
 type ReleaseTimes struct {

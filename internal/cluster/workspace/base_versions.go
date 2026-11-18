@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Versions of the bases (docs/todo.md base_versions): a base is one version of a family (Base.Family, e.g. "PyTorch 2.11 · CUDA 13" of pytorch), and a project keeps the version it has. A new version is a new entry in images.yaml, the default for new projects; the old one is marked deprecated with its successor (ReplacedBy): no new project chooses it, the projects on it see a notice and can change with a button, and it goes when the last of them has ended — or at its EndOfLife, when the service moves the remaining projects to the successor (RetireBases). The catalogue says per version how many projects run it and until when (basesInUse), so it is clear when an entry can be removed.
+// Versions of the bases (dhbw-deployment/__TODOS.md base_versions): a base is one version of a family (Base.Family, e.g. "PyTorch 2.11 · CUDA 13" of pytorch), and a project keeps the version it has. A new version is a new entry in images.yaml, the default for new projects; the old one is marked deprecated with its successor (ReplacedBy): no new project chooses it, the projects on it see a notice and can change with a button, and it goes when the last of them has ended — or at its EndOfLife, when the service moves the remaining projects to the successor (RetireBases). The catalogue says per version how many projects run it and until when (basesInUse), so it is clear when an entry can be removed.
 
 // MigrateBases gives every project the id of its version once: an empty base or the id of a family (from before versions) becomes the version it stands for now.
 func (s *Service) MigrateBases(ctx context.Context) error {

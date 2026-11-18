@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Access to private repositories and images (docs/todo.md private_images): a project keeps per host one user name and token (GitHub: a classic PAT with repo and read:packages, GitLab: a deploy token with read_repository and read_registry, Forgejo: a token with read:repository and read:package). The token is stored encrypted and never handed out again. It is used where the host comes up: the check of a finished image (registry), the check and the checkout of the material (Git), and on the nodes as the project's pull secret (ws-pull-<slug>) and the checkout's Git credentials (ws-git-<slug>), both kept by the GPU part in the workspace namespace (SetCredentialSecrets). Builds from private repositories are not offered: their images would land in the public Harbor project envs.
+// Access to private repositories and images (dhbw-deployment/__TODOS.md private_images): a project keeps per host one user name and token (GitHub: a classic PAT with repo and read:packages, GitLab: a deploy token with read_repository and read_registry, Forgejo: a token with read:repository and read:package). The token is stored encrypted and never handed out again. It is used where the host comes up: the check of a finished image (registry), the check and the checkout of the material (Git), and on the nodes as the project's pull secret (ws-pull-<slug>) and the checkout's Git credentials (ws-git-<slug>), both kept by the GPU part in the workspace namespace (SetCredentialSecrets). Builds from private repositories are not offered: their images would land in the public Harbor project envs.
 
 // PullSecretName and GitSecretName are a project's secrets in the workspace namespace.
 func PullSecretName(slug string) string { return "ws-pull-" + slug }

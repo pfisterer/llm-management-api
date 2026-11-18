@@ -11,7 +11,7 @@ import (
 	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
-// The checks of a project image (docs/todo.md image_hardening): what its registry says about it decides little — only an image for neither linux/amd64 nor linux/arm64 or one above the size limit is refused, and only when it is saved (imageRefusal). Everything else is a warning shown with the project (imageWarnings), because any image may be the project's and many run fine although they were not built for JupyterHub.
+// The checks of a project image (dhbw-deployment/__TODOS.md image_hardening): what its registry says about it decides little — only an image for neither linux/amd64 nor linux/arm64 or one above the size limit is refused, and only when it is saved (imageRefusal). Everything else is a warning shown with the project (imageWarnings), because any image may be the project's and many run fine although they were not built for JupyterHub.
 
 // Size limits of project images; admins may save larger ones.
 const (

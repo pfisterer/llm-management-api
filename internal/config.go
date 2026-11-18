@@ -81,7 +81,7 @@ type Config struct {
 	// HarborScanUser and HarborScanToken read Harbor's vulnerability scans of project images (a robot account that may read artifacts and scans); empty = anonymously, which suffices for the public projects.
 	HarborScanUser  string
 	HarborScanToken string
-	// ImageCleanup deletes the images of environments that are gone from the Harbor project envs (docs/todo.md image_cleanup): IMAGE_CLEANUP_ENABLED, IMAGE_CLEANUP_DRY_RUN (only log what would go), IMAGE_CLEANUP_MIN_AGE_DAYS (an artifact pushed or pulled more recently stays), IMAGE_CLEANUP_INTERVAL_MINUTES. Deleting needs the robot account HarborCleanupUser/HarborCleanupToken (list and delete on repositories and artifacts in envs); without it the cleanup stays a dry run.
+	// ImageCleanup deletes the images of environments that are gone from the Harbor project envs (dhbw-deployment/__TODOS.md image_cleanup): IMAGE_CLEANUP_ENABLED, IMAGE_CLEANUP_DRY_RUN (only log what would go), IMAGE_CLEANUP_MIN_AGE_DAYS (an artifact pushed or pulled more recently stays), IMAGE_CLEANUP_INTERVAL_MINUTES. Deleting needs the robot account HarborCleanupUser/HarborCleanupToken (list and delete on repositories and artifacts in envs); without it the cleanup stays a dry run.
 	ImageCleanup       gpu.ImageCleanupConfig
 	HarborCleanupUser  string
 	HarborCleanupToken string
