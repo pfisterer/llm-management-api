@@ -267,7 +267,7 @@ func (s *Service) clearImageFacts(p *Project) {
 	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan, p.ImageArchs = 0, "", nil, nil, nil
 }
 
-// inspectBuilt reads a finished build from Git like a saved image (size, warnings, and its architectures: those of its index for a build for several, dhbw-deployment/__TODOS.md multi_arch), never refusing it; it is in the public project envs. Its registry not answering leaves the facts empty for the next check to fill (until then it counts as amd64); it tells whether it read them.
+// inspectBuilt reads a finished build from Git like a saved image (size, warnings, and its architectures: those of its index for a build for several), never refusing it; it is in the public project envs. Its registry not answering leaves the facts empty for the next check to fill (until then it counts as amd64); it tells whether it read them.
 func (s *Service) inspectBuilt(ctx context.Context, p *Project) bool {
 	if s.inspect == nil || p.ProjectImage == "" {
 		return false

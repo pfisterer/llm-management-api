@@ -92,7 +92,7 @@ gpu:
   # Empty: newest tag of <registry>/platform/repo2docker-buildkit.
   builderImage: ""
   builderSecret: harbor-envs-builder
-  # Architectures project images from Git are built for where their base has them (dhbw-deployment/__TODOS.md multi_arch): each other than amd64 natively in its own job on a node of it (kubernetes.io/arch, tolerating the lab pool's taint), then an index (crane, indexImage; empty = the service's default) joins them. [amd64] = one amd64 build as before.
+  # Architectures project images from Git are built for where their base has them: each other than amd64 natively in its own job on a node of it (kubernetes.io/arch, tolerating the lab pool's taint), then an index (crane, indexImage; empty = the service's default) joins them. [amd64] = one amd64 build as before.
   buildPlatforms: [amd64]
   indexImage: ""
   gitHosts: [github.com, gitlab.com]
@@ -117,13 +117,13 @@ gpu:
     graceSeconds: 0
   # Workspaces (projects): {profiles: [{slug, name, gpuClass}], gpuClasses: [...], bases: [{id, name, image, default, archs}]}; empty = no catalogue. The bases are the projects' environments (dhbw-workspace-images at its release); project images from Git are built on them and rebuilt on a new release, and they are pulled onto the CPU and GPU nodes ahead of time (DaemonSets kernel-image-prepull and kernel-image-prepull-arm64 in the workspace namespace, one per architecture, needs get/create/update on daemonsets there). The projects themselves come only from the budget tree.
   workspaces: {}
-  # Project images (dhbw-deployment/__TODOS.md image_hardening): refused when saved above imageMaxGB (compressed; admins may save larger ones), a hint from imageHintGB; empty = 15 and 5. Harbor's vulnerability scans of images in the registry are read anonymously (public projects) unless harborScanUser and secrets.harborScanToken name a robot account that may read artifacts and scans.
+  # Project images: refused when saved above imageMaxGB (compressed; admins may save larger ones), a hint from imageHintGB; empty = 15 and 5. Harbor's vulnerability scans of images in the registry are read anonymously (public projects) unless harborScanUser and secrets.harborScanToken name a robot account that may read artifacts and scans.
   imageMaxGB: ""
   imageHintGB: ""
   harborScanUser: ""
   # Folders of removed workspace groups (workspace/group_dirs.go): the hourly job workspace-group-dirs (aiaas-deployment) lists ws-*/groups/* and deletes (into JuiceFS' trash) the folders of groups their project no longer has, only with this on; off, the plan says "would-remove" and the job only logs. Off by default: the first rollout shows what would go, the folders of groups removed before included, before anything is deleted.
   groupDirsRemove: false
-  # Image cleanup (dhbw-deployment/__TODOS.md image_cleanup): a sweep every intervalMinutes deletes from Harbor's project envs the artifacts no environment and no project names any more, once they were neither pushed nor pulled for minAgeDays; dryRun only logs what would go (metrics aiaas_image_cleanup_*). Deleting needs user and secrets.harborCleanupToken: a robot account with list and delete on repositories and artifacts in envs (robot$envs+cleanup); without it the cleanup stays a dry run. Never touches other projects (platform).
+  # Image cleanup: a sweep every intervalMinutes deletes from Harbor's project envs the artifacts no environment and no project names any more, once they were neither pushed nor pulled for minAgeDays; dryRun only logs what would go (metrics aiaas_image_cleanup_*). Deleting needs user and secrets.harborCleanupToken: a robot account with list and delete on repositories and artifacts in envs (robot$envs+cleanup); without it the cleanup stays a dry run. Never touches other projects (platform).
   imageCleanup:
     enabled: true
     dryRun: true

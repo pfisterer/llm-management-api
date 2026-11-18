@@ -1,6 +1,6 @@
 package workspace
 
-// Areas in the workspace (dhbw-deployment/__TODOS.md "Workspaces und Bereiche", areas_project and areas_groups): everything the platform mounts into a person's pods lies below ~/dhbw, every area a folder of the project's volume ws-<slug> mounted with subPath. They count against the project's storage like the homes, and they are kept apart by mounting, not by file permissions (every pod runs as UID 1000): a pod gets only the folders the person may see.
+// Areas in the workspace: everything the platform mounts into a person's pods lies below ~/dhbw, every area a folder of the project's volume ws-<slug> mounted with subPath. They count against the project's storage like the homes, and they are kept apart by mounting, not by file permissions (every pod runs as UID 1000): a pod gets only the folders the person may see.
 
 import (
 	"context"

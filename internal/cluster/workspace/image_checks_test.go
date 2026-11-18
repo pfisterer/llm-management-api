@@ -349,7 +349,7 @@ func TestImageFactsStored(t *testing.T) {
 	}
 }
 
-// A build from Git runs on the architectures its index has (dhbw-deployment/__TODOS.md multi_arch): amd64 until it is read, both once the registry names arm64 too, amd64 again for a build whose arm64 variant failed.
+// A build from Git runs on the architectures its index has: amd64 until it is read, both once the registry names arm64 too, amd64 again for a build whose arm64 variant failed.
 func TestBuiltImageArchs(t *testing.T) {
 	ctx := context.Background()
 	s := service()

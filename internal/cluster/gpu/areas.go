@@ -1,6 +1,6 @@
 package gpu
 
-// The areas below ~/dhbw (workspace.Area, dhbw-deployment/__TODOS.md areas_project, areas_groups) in the pods this service builds: batch jobs and the files pods. The hub mounts the same for the servers (jupyterhub-values.yaml.j2, dhbw_storage_pod), the GPU kernel pods take the server's mounts.
+// The areas below ~/dhbw (workspace.Area) in the pods this service builds: batch jobs and the files pods. The hub mounts the same for the servers (jupyterhub-values.yaml.j2, dhbw_storage_pod), the GPU kernel pods take the server's mounts.
 
 import (
 	"crypto/sha256"

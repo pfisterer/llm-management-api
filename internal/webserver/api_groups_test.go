@@ -13,7 +13,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
 )
 
-// Groups of a project (dhbw-deployment/__TODOS.md areas_groups): its managers keep them, members get their group's folder below ~/dhbw/groups in jobs and uploads, nobody another group's.
+// Groups of a project: its managers keep them, members get their group's folder below ~/dhbw/groups in jobs and uploads, nobody another group's.
 func TestProjectGroups(t *testing.T) {
 	e := newJobEnv(t, func(o *Options, _ *gpu.Config) { o.Usage = usage.NewMemoryStore() })
 	files := fakeFilesServer(t)

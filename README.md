@@ -2,7 +2,7 @@
 
 Self-service API of the AI service of dhbw.cloud: LLM keys and usage (LiteLLM), workspace projects, JupyterHub workspaces and GPU kernels in the GPU cluster, batch jobs with their files, the GPU and Mac fleets, with access from the projects of the budget tree and roles from the configuration. Consumed by the LLM section of [self-service-ui](https://github.com/pfisterer/self-service-ui) through the generated client `@dhbw-cloud/llm-client`, by the Python client and command `dhbw-cloud` (`clients/python`, built with `make py-package`) and by agents over MCP (`/mcp`).
 
-It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the aiaas-deployment project (Ansible; `docs/architektur.md` there); open items are in `dhbw-deployment/__TODOS.md`.
+It replaced the portal part of the Node "key broker" of the former llm-aas deployment. It is deployed from the aiaas-deployment project (Ansible; `docs/architektur.md` there).
 
 ## Access model
 

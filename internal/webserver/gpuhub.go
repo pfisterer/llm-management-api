@@ -88,7 +88,7 @@ type HubProject struct {
 	// PullSecret and GitSecret are the project's secrets for private images and repositories (credentials); empty = none.
 	PullSecret string `json:"pull_secret,omitempty"`
 	GitSecret  string `json:"git_secret,omitempty"`
-	// Release is what the project's servers (per profile) and GPU kernels enforce, in seconds (dhbw-deployment/__TODOS.md idle_release): the hub sets the servers' idle times and upper bound, the bases' extension dhbw_gpu culls by them.
+	// Release is what the project's servers (per profile) and GPU kernels enforce, in seconds: the hub sets the servers' idle times and upper bound, the bases' extension dhbw_gpu culls by them.
 	Release workspace.EffectiveRelease `json:"release"`
 	// ScratchGB is the local storage in GB the project's servers and GPU kernels may write outside the home (workspace.ScratchGB: the budget's or the default): the hub sets it as the notebook container's ephemeral-storage limit, the start page shows it.
 	ScratchGB int `json:"scratch_gb" example:"1"`

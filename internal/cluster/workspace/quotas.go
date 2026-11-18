@@ -1,6 +1,6 @@
 package workspace
 
-// Storage limits inside a project's volume (dhbw-deployment/__TODOS.md areas_quotas): JuiceFS directory quotas below the volume's own (nested quotas, JuiceFS ≥ 1.1), so that one person, group or the shared folder cannot fill the volume for everybody. The project's quota stays the hard bound; the limits below may add up to more. This service decides what they should be (QuotaTargets, QuotaPlan); a CronJob with access to the file system's metadata (tasks/juicefs.yaml, workspace-storage-quotas) sends `juicefs quota list` and carries out the plan.
+// Storage limits inside a project's volume: JuiceFS directory quotas below the volume's own (nested quotas, JuiceFS ≥ 1.1), so that one person, group or the shared folder cannot fill the volume for everybody. The project's quota stays the hard bound; the limits below may add up to more. This service decides what they should be (QuotaTargets, QuotaPlan); a CronJob with access to the file system's metadata (tasks/juicefs.yaml, workspace-storage-quotas) sends `juicefs quota list` and carries out the plan.
 
 import (
 	"context"

@@ -314,7 +314,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}, cfg.GPU.Registry)
 		}
 		wsSvc.SetImageBuilder(gpuSvc)
-		// Access to private repositories and registries (dhbw-deployment/__TODOS.md private_images): only with a key to seal the tokens.
+		// Access to private repositories and registries: only with a key to seal the tokens.
 		if cfg.WorkspaceCredentialsKey != "" {
 			key, err := base64.StdEncoding.DecodeString(cfg.WorkspaceCredentialsKey)
 			if err == nil {
@@ -347,7 +347,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 			return err
 		})
-		// A GPU kernel's upper bound is its project's (release times, dhbw-deployment/__TODOS.md idle_release); its idle time is enforced by the notebook server (dhbw_gpu in the bases), which the hub tells.
+		// A GPU kernel's upper bound is its project's (release times); its idle time is enforced by the notebook server (dhbw_gpu in the bases), which the hub tells.
 		gpuSvc.SetKernelMax(func(ctx context.Context, o *gpu.KernelOwner) time.Duration {
 			p, err := wsSvc.Get(ctx, o.Project)
 			if err != nil {
@@ -585,7 +585,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				log.Warnw("project images: prepull", "error", err)
 			}
 		})
-		// Images of environments that are gone, deleted from Harbor's project envs (dhbw-deployment/__TODOS.md image_cleanup): one sweep against the environments and projects, which covers every way an environment goes; a failed delete is tried again at the next pass.
+		// Images of environments that are gone, deleted from Harbor's project envs: one sweep against the environments and projects, which covers every way an environment goes; a failed delete is tried again at the next pass.
 		if cfg.ImageCleanup.Enabled && cfg.GPU.Registry != "" {
 			ic := cfg.ImageCleanup
 			harbor := &oci.Harbor{Client: &oci.Client{HTTP: httpx.RetryingClient(60 * time.Second)}, Host: cfg.GPU.Registry}
