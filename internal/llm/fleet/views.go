@@ -58,6 +58,8 @@ type Site struct {
 	Port          int            `json:"port,omitempty"`
 	APIBase       string         `json:"apiBase,omitempty"`
 	APIKey        string         `json:"apiKey"`
+	// Aliases, when set, are the only aliases discovery registers the site's models under (no inventory members, no classification): a Mac running a strata model goes into the strata alias (chat-large) and nowhere else, whatever id Strata reports.
+	Aliases []string `json:"aliases,omitempty"`
 	// Context is the context in tokens the machine runs its models with (a Mac: the profile's, or the inventory's override), 0 = unknown (Linux machines, the inference pool). The discovery job turns it into LiteLLM's max_input_tokens, so a long prompt goes to a machine that can take it; a backend that names its own context (vLLM's max_model_len) wins over it.
 	Context int `json:"context,omitempty"`
 }
@@ -91,8 +93,11 @@ func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 		}
 		site := Site{Name: p.Name, Weight: weight, LiteLLMParams: params, Fleet: true}
 		// Only the Macs run with the profile's context (the fleet script sets OLLAMA_CONTEXT_LENGTH); a Linux machine sets up its inference service itself, so its context is unknown here (vLLM names its own).
+		strata := false
 		if prof, ok := s.cfg.profileFor(p.RAMMb); ok && p.OS == "darwin" {
-			site.Context = s.cfg.assignment(prof, p.Serial, p.ModelOverride).Context
+			a := s.cfg.assignment(prof, p.Serial, p.ModelOverride)
+			site.Context = a.Context
+			strata = IsStrata(a.Model) && p.Transport != "direct"
 		}
 		if p.Transport == "direct" {
 			site.Transport, site.APIBase, site.APIKey = "direct", p.APIBase, p.APIKey
@@ -103,6 +108,10 @@ func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 				port = s.cfg.Port
 			}
 			site.Transport, site.WGAddress, site.Port, site.APIKey = "wireguard", p.Address, port, s.cfg.APIKey
+			// Strata, unlike Ollama, checks the key: the machine's own (handed out at enrolment), and only the strata alias.
+			if strata {
+				site.APIKey, site.Aliases = s.cfg.strataKey(p.Serial), []string{s.cfg.Strata.alias()}
+			}
 		}
 		out = append(out, site)
 	}
@@ -192,8 +201,10 @@ type FleetView struct {
 		Canary  []string          `json:"canary"`
 		Scripts map[string]string `json:"scripts"`
 	} `json:"self_update"`
-	Profiles []Profile  `json:"profiles"`
-	Peers    []PeerView `json:"peers"`
+	Profiles []Profile `json:"profiles"`
+	// StrataModels are the reserved model names that run Strata instead of Ollama on a Mac (for the portal's suggestions).
+	StrataModels []string   `json:"strata_models"`
+	Peers        []PeerView `json:"peers"`
 }
 
 func addrOrder(a string) uint32 {
@@ -221,7 +232,8 @@ func (s *Service) View(ctx context.Context, health HealthSource, mat Material) (
 
 	v := FleetView{Enabled: s.cfg.Enabled, Pool: s.cfg.Pool, EnrollHost: s.cfg.EnrollHostname, EnrollToken: s.cfg.EnrollToken,
 		ReenrollSeconds: s.cfg.ReenrollSeconds, EndpointV6: s.wg.EndpointHostV6, Endpoint: s.wg.EndpointHost(), ListenPort: s.wg.ListenPort,
-		AllowedSerials: len(s.cfg.AllowedSerials), Package: mat.Package(), PackageID: "de.dhbw.llm.fleet", Profiles: s.cfg.Profiles}
+		AllowedSerials: len(s.cfg.AllowedSerials), Package: mat.Package(), PackageID: "de.dhbw.llm.fleet", Profiles: s.cfg.Profiles,
+		StrataModels: StrataModels()}
 	if pool, err := netip.ParsePrefix(s.cfg.Pool); err == nil {
 		v.Capacity = (1 << (32 - pool.Bits())) - 2
 	}

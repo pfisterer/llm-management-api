@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Profile is a machine class by memory: the first profile a machine's RAM
@@ -48,6 +49,8 @@ type Config struct {
 	LiteLLMParams    map[string]any      `json:"litellmParams"`
 	Overrides        map[string]Override `json:"overrides"`
 	Profiles         []Profile           `json:"profiles"`
+	// Strata: alias, weight and context of machines that run a strata model (see StrataPrefix); all optional.
+	Strata StrataConfig `json:"strata"`
 }
 
 // WireGuard is the `wireguard` block of the inventory (env WIREGUARD).
@@ -110,6 +113,11 @@ func ParseConfig(fleetJSON, wgJSON string) (Config, WireGuard, error) {
 		if o.OllamaVersion != nil && !ollamaVersionRE.MatchString(*o.OllamaVersion) {
 			return c, w, fmt.Errorf("fleet override %s: ollamaVersion %q is not x.y.z", serial, *o.OllamaVersion)
 		}
+		if o.Model != nil && IsStrata(*o.Model) {
+			if _, ok := strataModels[*o.Model]; !ok {
+				return c, w, fmt.Errorf("fleet override %s: %q is no strata model the fleet script knows (%s)", serial, *o.Model, strings.Join(StrataModels(), ", "))
+			}
+		}
 	}
 	if !c.Enabled {
 		return c, w, nil
@@ -166,7 +174,7 @@ func (c Config) ollamaVersion(serial string) string {
 	return c.OllamaVersion
 }
 
-// assignment applies the per-serial override of the inventory and then the model an admin set (modelOverride, empty = none) on top of the profile.
+// assignment applies the per-serial override of the inventory and then the model an admin set (modelOverride, empty = none) on top of the profile. A strata model (StrataPrefix) passes through unchanged as the model; it runs with the fleet's strata context (the profile's and the override's are Ollama's) and the strata weight unless the override sets a weight for the serial.
 func (c Config) assignment(p Profile, serial, modelOverride string) Assignment {
 	a := Assignment{Profile: p.Name, Model: p.Model, Context: p.Context, WiredLimitMb: p.WiredLimitMb,
 		Weight: p.Weight, Gate: "idle-only", Enabled: true}
@@ -195,6 +203,12 @@ func (c Config) assignment(p Profile, serial, modelOverride string) Assignment {
 	}
 	if modelOverride != "" {
 		a.Model = modelOverride
+	}
+	if IsStrata(a.Model) {
+		a.Context = c.Strata.context()
+		if o, ok := c.Overrides[serial]; !ok || o.Weight == nil {
+			a.Weight = c.Strata.weight()
+		}
 	}
 	return a
 }

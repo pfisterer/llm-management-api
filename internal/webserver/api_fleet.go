@@ -258,7 +258,7 @@ func (s *Server) setBlocked(c *gin.Context, blocked bool) {
 // FleetModelRequest sets the model of one or more machines.
 type FleetModelRequest struct {
 	Serials []string `json:"serials" binding:"required,min=1"`
-	// Ollama model name; empty = back to the profile's model.
+	// Ollama model name, or a reserved Strata name (strata:gyro-s, see strata_models in the fleet view) that runs Strata instead of Ollama on a Mac with at least 48 GB; empty = back to the profile's model.
 	Model string `json:"model" example:"qwen3.6:35b-a3b"`
 }
 
@@ -271,7 +271,7 @@ type FleetModelResponse struct {
 //
 //	@ID				setFleetModel
 //	@Summary		Set the model of machines
-//	@Description	The model wins over the machine's profile (by memory). A machine pulls it at its next enrolment, within reenrollSeconds; context and memory limit stay the profile's. An empty model returns the machines to their profile's.
+//	@Description	The model wins over the machine's profile (by memory). A machine pulls it at its next enrolment, within reenrollSeconds; context and memory limit stay the profile's. An empty model returns the machines to their profile's. A Strata name (strata:…) replaces Ollama on the Mac: only Macs of the fleet in the tunnel with enough memory, registered in LiteLLM only under the strata alias (chat-large) with a low weight.
 //	@Tags			fleet
 //	@Accept			json
 //	@Produce		json
@@ -289,7 +289,12 @@ func (s *Server) setFleetModel(c *gin.Context) {
 	}
 	n, err := s.fleet.SetModel(c.Request.Context(), req.Serials, req.Model)
 	var misfit *fleet.MisfitError
+	var strataMisfit *fleet.StrataMisfitError
 	switch {
+	case errors.As(err, &strataMisfit):
+		abort(c, http.StatusBadRequest, "model_too_large", msg.F("%s läuft nur auf Macs der Flotte im Tunnel mit mindestens %d GB, nicht auf %s. Diese Maschinen abwählen.", "%s runs only on Macs of the fleet in the tunnel with at least %d GB, not on %s. Deselect these machines.", strataMisfit.Model, strataMisfit.MinRAMGb, strings.Join(strataMisfit.Machines, ", ")))
+	case errors.Is(err, fleet.ErrUnknownStrata):
+		abort(c, http.StatusBadRequest, "unknown_model", msg.F("Dieses Strata-Modell kennt das Flottenskript nicht. Möglich: %s.", "The fleet script does not know this Strata model. Possible: %s.", strings.Join(fleet.StrataModels(), ", ")))
 	case errors.As(err, &misfit):
 		abort(c, http.StatusBadRequest, "model_too_large", msg.F("%s ist %.1f GB groß und passt nicht in die Speichergrenze von %s. Diese Maschinen abwählen oder ein kleineres Modell nehmen.", "%s is %.1f GB and does not fit into the memory limit of %s. Deselect these machines or take a smaller model.", misfit.Model, misfit.SizeGB, strings.Join(misfit.Machines, ", ")))
 	case errors.Is(err, fleet.ErrUnknownModel):

@@ -84,6 +84,8 @@ type EnrollResponse struct {
 	ScriptBaseURL   string        `json:"scriptBaseUrl"`
 	OllamaVersion   string        `json:"ollamaVersion"`
 	Profile         EnrollProfile `json:"profile"`
+	// APIKey is the key the machine's Strata server must require, set only while a strata model is assigned to a tunnelled machine (see Config.strataKey); discovery sends the same key. Ollama has no authentication and gets none.
+	APIKey string `json:"apiKey,omitempty"`
 	// MachineSecret is set only in the answer that issues it; the machine keeps it and sends it as machineSecret from then on.
 	MachineSecret string `json:"machineSecret,omitempty"`
 	// Pending: the machine is recorded but awaits approval by a fleet admin; the answer carries no tunnel or assignment (the handler sends 202).
@@ -338,6 +340,9 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (EnrollResponse
 				Gate: a.Gate, Enabled: a.Enabled},
 		}
 		out.MachineSecret = secret
+		if IsStrata(a.Model) && mine.Transport != "direct" {
+			out.APIKey = s.cfg.strataKey(serial)
+		}
 		// Tunnel fields stay empty (not absent) for direct machines: an agent
 		// reading them gets "" and builds no tunnel instead of failing.
 		if mine.Transport != "direct" {
@@ -543,14 +548,19 @@ var ErrBadModel = errors.New("invalid model name")
 
 var modelNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$`)
 
-// SetModel sets the model of the given machines (empty = back to their profile's). The assignment shown changes at once; a machine pulls the model at its next enrolment (reenrollSeconds). A model the Ollama registry does not have is refused (ErrUnknownModel), and so is one larger than the memory limit of any of the machines (*MisfitError) — a rough check, the machine's own load reports the rest. Unknown serials are skipped; ErrPeerNotFound when none is known.
+// SetModel sets the model of the given machines (empty = back to their profile's). The assignment shown changes at once; a machine pulls the model at its next enrolment (reenrollSeconds). A model the Ollama registry does not have is refused (ErrUnknownModel), and so is one larger than the memory limit of any of the machines (*MisfitError) — a rough check, the machine's own load reports the rest. A strata model (StrataPrefix) skips the registry: an unknown strata name is ErrUnknownStrata, a machine that is no Mac of the fleet in the tunnel or has too little memory makes it a *StrataMisfitError. Unknown serials are skipped; ErrPeerNotFound when none is known.
 func (s *Service) SetModel(ctx context.Context, serials []string, model string) (int, error) {
 	model = strings.TrimSpace(model)
 	if model != "" && !modelNameRE.MatchString(model) {
 		return 0, ErrBadModel
 	}
+	// A strata model is no Ollama model: no registry, no size; the machine has to be a Mac of the fleet with enough memory instead.
+	strata, isStrata := strataModels[model]
+	if IsStrata(model) && !isStrata {
+		return 0, ErrUnknownStrata
+	}
 	size := int64(-1)
-	if model != "" && s.size != nil {
+	if model != "" && !isStrata && s.size != nil {
 		var err error
 		if size, err = s.size(ctx, model); err != nil {
 			return 0, err
@@ -566,7 +576,12 @@ func (s *Service) SetModel(ctx context.Context, serials []string, model string) 
 			}
 			profile, ok := s.cfg.profileFor(p.RAMMb)
 			a := s.cfg.assignment(profile, p.Serial, model)
-			if ok && size > 0 && a.WiredLimitMb > 0 && size/(1<<20)+kvReserveMb > int64(a.WiredLimitMb) {
+			if isStrata {
+				if why := strataMisfit(p, strata); why != "" {
+					misfits = append(misfits, why)
+					continue
+				}
+			} else if ok && size > 0 && a.WiredLimitMb > 0 && size/(1<<20)+kvReserveMb > int64(a.WiredLimitMb) {
 				misfits = append(misfits, fmt.Sprintf("%s (%d GB)", p.Name, a.WiredLimitMb/1024))
 				continue
 			}
@@ -578,6 +593,9 @@ func (s *Service) SetModel(ctx context.Context, serials []string, model string) 
 				p.Model = model
 			}
 			changed = append(changed, p)
+		}
+		if len(misfits) > 0 && isStrata {
+			return nil, nil, &StrataMisfitError{Model: model, MinRAMGb: strata.MinRAMGb, Machines: misfits}
 		}
 		if len(misfits) > 0 {
 			return nil, nil, &MisfitError{Model: model, SizeGB: float64(size) / (1 << 30), Machines: misfits}
