@@ -3,9 +3,11 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A strata model is set like any model, but it is no Ollama model: no registry lookup, no fit against the wired limit; the machine must be a Mac of the fleet in the tunnel with enough memory instead.
@@ -122,5 +124,185 @@ func TestStrataAssignment(t *testing.T) {
 	}
 	if (Config{}).strataKey("A") != "" {
 		t.Errorf("a key without a fleet key")
+	}
+}
+
+// strataPeer is a Mac with strata:gyro-s assigned, seen at seen; has = it reports the model as served.
+func strataPeer(serial, name, ip string, seen time.Time, has bool) Peer {
+	p := Peer{Serial: serial, Name: name, PrimaryIP: ip, Transport: "wireguard", Model: "strata:gyro-s", LastSeen: &seen}
+	if has {
+		p.SetModels([]string{"strata:gyro-s"})
+	}
+	return p
+}
+
+// The source of the model download comes from the fleet's state alone: a Mac of the same network that has the model and is online, not blocked, pending or busy, with the same strata model; spread per requester; otherwise the first by name downloads and the others wait.
+func TestStrataSource(t *testing.T) {
+	svc, _, _ := testService(t, nil)
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	recent, old := now.Add(-50*time.Minute), now.Add(-2*time.Hour)
+	me := strataPeer("ME000001", "wimac10", "141.72.10.50", now, false)
+	src := func(peers ...Peer) *EnrollStrata { return svc.strataSource(append(peers, me), me, now) }
+
+	// Nobody else: this Mac leads and fetches from Hugging Face; its own network and port come along.
+	if r := src(); r == nil || r.Source != "" || r.Wait || r.Network != "141.72.10.0/24" || r.Port != 11480 || r.WaitHours != 6 {
+		t.Fatalf("alone: %+v", r)
+	}
+	// A ready Mac in the same /24.
+	ready := strataPeer("SRC00001", "wimac20", "141.72.10.20", recent, true)
+	if r := src(ready); r.Source != "http://141.72.10.20:11480" || r.Wait {
+		t.Errorf("same network: %+v", r)
+	}
+	// Never across networks, whatever else holds: the other one leads there, here this Mac leads.
+	other := strataPeer("SRC00002", "wimac01", "141.72.11.20", recent, true)
+	if r := src(other); r.Source != "" || r.Wait {
+		t.Errorf("other network: %+v", r)
+	}
+	// Excluded: offline, blocked, pending, another model, not ready, busy (the last two make it wait or lead, never a source).
+	offline := strataPeer("SRC00003", "wimac21", "141.72.10.21", old, true)
+	blocked := strataPeer("SRC00004", "wimac22", "141.72.10.22", recent, true)
+	blocked.Blocked = true
+	pending := strataPeer("SRC00005", "wimac23", "141.72.10.23", recent, true)
+	pending.Pending, pending.Blocked = true, true
+	ollama := strataPeer("SRC00006", "wimac24", "141.72.10.24", recent, false)
+	ollama.Model = "big"
+	ollama.SetModels([]string{"big"})
+	direct := strataPeer("SRC00007", "wimac25", "141.72.10.25", recent, true)
+	direct.Transport = "direct"
+	if r := src(offline, blocked, pending, ollama, direct); r.Source != "" || r.Wait {
+		t.Errorf("excluded peers: %+v", r)
+	}
+	busy := strataPeer("SRC00008", "wimac26", "141.72.10.26", recent, true)
+	busy.Busy = true
+	if r := src(busy); r.Source != "" || !r.Wait {
+		t.Errorf("only a busy Mac has it: wait for it, %+v", r)
+	}
+	if r := src(busy, ready); r.Source != "http://141.72.10.20:11480" {
+		t.Errorf("busy and ready: %+v", r)
+	}
+
+	// Leader: the first by name of the online Macs of the network without the model downloads, the others wait; when it drops out, the next one leads.
+	lead := strataPeer("LEAD0001", "wimac05", "141.72.10.5", recent, false)
+	if r := src(lead); r.Source != "" || !r.Wait {
+		t.Errorf("not the leader: %+v", r)
+	}
+	later := strataPeer("LATE0001", "wimac30", "141.72.10.30", recent, false)
+	if r := src(later); r.Wait {
+		t.Errorf("leader: %+v", r)
+	}
+	lead.LastSeen = &old
+	if r := src(lead, later); r.Wait {
+		t.Errorf("leader gone, this Mac takes over: %+v", r)
+	}
+	lead.LastSeen = &recent
+	lead.Blocked = true
+	if r := src(lead, later); r.Wait {
+		t.Errorf("leader blocked, this Mac takes over: %+v", r)
+	}
+	// A leader in another network does not count.
+	far := strataPeer("FAR00001", "wimac00", "141.72.12.5", recent, false)
+	if r := src(far); r.Wait {
+		t.Errorf("leader in another network: %+v", r)
+	}
+
+	// A Mac that has the model itself needs no source; one without IPv4 takes part in nothing.
+	has := me
+	has.SetModels([]string{"strata:gyro-s"})
+	if r := svc.strataSource([]Peer{ready, has}, has, now); r.Source != "" || r.Wait || r.Network == "" {
+		t.Errorf("has it: %+v", r)
+	}
+	v6 := me
+	v6.PrimaryIP = "2001:7c7:2000::50"
+	if r := svc.strataSource([]Peer{ready, lead, v6}, v6, now); r.Source != "" || r.Wait || r.Network != "" || r.Port != 11480 {
+		t.Errorf("ipv6: %+v", r)
+	}
+	// An Ollama machine gets no strata part at all.
+	if r := svc.strataSource(nil, ollama, now); r != nil {
+		t.Errorf("ollama: %+v", r)
+	}
+}
+
+// Spreading: every requester keeps its source while the set is stable, different requesters use different sources, and a source that leaves only moves the requesters it served.
+func TestStrataSourceSpread(t *testing.T) {
+	svc, _, _ := testService(t, func(c *Config) { c.Strata = StrataConfig{SourcePrefix: 16, SourcePort: 12000, SourceWaitHours: 2} })
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	var sources []Peer
+	for i := range 4 {
+		sources = append(sources, strataPeer(fmt.Sprintf("SRC0000%d", i), fmt.Sprintf("src%d", i), fmt.Sprintf("10.20.%d.1", i), now, true))
+	}
+	pick := func(set []Peer, serial string) string {
+		me := strataPeer(serial, "req-"+serial, "10.20.200.9", now, false)
+		r := svc.strataSource(append(slices.Clone(set), me), me, now)
+		if r.Network != "10.20.0.0/16" || r.WaitHours != 2 {
+			t.Fatalf("config: %+v", r)
+		}
+		return r.Source
+	}
+	rev := slices.Clone(sources)
+	slices.Reverse(rev)
+	used := map[string]int{}
+	first := map[string]string{}
+	for i := range 40 {
+		serial := fmt.Sprintf("REQ%05d", i)
+		s := pick(sources, serial)
+		if !strings.HasSuffix(s, ":12000") {
+			t.Fatalf("port: %s", s)
+		}
+		// Same answer again, and with the sources in another order.
+		if again := pick(rev, serial); again != s {
+			t.Fatalf("not deterministic for %s: %s then %s", serial, s, again)
+		}
+		used[s]++
+		first[serial] = s
+	}
+	if len(used) != 4 {
+		t.Errorf("not spread over all sources: %v", used)
+	}
+	// src0 leaves: only its requesters move.
+	gone := "http://10.20.0.1:12000"
+	for serial, s := range first {
+		if now := pick(sources[1:], serial); s != gone && now != s {
+			t.Errorf("%s moved from %s to %s although its source stayed", serial, s, now)
+		}
+	}
+}
+
+// Through the enrolment: the answer of a strata machine carries the `strata` part, from the state the enrolments leave behind; an Ollama machine's does not.
+func TestEnrollStrataSource(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := testService(t, func(c *Config) { c.APIKey = "fleet-key" })
+	a, b := mac("SERIAL0001", key1, "wimac01", 49152), mac("SERIAL0002", key2, "wimac02", 49152)
+	a["primaryIp"], b["primaryIp"] = "141.72.10.1", "141.72.10.2"
+	if r := join(t, svc, a); r.Strata != nil {
+		t.Fatalf("ollama machine with a strata part: %+v", r.Strata)
+	}
+	join(t, svc, b)
+	if _, err := svc.SetModel(ctx, []string{"SERIAL0001", "SERIAL0002"}, "strata:gyro-s"); err != nil {
+		t.Fatal(err)
+	}
+	// While setting up, both report busy and no models.
+	a["busy"], b["busy"] = true, true
+	a["models"], b["models"] = []any{}, []any{}
+	ra, _ := svc.Enroll(ctx, a)
+	rb, _ := svc.Enroll(ctx, b)
+	if ra.Strata == nil || ra.Strata.Wait || ra.Strata.Source != "" || ra.Strata.Network != "141.72.10.0/24" {
+		t.Errorf("leader: %+v", ra.Strata)
+	}
+	if rb.Strata == nil || !rb.Strata.Wait {
+		t.Errorf("follower: %+v", rb.Strata)
+	}
+	// The leader is ready: the follower fetches from it.
+	a["busy"], a["models"] = false, []any{"strata:gyro-s"}
+	if ra, _ = svc.Enroll(ctx, a); ra.Strata.Wait || ra.Strata.Source != "" {
+		t.Errorf("leader ready: %+v", ra.Strata)
+	}
+	if rb, _ = svc.Enroll(ctx, b); rb.Strata.Wait || rb.Strata.Source != "http://141.72.10.1:11480" {
+		t.Errorf("follower with a source: %+v", rb.Strata)
+	}
+
+	for _, bad := range []string{`{"strata":{"sourcePrefix":4}}`, `{"strata":{"sourcePrefix":33}}`, `{"strata":{"sourcePort":80}}`, `{"strata":{"sourceWaitHours":-1}}`} {
+		if _, _, err := ParseConfig(bad, ""); err == nil {
+			t.Errorf("accepted: %s", bad)
+		}
 	}
 }

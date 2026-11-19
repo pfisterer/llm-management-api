@@ -49,7 +49,7 @@ type Config struct {
 	LiteLLMParams    map[string]any      `json:"litellmParams"`
 	Overrides        map[string]Override `json:"overrides"`
 	Profiles         []Profile           `json:"profiles"`
-	// Strata: alias, weight and context of machines that run a strata model (see StrataPrefix); all optional.
+	// Strata: alias, weight and context of machines that run a strata model (see StrataPrefix), and how they share the model download within their network (sourcePort, sourcePrefix, sourceWaitHours); all optional.
 	Strata StrataConfig `json:"strata"`
 }
 
@@ -118,6 +118,15 @@ func ParseConfig(fleetJSON, wgJSON string) (Config, WireGuard, error) {
 				return c, w, fmt.Errorf("fleet override %s: %q is no strata model the fleet script knows (%s)", serial, *o.Model, strings.Join(StrataModels(), ", "))
 			}
 		}
+	}
+	if p := c.Strata.SourcePrefix; p != 0 && (p < 8 || p > 32) {
+		return c, w, fmt.Errorf("fleet strata.sourcePrefix %d is no IPv4 prefix length between 8 and 32", p)
+	}
+	if p := c.Strata.SourcePort; p != 0 && (p < 1024 || p > 65535) {
+		return c, w, fmt.Errorf("fleet strata.sourcePort %d is not between 1024 and 65535 (the server runs unprivileged)", p)
+	}
+	if c.Strata.SourceWaitHours < 0 {
+		return c, w, fmt.Errorf("fleet strata.sourceWaitHours %d is negative", c.Strata.SourceWaitHours)
 	}
 	if !c.Enabled {
 		return c, w, nil

@@ -86,6 +86,8 @@ type EnrollResponse struct {
 	Profile         EnrollProfile `json:"profile"`
 	// APIKey is the key the machine's Strata server must require, set only while a strata model is assigned to a tunnelled machine (see Config.strataKey); discovery sends the same key. Ollama has no authentication and gets none.
 	APIKey string `json:"apiKey,omitempty"`
+	// Strata: where a machine with a strata model fetches the model file and how it serves its own (see EnrollStrata); absent for every other machine.
+	Strata *EnrollStrata `json:"strata,omitempty"`
 	// MachineSecret is set only in the answer that issues it; the machine keeps it and sends it as machineSecret from then on.
 	MachineSecret string `json:"machineSecret,omitempty"`
 	// Pending: the machine is recorded but awaits approval by a fleet admin; the answer carries no tunnel or assignment (the handler sends 202).
@@ -342,6 +344,7 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (EnrollResponse
 		out.MachineSecret = secret
 		if IsStrata(a.Model) && mine.Transport != "direct" {
 			out.APIKey = s.cfg.strataKey(serial)
+			out.Strata = s.strataSource(peers, *mine, now)
 		}
 		// Tunnel fields stay empty (not absent) for direct machines: an agent
 		// reading them gets "" and builds no tunnel instead of failing.
