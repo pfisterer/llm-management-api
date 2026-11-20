@@ -371,7 +371,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			return wsSvc.ProjectImageBuilt(ctx, slug, e.GitURL, e.Image)
 		})
 		if gpuSvc.InferenceEnabled() {
-			// The inference pool's running vLLM replicas become sites for the discovery job, next to the fleet machines, each with its node's weight (litellm_params.weight).
+			// The inference pool's running replicas become sites for the discovery job, next to the fleet machines, each with its node's weight (litellm_params.weight) and its slots (max_parallel_requests where Macs overflow behind it, fleet.Site.Slots).
 			fleetSvc.AddSites(func(ctx context.Context) ([]fleet.Site, error) {
 				reps, err := gpuSvc.InferenceReplicas(ctx)
 				if err != nil {
@@ -379,7 +379,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 				}
 				out := make([]fleet.Site, 0, len(reps))
 				for _, r := range reps {
-					out = append(out, fleet.Site{Name: gpu.InferenceSitePrefix + r.Name, Weight: float64(r.Weight), Transport: "direct", APIBase: r.APIBase, APIKey: gpuSvc.InferenceAPIKey()})
+					out = append(out, fleet.Site{Name: gpu.InferenceSitePrefix + r.Name, Weight: float64(r.Weight), Slots: r.Slots, Transport: "direct", APIBase: r.APIBase, APIKey: gpuSvc.InferenceAPIKey()})
 				}
 				return out, nil
 			})

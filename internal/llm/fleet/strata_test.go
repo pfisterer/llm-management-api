@@ -65,12 +65,22 @@ func TestSetStrataModel(t *testing.T) {
 	for _, s := range sites {
 		byName[s.Name] = s
 	}
-	if s := byName["big"]; s.APIKey != key || len(s.Aliases) != 1 || s.Aliases[0] != "chat-large" || s.Weight != 0.5 || s.Context != 32768 {
+	if s := byName["big"]; s.APIKey != key || len(s.Aliases) != 1 || s.Aliases[0] != "chat-large" || s.Weight != 0.5 || s.Context != 32768 || !s.Overflow {
 		t.Errorf("strata site: %+v", s)
 	}
-	if s := byName["small"]; s.APIKey != "fleet-key" || s.Aliases != nil || s.Context != 16384 {
+	if s := byName["small"]; s.APIKey != "fleet-key" || s.Aliases != nil || s.Context != 16384 || s.Overflow {
 		t.Errorf("ollama site: %+v", s)
 	}
+	// fleet.strata.overflow false: the Mac shares the alias by weight again.
+	off := false
+	svc.cfg.Strata.Overflow = &off
+	sites, _ = svc.Sites(ctx)
+	for _, s := range sites {
+		if s.Name == "big" && (s.Overflow || len(s.Aliases) != 1) {
+			t.Errorf("strata site without overflow: %+v", s)
+		}
+	}
+	svc.cfg.Strata.Overflow = nil
 
 	// The view offers the names; the machine reports the name as served once Strata answers.
 	served := mac("SERIAL0001", key1, "big", 49152)
@@ -96,7 +106,7 @@ func TestSetStrataModel(t *testing.T) {
 	}
 	sites, _ = svc.Sites(ctx)
 	for _, s := range sites {
-		if s.Name == "big" && (s.Aliases != nil || s.Weight != 3 || s.APIKey != "fleet-key") {
+		if s.Name == "big" && (s.Aliases != nil || s.Weight != 3 || s.APIKey != "fleet-key" || s.Overflow) {
 			t.Errorf("site after switching back: %+v", s)
 		}
 	}

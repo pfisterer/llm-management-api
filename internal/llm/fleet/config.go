@@ -49,7 +49,7 @@ type Config struct {
 	LiteLLMParams    map[string]any      `json:"litellmParams"`
 	Overrides        map[string]Override `json:"overrides"`
 	Profiles         []Profile           `json:"profiles"`
-	// Strata: alias, weight and context of machines that run a strata model (see StrataPrefix), and how they share the model download within their network (sourcePort, sourcePrefix, sourceWaitHours); all optional.
+	// Strata: alias, weight, context and overflow of machines that run a strata model (see StrataPrefix), and how they share the model download within their network (sourcePort, sourcePrefix, sourceWaitHours); all optional.
 	Strata StrataConfig `json:"strata"`
 }
 

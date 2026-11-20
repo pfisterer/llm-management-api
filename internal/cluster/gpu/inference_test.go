@@ -71,6 +71,36 @@ func TestInferenceReplicaWeights(t *testing.T) {
 	}
 }
 
+// A replica's slots come from its pod: Strata's STRATA_PARALLEL (default 4), vLLM's --max-num-seqs in either spelling, else unknown.
+func TestInferenceReplicaSlots(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _ := testService()
+	s.cfg.InferenceURL = "https://inference.example"
+	ready := `"status":{"conditions":[{"type":"Ready","status":"True"}]}`
+	s.pods = fakePods{`[
+		{"metadata":{"name":"a","labels":{"replica":"strata-6","dhbw.cloud/inference-engine":"strata"}},"spec":{"containers":[{"env":[{"name":"STRATA_QUANT","value":"IQ3_S"},{"name":"STRATA_PARALLEL","value":"6"}]}]},` + ready + `},
+		{"metadata":{"name":"b","labels":{"replica":"strata-default","dhbw.cloud/inference-engine":"strata"}},"spec":{"containers":[{"env":[{"name":"STRATA_QUANT","value":"IQ3_S"}]}]},` + ready + `},
+		{"metadata":{"name":"c","labels":{"replica":"vllm-split","dhbw.cloud/inference-engine":"vllm"}},"spec":{"containers":[{"args":["--model","Qwen/X","--max-num-seqs","12"]}]},` + ready + `},
+		{"metadata":{"name":"d","labels":{"replica":"vllm-eq"}},"spec":{"containers":[{"args":["--model","Qwen/X","--gpu-memory-utilization 0.9 --max-num-seqs=8"]}]},` + ready + `},
+		{"metadata":{"name":"e","labels":{"replica":"vllm-none","dhbw.cloud/inference-engine":"vllm"}},"spec":{"containers":[{"args":["--model","Qwen/X"]}]},` + ready + `},
+		{"metadata":{"name":"f","labels":{"replica":"vllm-bad","dhbw.cloud/inference-engine":"vllm"}},"spec":{"containers":[{"args":["--max-num-seqs","0"]}]},` + ready + `}
+	]`}
+	reps, err := s.InferenceReplicas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, r := range reps {
+		got[r.Name] = r.Slots
+	}
+	want := map[string]int{"strata-6": 6, "strata-default": 4, "vllm-split": 12, "vllm-eq": 8, "vllm-none": 0, "vllm-bad": 0}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: slots %d, want %d", k, got[k], v)
+		}
+	}
+}
+
 func TestInferencePool(t *testing.T) {
 	s, _, _, _ := testService()
 	if p, err := s.InferencePool(context.Background()); err != nil || p.Enabled || p.Pods == nil {

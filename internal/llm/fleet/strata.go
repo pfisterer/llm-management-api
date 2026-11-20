@@ -54,7 +54,7 @@ func (e *StrataMisfitError) Error() string {
 type StrataConfig struct {
 	// Alias the machine's model is registered under in LiteLLM, and only that one (default chat-large). Its own name passes through as for every model.
 	Alias string `json:"alias"`
-	// Weight in that alias, unless the inventory's override for the serial sets one (default 0.5: a Mac answers at ~15 tokens/s, the GB10 and the RTX much faster).
+	// Weight in that alias, unless the inventory's override for the serial sets one (default 0.5: a Mac answers at ~15 tokens/s, the GB10 and the RTX much faster). As an overflow member (Overflow) it only weighs the Macs against each other.
 	Weight float64 `json:"weight"`
 	// Context the script sets Strata up with (default 32768: the window Strata's Mac rules were tested to, mac_fit.TESTED_CONTEXT, and the l class's Ollama context; 16384 is what was measured on wimac32). A change makes the machines set Strata up again (the download stays). The profile's and the override's context are Ollama's and do not apply.
 	Context int `json:"context"`
@@ -64,6 +64,8 @@ type StrataConfig struct {
 	SourcePrefix int `json:"sourcePrefix"`
 	// SourceWaitHours: how long a Mac waits for a source in its network before it downloads from Hugging Face itself (default 6).
 	SourceWaitHours int `json:"sourceWaitHours"`
+	// Overflow: the machines only take what the other members of the alias cannot (default true). /fleet/sites marks them overflow, and the discovery job then gives the alias's GPU replicas LiteLLM order 1 with max_parallel_requests from their slots and the Macs order 2, so a Mac gets a request only while every GPU replica is busy or unavailable. false: the Macs share the alias by weight like before.
+	Overflow *bool `json:"overflow"`
 }
 
 func (s StrataConfig) alias() string {
@@ -72,6 +74,8 @@ func (s StrataConfig) alias() string {
 	}
 	return s.Alias
 }
+
+func (s StrataConfig) overflow() bool { return s.Overflow == nil || *s.Overflow }
 
 func (s StrataConfig) weight() float64 {
 	if s.Weight <= 0 {

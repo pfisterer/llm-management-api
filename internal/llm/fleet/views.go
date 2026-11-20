@@ -60,6 +60,10 @@ type Site struct {
 	APIKey        string         `json:"apiKey"`
 	// Aliases, when set, are the only aliases discovery registers the site's models under (no inventory members, no classification): a Mac running a strata model goes into the strata alias (chat-large) and nowhere else, whatever id Strata reports.
 	Aliases []string `json:"aliases,omitempty"`
+	// Overflow marks a member that serves its aliases only when the others cannot (a Mac running Strata, fleet.strata.overflow): in an alias with members of both kinds the discovery job registers the others with LiteLLM order 1 and this one with order 2. In an alias of only one kind nothing changes.
+	Overflow bool `json:"overflow,omitempty"`
+	// Slots is how many requests the site works on at the same time (Strata's --parallel, vLLM's --max-num-seqs), 0 = unknown. As an order-1 member next to overflow members the discovery job turns it into LiteLLM's max_parallel_requests (divided by the gateway replicas), so that a full site answers 429 at once and the request moves on to the overflow members; unknown = no limit, and then no request overflows while the site is up.
+	Slots int `json:"slots,omitempty"`
 	// Context is the context in tokens the machine runs its models with (a Mac: the profile's, or the inventory's override), 0 = unknown (Linux machines, the inference pool). The discovery job turns it into LiteLLM's max_input_tokens, so a long prompt goes to a machine that can take it; a backend that names its own context (vLLM's max_model_len) wins over it.
 	Context int `json:"context,omitempty"`
 }
@@ -110,7 +114,7 @@ func (s *Service) Sites(ctx context.Context) ([]Site, error) {
 			site.Transport, site.WGAddress, site.Port, site.APIKey = "wireguard", p.Address, port, s.cfg.APIKey
 			// Strata, unlike Ollama, checks the key: the machine's own (handed out at enrolment), and only the strata alias.
 			if strata {
-				site.APIKey, site.Aliases = s.cfg.strataKey(p.Serial), []string{s.cfg.Strata.alias()}
+				site.APIKey, site.Aliases, site.Overflow = s.cfg.strataKey(p.Serial), []string{s.cfg.Strata.alias()}, s.cfg.Strata.overflow()
 			}
 		}
 		out = append(out, site)

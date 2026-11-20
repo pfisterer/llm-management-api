@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,7 @@ type InferenceReplica struct {
 	GPUClass string `json:"gpu_class"` // label dhbw.cloud/gpu-class
 	Role     string `json:"role"`      // label dhbw.cloud/inference-role: gap-filler or base-load
 	Weight   int    `json:"weight"`    // the node's NodeAssignment.Weight, 1 without one
+	Slots    int    `json:"slots"`     // requests the replica works on at the same time (replicaSlots), 0 = unknown
 }
 
 // podLister is the part of the Kubernetes client the inference listing needs.
@@ -61,10 +63,47 @@ func (s *Service) InferenceReplicas(ctx context.Context) ([]InferenceReplica, er
 		}
 		seen[name] = true
 		out = append(out, InferenceReplica{Name: name, APIBase: base + "/" + name + "/v1",
-			GPUClass: p.Metadata.Labels["dhbw.cloud/gpu-class"], Role: p.Metadata.Labels["dhbw.cloud/inference-role"], Weight: max(weights[p.Spec.NodeName], 1)})
+			GPUClass: p.Metadata.Labels["dhbw.cloud/gpu-class"], Role: p.Metadata.Labels["dhbw.cloud/inference-role"], Weight: max(weights[p.Spec.NodeName], 1), Slots: replicaSlots(p)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// strataDefaultParallel is the slots of a Strata replica without STRATA_PARALLEL (images/strata/entrypoint.sh).
+const strataDefaultParallel = 4
+
+// replicaSlots is how many requests a replica works on at the same time, read from its pod as it runs: a Strata replica (label dhbw.cloud/inference-engine strata) from STRATA_PARALLEL (the catalogue's --parallel), default 4; a vLLM replica from --max-num-seqs in its arguments (the catalogue's or, for the base load, the inventory's inference.models), else 0 = unknown, since vLLM's own default (256 or more sequences) says nothing about how many requests it answers at a useful speed. The discovery job turns it into LiteLLM's max_parallel_requests where the replica has overflow members behind it (fleet.Site.Slots).
+func replicaSlots(p podInfo) int {
+	strata := p.Metadata.Labels[labelEngine] == EngineStrata
+	for _, c := range p.Spec.Containers {
+		if strata {
+			for _, e := range c.Env {
+				if e.Name == "STRATA_PARALLEL" {
+					if n, err := strconv.Atoi(e.Value); err == nil && n > 0 {
+						return n
+					}
+				}
+			}
+			continue
+		}
+		var fields []string
+		for _, a := range c.Args {
+			fields = append(fields, strings.Fields(a)...)
+		}
+		for i, f := range fields {
+			val, ok := strings.CutPrefix(f, "--max-num-seqs=")
+			if !ok && f == "--max-num-seqs" && i+1 < len(fields) {
+				val, ok = fields[i+1], true
+			}
+			if n, err := strconv.Atoi(val); ok && err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	if strata {
+		return strataDefaultParallel
+	}
+	return 0
 }
 
 // Replica states as the admin page shows them. German words like the fleet's states; the UI maps them to translations.
