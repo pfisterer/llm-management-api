@@ -5,22 +5,57 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func credService(t *testing.T) (*Service, *MemoryCredentials, *map[string]ProjectSecrets) {
+	s, store, got, _ := credServiceWithout(t)
+	return s, store, got
+}
+
+// credServiceWithout also returns the slugs whose secrets the last sync asked to remove.
+func credServiceWithout(t *testing.T) (*Service, *MemoryCredentials, *map[string]ProjectSecrets, *[]string) {
 	t.Helper()
 	s := service()
 	store := NewMemoryCredentials()
 	got := map[string]ProjectSecrets{}
-	if err := s.SetCredentials(store, bytes.Repeat([]byte{7}, 32), func(_ context.Context, want map[string]ProjectSecrets) error {
-		got = want
+	var gone []string
+	if err := s.SetCredentials(store, bytes.Repeat([]byte{7}, 32), func(_ context.Context, want map[string]ProjectSecrets, without []string) error {
+		got, gone = want, without
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return s, store, &got
+	return s, store, &got, &gone
+}
+
+// The sync names the projects whose secrets must go: those without credentials, and deleted ones even after their credentials are gone.
+func TestCredentialSecretsWithout(t *testing.T) {
+	ctx := context.Background()
+	s, _, secrets, without := credServiceWithout(t)
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	for _, slug := range []string{"kurs", "frei", "weg"} {
+		if _, err := s.create(ctx, Project{Slug: slug, Profiles: []string{"cpu"}, Members: mgr}, "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.SetCredential(ctx, "kurs", "gitlab.dhbw.de", "deploy", "geheim", "a@dhbw.de")
+	_ = s.SetCredential(ctx, "weg", "gitlab.dhbw.de", "deploy", "geheim", "a@dhbw.de")
+	if _, ok := (*secrets)["kurs"]; !ok || !slices.Equal(*without, []string{"frei"}) {
+		t.Fatalf("want %v, without %v", *secrets, *without)
+	}
+	if err := s.Delete(ctx, "weg"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := (*secrets)["weg"]; ok || !slices.Equal(*without, []string{"frei", "weg"}) {
+		t.Fatalf("after deleting weg: want %v, without %v", *secrets, *without)
+	}
+	// Later passes still name it, so a failed delete is tried again.
+	if err := s.SyncCredentialSecrets(ctx); err != nil || !slices.Equal(*without, []string{"frei", "weg"}) {
+		t.Fatalf("next pass: %v, without %v", err, *without)
+	}
 }
 
 // A credential is stored sealed, listed without its token, used for its host only, and turned into the project's secrets.

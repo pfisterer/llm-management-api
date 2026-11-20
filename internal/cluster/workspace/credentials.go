@@ -68,8 +68,11 @@ type CredentialStore interface {
 	Delete(ctx context.Context, project, host string) error
 }
 
+// CredentialSecrets writes the secrets of the projects in want and removes those of the projects in without (gpu.Service.EnsureCredentialSecrets).
+type CredentialSecrets func(ctx context.Context, want map[string]ProjectSecrets, without []string) error
+
 // SetCredentials enables credentials: their store, the key that seals the tokens (32 bytes) and where the projects' secrets go. Without it credentials are refused.
-func (s *Service) SetCredentials(store CredentialStore, key []byte, secrets func(ctx context.Context, want map[string]ProjectSecrets) error) error {
+func (s *Service) SetCredentials(store CredentialStore, key []byte, secrets CredentialSecrets) error {
 	if len(key) != 32 {
 		return fmt.Errorf("credentials key: %d bytes, want 32", len(key))
 	}
@@ -203,12 +206,16 @@ func (s *Service) HasCredentials(ctx context.Context, project string) bool {
 	return err == nil && len(list) > 0
 }
 
-// SyncCredentialSecrets hands the secrets of every project with credentials to the GPU part, which creates, changes and removes them.
+// SyncCredentialSecrets hands the secrets of every project with credentials to the GPU part, which writes them, and the slugs whose secrets must not exist: every project without credentials and the projects deleted since this process started (credGone). The GPU part never lists secrets (docs/architektur.md "Secrets des KI-Dienstes"), so what is to be removed comes from here. A project deleted while the delete of its secrets failed and the service restarted before the next pass keeps them: they are named after its slug, so a new project of that slug without credentials loses them at the next pass, and one with credentials overwrites them.
 func (s *Service) SyncCredentialSecrets(ctx context.Context) error {
 	if s.creds == nil || s.credSecrets == nil {
 		return nil
 	}
 	all, err := s.creds.All(ctx)
+	if err != nil {
+		return err
+	}
+	projects, err := s.store.List(ctx)
 	if err != nil {
 		return err
 	}
@@ -240,7 +247,22 @@ func (s *Service) SyncCredentialSecrets(ctx context.Context) error {
 		docker, _ := json.Marshal(map[string]any{"auths": auths})
 		want[project] = ProjectSecrets{DockerConfig: docker, GitCredentials: []byte(strings.Join(git, "\n") + "\n")}
 	}
-	return s.credSecrets(ctx, want)
+	var without []string
+	for _, p := range projects {
+		if _, ok := want[p.Slug]; !ok {
+			without = append(without, p.Slug)
+		}
+	}
+	s.credMu.Lock()
+	for slug := range s.credGone {
+		if _, ok := want[slug]; !ok {
+			without = append(without, slug)
+		}
+	}
+	s.credMu.Unlock()
+	slices.Sort(without)
+	without = slices.Compact(without)
+	return s.credSecrets(ctx, want, without)
 }
 
 // MemoryCredentials keeps credentials in memory (tests, development).

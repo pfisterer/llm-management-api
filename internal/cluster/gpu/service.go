@@ -102,6 +102,8 @@ type Service struct {
 	research *research.Recorder
 	// kernelEnds counts the GPU kernels that ended by reason (kernel_ends.go), for the metrics.
 	kernelEnds *promtext.CounterVec
+	// credState is what this process wrote and deleted of the projects' pull and Git secrets (credentials.go).
+	credState credentialState
 	// files are the files pods of people's homes for their jobs' files (jobfiles.go).
 	files filesPods
 	// OnClassRenamed moves what belongs to a GPU class (projects, booked usage) to its new id when a pool is renamed; nil = nothing to move.

@@ -188,7 +188,10 @@ type Service struct {
 	// Credentials (credentials.go): their store, the cipher of the tokens and where the projects' secrets go; nil = none.
 	creds       CredentialStore
 	aead        cipher.AEAD
-	credSecrets func(ctx context.Context, want map[string]ProjectSecrets) error
+	credSecrets CredentialSecrets
+	// credGone are the projects deleted since this process started, whose secrets every sync removes (cheap: the GPU part remembers what is gone).
+	credGone map[string]bool
+	credMu   sync.Mutex
 	// starts counts the start decisions (metrics.go); in memory, back to zero on a restart.
 	starts *promtext.CounterVec
 }
@@ -565,9 +568,14 @@ func (s *Service) Delete(ctx context.Context, slug string) error {
 		for _, c := range list {
 			_ = s.creds.Delete(ctx, slug, c.Host)
 		}
-		if len(list) > 0 {
-			_ = s.SyncCredentialSecrets(ctx)
+		// Its secrets go now and, should that fail, at the next pass of the sync.
+		s.credMu.Lock()
+		if s.credGone == nil {
+			s.credGone = map[string]bool{}
 		}
+		s.credGone[slug] = true
+		s.credMu.Unlock()
+		_ = s.SyncCredentialSecrets(ctx)
 	}
 	return nil
 }
