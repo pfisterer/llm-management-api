@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -91,5 +93,59 @@ func TestEnrollPendingAnswer(t *testing.T) {
 	}
 	if code, out := enroll(body); code != http.StatusConflict || out["presharedKey"] != nil {
 		t.Fatalf("without the secret: %d %v", code, out)
+	}
+}
+
+// The light check: enrolment token at the route, machine secret in the body, only the script manifest in the answer.
+func TestEnrollCheckRoute(t *testing.T) {
+	cfg, wg, err := fleet.ParseConfig(`{"enabled":true,"enrollToken":"enroll-tok","adminToken":"admin-tok","selfUpdate":true,"enrollHostname":"enroll.example",
+		"profiles":[{"name":"l","minRamMb":46000,"model":"big","context":32768,"wiredLimitMb":30720,"weight":3}]}`, `{"hubPublicKey":"HUB="}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dhbw-llm-enroll.sh"), []byte("#!/bin/bash\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := fleet.NewService(cfg, wg, fleet.NewMemoryStore(), fleet.NewScripts(dir))
+	h := MachineRouter(svc, nil, zap.NewNop().Sugar(), true)
+	post := func(path, token, body string) (int, map[string]any) {
+		r := httptest.NewRequest("POST", path, strings.NewReader(body))
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	body := `{"serial":"XL45R9YKW7","publicKey":"MQPtG7EOhnJh3azU3T1lmwx9A92KygkRcwH9n2j1zCc=","ramMb":49152,"hostname":"wimac02","machineSecret":""}`
+	_, out := post("/enroll", "enroll-tok", body)
+	secret, _ := out["machineSecret"].(string)
+	check := `{"serial":"XL45R9YKW7","machineSecret":"` + secret + `"}`
+	if code, _ := post("/enroll/check", "enroll-tok", check); code != http.StatusForbidden {
+		t.Fatalf("pending machine: %d", code)
+	}
+	if err := svc.SetBlocked(context.Background(), "XL45R9YKW7", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, token, body string
+		want              int
+	}{
+		{"without token", "", check, http.StatusUnauthorized},
+		{"admin token", "admin-tok", check, http.StatusUnauthorized},
+		{"invalid json", "enroll-tok", "{", http.StatusBadRequest},
+		{"wrong secret", "enroll-tok", `{"serial":"XL45R9YKW7","machineSecret":"nope"}`, http.StatusForbidden},
+		{"unknown machine", "enroll-tok", `{"serial":"UNKNOWN001","machineSecret":"` + secret + `"}`, http.StatusForbidden},
+	} {
+		if code, _ := post("/enroll/check", c.token, c.body); code != c.want {
+			t.Errorf("%s: want %d, got %d", c.name, c.want, code)
+		}
+	}
+	code, out := post("/enroll/check", "enroll-tok", check)
+	if code != http.StatusOK || !strings.HasPrefix(fmt.Sprint(out["scriptManifest"]), "dhbw-llm-enroll.sh:") || len(out) != 1 {
+		t.Fatalf("check: %d %v", code, out)
 	}
 }

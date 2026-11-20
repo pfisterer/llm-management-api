@@ -13,9 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// MachineRouter is the API for machines: enrolment and script downloads (the
-// fleet, via the public enrolment host), the peer list for the WireGuard hub
-// and the site list for the discovery job.
+// MachineRouter is the API for machines: enrolment, the light check and script downloads (the fleet, via the public enrolment host), the peer list for the WireGuard hub and the site list for the discovery job.
 //
 // A SEPARATE listener on purpose — a security boundary, not tidiness. The
 // enrolment host is reachable without Keycloak (a machine cannot log in), so it
@@ -34,17 +32,9 @@ func MachineRouter(svc *fleet.Service, classifier *classify.Service, log *zap.Su
 	adminAuth := tokenAuth(cfg.AdminToken)
 
 	r.POST("/enroll", enrollAuth, func(c *gin.Context) {
-		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 16<<10))
-		if err != nil {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "too large"})
+		req, ok := machineRequest(c)
+		if !ok {
 			return
-		}
-		var req fleet.EnrollRequest
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-				return
-			}
 		}
 		resp, err := svc.Enroll(c.Request.Context(), req)
 		var ee *fleet.EnrollError
@@ -58,6 +48,25 @@ func MachineRouter(svc *fleet.Service, classifier *classify.Service, log *zap.Su
 			// 202: recorded, nothing to configure until a fleet admin approves it. The word "blocked" is for scripts from before approval existed: they treat such an answer as a decision, not as a failure.
 			c.JSON(http.StatusAccepted, gin.H{"status": "pending", "name": resp.Name, "reenrollSeconds": resp.ReenrollSeconds, "machineSecret": resp.MachineSecret,
 				"message": "machine is blocked until a fleet admin approves it (pending)"})
+		default:
+			c.JSON(http.StatusOK, resp)
+		}
+	})
+
+	// The light check between two enrolments (dhbw-llm-enroll.sh --check, every few minutes): only the script manifest this machine should run, so a new script takes effect within minutes. POST, because the body carries the machine secret (never in a URL or an access log). Read-only, see fleet.Service.Check.
+	r.POST("/enroll/check", enrollAuth, func(c *gin.Context) {
+		req, ok := machineRequest(c)
+		if !ok {
+			return
+		}
+		resp, err := svc.Check(c.Request.Context(), req)
+		var ee *fleet.EnrollError
+		switch {
+		case errors.As(err, &ee):
+			c.JSON(ee.Status, gin.H{"error": ee.Message})
+		case err != nil:
+			log.Errorw("fleet check failed", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		default:
 			c.JSON(http.StatusOK, resp)
 		}
@@ -115,6 +124,23 @@ func MachineRouter(svc *fleet.Service, classifier *classify.Service, log *zap.Su
 	})
 	r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}) })
 	return r
+}
+
+// machineRequest reads the JSON body of a machine (at most 16 KiB; empty = no fields) and answers the error itself when it cannot.
+func machineRequest(c *gin.Context) (fleet.EnrollRequest, bool) {
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 16<<10))
+	if err != nil {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "too large"})
+		return nil, false
+	}
+	var req fleet.EnrollRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+			return nil, false
+		}
+	}
+	return req, true
 }
 
 // tokenAuth compares the bearer token in constant time. An empty expected

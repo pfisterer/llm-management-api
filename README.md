@@ -75,6 +75,7 @@ For the machines, the WireGuard hub and the discovery job; reachable through the
 | Method and path | Token |
 |---|---|
 | `POST /enroll` | enrolment token (`fleet.enrollToken`) |
+| `POST /enroll/check` (a Mac's light check every 10 min: body `{serial, machineSecret}`, answer `{scriptManifest}` exactly as in its enrolment answer; only approved, unblocked machines with a secret, otherwise 403; read-only, not even `last_seen`) | enrolment token and machine secret |
 | `GET /scripts/{name}` | enrolment token |
 | `GET /fleet/peers` (hub sync, carries the preshared keys) | admin token (`fleet.adminToken`) |
 | `GET /fleet/sites` (discovery) | admin token |
