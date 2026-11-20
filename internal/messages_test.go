@@ -91,6 +91,7 @@ var singleLanguage = map[string]string{
 	"%s laesst sich nicht aufloesen":              "the fleet's enrolment, answered to a machine",
 	"%s zeigt auf %s, keine oeffentliche Adresse": "the fleet's enrolment, answered to a machine",
 	"%s (%.1f GB) passt nicht auf %s":             "fleet.MisfitError's own text, for the log; the API answers model_too_large with its own pair",
+	"Strata: wartet auf Quelle im Netz":           "matched, not shown: the beginning of a status the fleet script reports (strataSetupStatuses)",
 	// LibreChat's proxy (ChatRouter): answered to LibreChat, which shows it as it is.
 	"Konto und E-Mail-Adresse passen nicht zusammen.": "LibreChat",
 	"LiteLLM nicht erreichbar":                        "LibreChat; also the admin login",

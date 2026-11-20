@@ -71,7 +71,8 @@ func (s *Service) Metrics(ctx context.Context) ([]byte, error) {
 		}},
 		{"aiaas_fleet_machine_expected", "1 when the machine is meant to serve (its assignment is switched on); 0 when an admin or the inventory switched it off.", func(p Peer) float64 { return boolean(p.Enabled) }},
 		{"aiaas_fleet_machine_busy", "1 while the machine's gate has stopped inference because someone works at it (wanted, no fault).", func(p Peer) float64 { return boolean(p.Busy) }},
-		{"aiaas_fleet_machine_model_error", "1 when the machine reported that it could not pull or load its model.", func(p Peer) float64 { return boolean(p.ModelError != "") }},
+		{"aiaas_fleet_machine_model_error", "1 when the machine reported that it could not pull or load its model (not while it reports the progress of a setup, see aiaas_fleet_machine_model_setup).", func(p Peer) float64 { return boolean(p.ModelFault() != "") }},
+		{"aiaas_fleet_machine_model_setup", "1 while the machine reports that it is setting up its model (Strata: waiting for a source in the network, downloading, preparing); no fault, but it serves nothing meanwhile.", func(p Peer) float64 { return boolean(p.ModelSetup()) }},
 		{"aiaas_fleet_machine_ready", "1 when the machine is meant to serve, is not busy, reported within three enrolment intervals, and serves its assigned model without error.", func(p Peer) float64 {
 			fresh := p.LastSeen != nil && now.Sub(*p.LastSeen).Seconds() <= stale
 			return boolean(p.Enabled && !p.Busy && fresh && serving(p))

@@ -165,7 +165,8 @@ type PeerView struct {
 	Profile        string     `json:"profile"`
 	Model          string     `json:"model"`
 	ModelOverride  string     `json:"model_override,omitempty"` // set by an admin; empty = the profile's
-	ModelError     string     `json:"model_error,omitempty"`    // why the machine could not pull or load its model
+	ModelError     string     `json:"model_error,omitempty"`    // why the machine could not pull or load its model, or the progress of its setup (ModelSetup)
+	ModelSetup     bool       `json:"model_setup,omitempty"`    // model_error is the progress of a setup (Strata: waiting for a source, downloading), no fault
 	Models         []string   `json:"models"`
 	ModelState     string     `json:"model_state" enums:"fremdverwaltet,erfüllt,abweichend,unbekannt"`
 	Serving        []string   `json:"serving"`
@@ -295,7 +296,7 @@ func (s *Service) View(ctx context.Context, health HealthSource, mat Material) (
 		v.Peers = append(v.Peers, PeerView{
 			Serial: p.Serial, Name: p.Name, Address: p.Address, PrimaryIP: p.PrimaryIP, Transport: transport, APIBase: p.APIBase, OS: p.OS,
 			Hostname: p.Hostname, Hardware: p.Hardware, RAMGb: p.RAMMb / 1024, Location: p.Location, Operator: p.Operator,
-			Contact: p.Contact, Profile: p.Profile, Model: p.Model, ModelOverride: p.ModelOverride, ModelError: p.ModelError, Models: serves, ModelState: modelState,
+			Contact: p.Contact, Profile: p.Profile, Model: p.Model, ModelOverride: p.ModelOverride, ModelError: p.ModelError, ModelSetup: p.ModelSetup(), Models: serves, ModelState: modelState,
 			Serving: append([]string{}, hp.Models...), Inference: inference, InferenceError: hp.Error, Gate: gate,
 			Enabled: p.Enabled, Busy: p.Busy, Controls: p.Controls, ScriptState: s.scripts.State(s.cfg, p),
 			PkgVersion: p.PkgVersion, Canary: slices.Contains(s.cfg.SelfUpdateCanary, p.Serial), LastSeen: p.LastSeen,

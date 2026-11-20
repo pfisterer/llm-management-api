@@ -45,7 +45,7 @@ type Peer struct {
 
 	// ModelOverride is the model an admin set for this machine in the portal; it wins over the profile and the inventory's overrides. Empty = the profile's.
 	ModelOverride string `json:"modelOverride" gorm:"column:model_override"`
-	// ModelError is why the machine could not pull or load its model, as it reported; empty when it could.
+	// ModelError is why the machine could not pull or load its model, as it reported; empty when it could. A Strata machine also reports the progress of its setup here (see ModelSetup): that is no fault.
 	ModelError string `json:"modelError" gorm:"column:model_error"`
 
 	// The effective assignment (profile + overrides) at the last enrolment.

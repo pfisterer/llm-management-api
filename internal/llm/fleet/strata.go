@@ -36,6 +36,22 @@ func StrataModels() []string { return slices.Sorted(maps.Keys(strataModels)) }
 // IsStrata tells a reserved strata name (known or not) from an Ollama model.
 func IsStrata(model string) bool { return strings.HasPrefix(model, StrataPrefix) }
 
+// strataSetupStatuses are the beginnings of the statuses dhbw-llm-enroll.sh (strata_status) reports in modelError while a Strata setup is on its way rather than failed: waiting for a source in the network, setup started, setup running (the download of 58.5 GB takes its time). Every other text there is a fault (setup failed, too little space, download or checksum of the release failed, engine fails, no API key). The script names the same list next to strata_status; a new progress status needs both sides, otherwise it counts as a fault.
+var strataSetupStatuses = []string{"Strata: wartet auf Quelle im Netz", "Strata: Einrichtung gestartet", "Strata: Einrichtung laeuft"}
+
+// ModelSetup tells whether the machine's model report is the progress of a Strata setup rather than a fault. The machine is not ready meanwhile (it reports itself busy and serves nothing), but nobody has to act; a setup that never ends is caught by the monitoring (AiFleetModelSetupStuck in dhbw-deployment).
+func (p Peer) ModelSetup() bool {
+	return slices.ContainsFunc(strataSetupStatuses, func(prefix string) bool { return strings.HasPrefix(p.ModelError, prefix) })
+}
+
+// ModelFault is the machine's model error unless it is the progress of a setup (ModelSetup); empty = no fault.
+func (p Peer) ModelFault() string {
+	if p.ModelSetup() {
+		return ""
+	}
+	return p.ModelError
+}
+
 // ErrUnknownStrata is a name with the strata prefix that the fleet script does not know.
 var ErrUnknownStrata = errors.New("unknown strata model")
 

@@ -24,6 +24,8 @@ func TestMetrics(t *testing.T) {
 		{Serial: "S0004", Name: "gpu-box", Transport: "direct", APIBase: "https://gpu.example", APIKey: "secret-api-key", Controls: false, ModelsList: "llama", Enabled: false, LastSeen: ago(time.Minute)},
 		// Approved but not enrolled since.
 		{Serial: "S0005", Name: "wimac05", Transport: "wireguard", Enabled: true},
+		// A Strata setup on its way: busy, no model yet, its progress in the model error, which is no fault.
+		{Serial: "S0008", Name: "wimac12", Transport: "wireguard", Controls: true, Model: "strata:gyro-s", ModelError: "Strata: Einrichtung gestartet (817 GB frei, Download von 141.72.16.102:11480 im Netz)", Enabled: true, Busy: true, LastSeen: ago(time.Minute)},
 		// Pending and blocked: only counted.
 		{Serial: "S0006", Name: "stranger", Pending: true, Blocked: true, PublicKey: key0},
 		{Serial: "S0007", Name: "retired", Blocked: true},
@@ -39,7 +41,7 @@ func TestMetrics(t *testing.T) {
 	for _, want := range []string{
 		"aiaas_fleet_enabled 1\n",
 		"aiaas_fleet_reenroll_interval_seconds 3600\n",
-		`aiaas_fleet_machines{state="approved"} 5` + "\n",
+		`aiaas_fleet_machines{state="approved"} 6` + "\n",
 		`aiaas_fleet_machines{state="pending"} 1` + "\n",
 		`aiaas_fleet_machines{state="blocked"} 1` + "\n",
 		`aiaas_fleet_machine_ready{name="wimac01",site="Raum 1.23",kind="fleet"} 1` + "\n",
@@ -51,6 +53,10 @@ func TestMetrics(t *testing.T) {
 		`aiaas_fleet_machine_last_seen_timestamp_seconds{name="wimac05",site="",kind="fleet"} 0` + "\n",
 		`aiaas_fleet_machine_busy{name="wimac03",site="",kind="fleet"} 1` + "\n",
 		`aiaas_fleet_machine_model_error{name="wimac03",site="",kind="fleet"} 1` + "\n",
+		`aiaas_fleet_machine_model_setup{name="wimac03",site="",kind="fleet"} 0` + "\n",
+		`aiaas_fleet_machine_model_error{name="wimac12",site="",kind="fleet"} 0` + "\n",
+		`aiaas_fleet_machine_model_setup{name="wimac12",site="",kind="fleet"} 1` + "\n",
+		`aiaas_fleet_machine_ready{name="wimac12",site="",kind="fleet"} 0` + "\n",
 		`aiaas_fleet_machine_expected{name="gpu-box",site="",kind="fleet-direct"} 0` + "\n",
 		"# TYPE aiaas_fleet_machine_ready gauge\n",
 	} {
@@ -59,14 +65,14 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 	// Pending and blocked machines get no series of their own, and nothing secret or addressable leaks into a label.
-	for _, never := range []string{"stranger", "retired", "S000", "10.90.", key1, key2, key0, "secret-api-key", "gpu.example", "pull failed"} {
+	for _, never := range []string{"stranger", "retired", "S000", "10.90.", key1, key2, key0, "secret-api-key", "gpu.example", "pull failed", "Einrichtung"} {
 		if strings.Contains(out, never) {
 			t.Errorf("%q must not appear in the metrics:\n%s", never, out)
 		}
 	}
 	// One series per approved machine and metric.
-	if n := strings.Count(out, "aiaas_fleet_machine_ready{"); n != 5 {
-		t.Errorf("ready series: %d, want 5", n)
+	if n := strings.Count(out, "aiaas_fleet_machine_ready{"); n != 6 {
+		t.Errorf("ready series: %d, want 6", n)
 	}
 }
 
@@ -88,5 +94,35 @@ func TestMetricsEmpty(t *testing.T) {
 	}
 	if !strings.Contains(out, "# TYPE aiaas_fleet_machine_ready gauge\n") || strings.Contains(out, "aiaas_fleet_machine_ready{") {
 		t.Fatalf("no machine series expected:\n%s", out)
+	}
+}
+
+// The Strata statuses of dhbw-llm-enroll.sh (strata_status): progress is no fault, every failure is.
+func TestModelSetup(t *testing.T) {
+	for _, c := range []struct {
+		err   string
+		setup bool
+	}{
+		{"", false},
+		{"Strata: wartet auf Quelle im Netz (seit 12 min, nach 6 h Download aus dem Internet)", true},
+		{"Strata: Einrichtung gestartet (817 GB frei, Download von 141.72.16.102:11480 im Netz)", true},
+		{"Strata: Einrichtung gestartet (790 GB frei, Download von Hugging Face)", true},
+		{"Strata: Einrichtung laeuft (31 GB geladen, aus dem Netz von 141.72.16.102:11480)", true},
+		{"Strata: Einrichtung fehlgeschlagen (rc=1): HTTP Error 404", false},
+		{"Strata: Einrichtungsdienst liess sich nicht starten", false},
+		{"Strata: zu wenig Platz: 40 GB frei, 80 GB noetig", false},
+		{"Strata: Download oder Pruefsumme von v0.2.16 fehlgeschlagen", false},
+		{"Strata: Engine-Pruefung fehlgeschlagen", false},
+		{"Strata: Engine faellt aus: out of memory", false},
+		{"Strata: kein API-Schluessel in der Anmeldung (fleet.apiKey im Inventory leer oder KI-Dienst zu alt) — nichts geaendert", false},
+		{"pull model manifest: file does not exist", false},
+	} {
+		p := Peer{ModelError: c.err}
+		if got := p.ModelSetup(); got != c.setup {
+			t.Errorf("ModelSetup(%q) = %v, want %v", c.err, got, c.setup)
+		}
+		if want := map[bool]string{true: "", false: c.err}[c.setup]; p.ModelFault() != want {
+			t.Errorf("ModelFault(%q) = %q, want %q", c.err, p.ModelFault(), want)
+		}
 	}
 }
