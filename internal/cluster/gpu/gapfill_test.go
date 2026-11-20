@@ -34,6 +34,10 @@ func TestReconcileGapFillers(t *testing.T) {
 	if dep == nil || k.objects["/api/v1/namespaces/inference/services/inference-gap-gpu-1"] == nil || k.objects["/apis/networking.k8s.io/v1/namespaces/inference/ingresses/inference-gap-gpu-1"] == nil {
 		t.Fatalf("gap filler of the assigned node: %v", keys(k.objects))
 	}
+	// Only the API and the health check through the public host, not vLLM's /metrics or /version.
+	if b := dump(k.objects["/apis/networking.k8s.io/v1/namespaces/inference/ingresses/inference-gap-gpu-1"]); !strings.Contains(b, `"path":"/gap-gpu-1/v1","pathType":"Prefix"`) || !strings.Contains(b, `"path":"/gap-gpu-1/health","pathType":"Exact"`) || strings.Contains(b, `"path":"/gap-gpu-1",`) {
+		t.Errorf("ingress paths: %s", b)
+	}
 	if k.objects["/apis/kueue.x-k8s.io/v1beta2/namespaces/inference/localqueues/inference-general-small"] == nil {
 		t.Errorf("inference queue of the class missing")
 	}

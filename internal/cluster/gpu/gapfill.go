@@ -314,9 +314,10 @@ func gapService(ns string, r gapReplica) map[string]any {
 	}
 }
 
-// gapIngress is the replica's path on the inference host (<host>/<replica>/v1), one Ingress per replica; Traefik merges them with the base load's.
+// gapIngress is the replica's path on the inference host, one Ingress per replica; Traefik merges them with the base load's. Only <host>/<replica>/v1 (the OpenAI API behind the key, what LiteLLM and the discovery job call) and <host>/<replica>/health are routed: vLLM answers /metrics, /version and the rest of its server without the key, and Prometheus scrapes /metrics in the cluster (ServiceMonitor inference), not through this host.
 func (s *Service) gapIngress(ns string, r gapReplica) map[string]any {
 	host := s.fleetCfg.Inference.Hostname
+	backend := map[string]any{"service": map[string]any{"name": inferencePrefix + r.name, "port": map[string]any{"name": "http"}}}
 	return map[string]any{
 		"apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
 		"metadata": map[string]any{"name": inferencePrefix + r.name, "namespace": ns, "labels": gapLabels(r), "annotations": map[string]any{
@@ -325,10 +326,10 @@ func (s *Service) gapIngress(ns string, r gapReplica) map[string]any {
 			"traefik.ingress.kubernetes.io/router.middlewares": "inference-strip-replica-prefix@kubernetescrd",
 		}},
 		"spec": map[string]any{
-			"rules": []any{map[string]any{"host": host, "http": map[string]any{"paths": []any{map[string]any{
-				"path": "/" + r.name, "pathType": "Prefix",
-				"backend": map[string]any{"service": map[string]any{"name": inferencePrefix + r.name, "port": map[string]any{"name": "http"}}},
-			}}}}},
+			"rules": []any{map[string]any{"host": host, "http": map[string]any{"paths": []any{
+				map[string]any{"path": "/" + r.name + "/v1", "pathType": "Prefix", "backend": backend},
+				map[string]any{"path": "/" + r.name + "/health", "pathType": "Exact", "backend": backend},
+			}}}},
 			"tls": []any{map[string]any{"hosts": []any{host}}},
 		},
 	}
