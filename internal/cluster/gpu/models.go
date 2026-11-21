@@ -216,6 +216,21 @@ func (s *Service) catalogue(ctx context.Context) (map[string]CatalogModel, map[s
 	return models, tiers, nil
 }
 
+// ServedEngines is per served model name of the catalogue (what its replicas report in /v1/models) the engine that runs it, vllm or strata, so the model view can say which engine stands behind a deployment of the inference pool.
+func (s *Service) ServedEngines(ctx context.Context) (map[string]string, error) {
+	models, _, err := s.catalogue(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(models))
+	for _, m := range models {
+		if m.Model != "" {
+			out[m.Model] = m.engine()
+		}
+	}
+	return out, nil
+}
+
 // resources is the container's resources: the model's, filled up with the defaults, one GPU.
 func (m CatalogModel) resources() map[string]any {
 	or := func(v, def string) string {

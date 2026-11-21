@@ -11,6 +11,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/llm/modeldesc"
 	"go.uber.org/zap"
 )
 
@@ -28,12 +29,16 @@ var mcpRouteCoverage = map[string]mcptest.Route{
 	"POST /v1/tokens":       {Omitted: "issuing a credential hands its secret to the model's context; the person issues tokens on the API Tokens page"},
 	"DELETE /v1/tokens/:id": {Omitted: "revoking a credential is the person's act on the API Tokens page, where last use is shown"},
 
-	"GET /v1/usage":                {Tools: []string{"get_my_llm_usage"}},
-	"GET /v1/keys":                 {Tools: []string{"get_my_llm_usage"}},
-	"POST /v1/keys":                {Omitted: "creates an LLM key and answers with its secret in clear text, which would land in the model's context and transcript; the person makes keys on the LLM page"},
-	"PUT /v1/keys/default-project": {Omitted: "decides which project's tokens every new key and the chat spend from; the person's choice on the LLM page"},
-	"DELETE /v1/keys/:id":          {Omitted: "revoking a key breaks the tools that use it; the person deletes keys on the LLM page"},
-	"GET /v1/models/aliases":       {Tools: []string{"list_llm_models"}},
+	"GET /v1/usage":                  {Tools: []string{"get_my_llm_usage"}},
+	"GET /v1/keys":                   {Tools: []string{"get_my_llm_usage"}},
+	"POST /v1/keys":                  {Omitted: "creates an LLM key and answers with its secret in clear text, which would land in the model's context and transcript; the person makes keys on the LLM page"},
+	"PUT /v1/keys/default-project":   {Omitted: "decides which project's tokens every new key and the chat spend from; the person's choice on the LLM page"},
+	"DELETE /v1/keys/:id":            {Omitted: "revoking a key breaks the tools that use it; the person deletes keys on the LLM page"},
+	"GET /v1/models/aliases":         {Tools: []string{"list_llm_models"}},
+	"GET /v1/models/usable":          {Tools: []string{"describe_llm_models"}},
+	"GET /v1/models/descriptions":    {Omitted: "admin: editing the descriptions of the served models; describe_llm_models gives them to everybody who can use the model"},
+	"PUT /v1/models/descriptions":    {Omitted: "admin: editing the descriptions of the served models, in the UI"},
+	"DELETE /v1/models/descriptions": {Omitted: "admin: editing the descriptions of the served models, in the UI"},
 
 	"GET /v1/fleet":                                               {Omitted: "administration of the Mac fleet (role fleet-admin), not a user's business"},
 	"GET /v1/fleet/inventory.csv":                                 {Omitted: "administration of the Mac fleet (role fleet-admin)"},
@@ -98,6 +103,7 @@ func fullServer(t *testing.T) *Server {
 		o.Keys = testKeys(fakeBackend(t).URL)
 		o.TreeToken = "tree"
 		o.Aliases = NewModelAliases(litellm.New("http://127.0.0.1:1", "m", time.Second), []string{"chat-default"}, zap.NewNop().Sugar())
+		o.Aliases.SetDescriptions(modeldesc.NewMemoryStore())
 		fc, wg, err := fleet.ParseConfig(`{"enabled":true,"enrollToken":"e","adminToken":"a"}`, `{"hubPublicKey":"HUB="}`)
 		if err != nil {
 			t.Fatal(err)

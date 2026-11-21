@@ -167,6 +167,14 @@ func (s *Server) Router() *gin.Engine {
 	v1.DELETE("/keys/:id", s.deleteKey)
 	if s.aliases != nil {
 		v1.GET("/models/aliases", s.getModelAliases)
+		// The names the caller can use, with the models, their descriptions and their configuration per device class.
+		v1.GET("/models/usable", s.getUsableModels)
+		if s.aliases.descs != nil {
+			d := v1.Group("/models/descriptions", require(access.RoleAdmin))
+			d.GET("", s.getModelDescriptions)
+			d.PUT("", s.putModelDescription)
+			d.DELETE("", s.deleteModelDescription)
+		}
 	}
 
 	if s.fleet != nil {

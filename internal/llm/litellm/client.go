@@ -430,6 +430,10 @@ type Deployment struct {
 		// Set by the discovery job from the deployment's context; 0 = unknown. Numbers, since LiteLLM's model map may bring them as floats.
 		MaxInputTokens  float64 `json:"max_input_tokens"`
 		MaxOutputTokens float64 `json:"max_output_tokens"`
+		// Where the discovery job found it: the site (a fleet machine, gpu-<replica> for the inference pool, or an inventory site), whether it is a machine of the Mac fleet, and whether it only takes what the others cannot (Macs running Strata).
+		Site     string `json:"site"`
+		Fleet    bool   `json:"fleet"`
+		Overflow bool   `json:"overflow"`
 	} `json:"model_info"`
 }
 

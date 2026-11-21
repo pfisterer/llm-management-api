@@ -268,6 +268,20 @@ func (s *Server) registerLLMTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		return nil, v, nil
 	})
+	mcpserve.AddTool(srv, cl, false, &mcp.Tool{
+		Name:        "describe_llm_models",
+		Description: "Every model name the caller can use with the LLM API, in detail: kind (alias: a stable name whose model may change; model: a model under its own name, fixed while it is offered), the caller's projects it comes through (base names: all), the deployments and how many are healthy, the smallest and largest prompt and answer, and per model behind it its description (Markdown, source URL, licence, parameters, quantisation, tool calls, reasoning; null = none yet) and per device class (gpu, gb10, mac, other) the engine, limits and counts.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, UsableModelsResponse, error) {
+		grant, status, why := s.quota.GrantFor(ctx, cl.Tokens)
+		if status != 0 && !cl.Role.AtLeast(access.RoleFleetAdmin) {
+			return nil, UsableModelsResponse{}, msg.Err(why)
+		}
+		v, err := s.aliases.Usable(ctx, grant.Pools)
+		if err != nil {
+			return nil, UsableModelsResponse{}, s.mcpFail(gatewayErrors, "LLM models", err)
+		}
+		return nil, v, nil
+	})
 }
 
 func (s *Server) registerWorkspaceTools(srv *mcp.Server, cl mcpCaller) {

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/llm-management-api/internal/access"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/llm/modeldesc"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 	"go.uber.org/zap"
 )
@@ -52,13 +53,27 @@ type ModelAliases struct {
 	aliases []string
 	log     *zap.SugaredLogger
 	view    *ttlcache.Value[aliasView]
+	// engines names per served model of the GPU catalogue its engine (gpu.Service.ServedEngines); nil = vLLM for every replica of the inference pool.
+	engines func(ctx context.Context) (map[string]string, error)
+	// descs are the descriptions of the served models; nil = none (and no admin routes for them).
+	descs modeldesc.Store
 }
+
+// SetEngines tells the view which engine runs each model of the GPU catalogue.
+func (m *ModelAliases) SetEngines(f func(ctx context.Context) (map[string]string, error)) {
+	m.engines = f
+}
+
+// SetDescriptions gives the view the descriptions of the served models (/v1/models/usable and the admin routes /v1/models/descriptions).
+func (m *ModelAliases) SetDescriptions(store modeldesc.Store) { m.descs = store }
 
 // aliasView is what one reading of LiteLLM gives, cached for a minute.
 type aliasView struct {
 	models      map[string]AliasModels // every model name of the model list
 	healthKnown bool
 	limits      map[string]ModelLimit // every model name of the model list, not only the aliases
+	// deps is per public name (alias or model under its own name) what each deployment is: its model, device class, engine, limits and health. Never its site or address.
+	deps map[string][]deployFacts
 }
 
 // allProxyModels is the group that opens every model under its own name; it is no model name and has no view.
@@ -126,16 +141,23 @@ func smallestLimits(deps []litellm.Deployment) map[string]ModelLimit {
 
 // load is one reading of LiteLLM for the cache.
 func (m *ModelAliases) load(ctx context.Context) (aliasView, error) {
-	models, healthKnown, limits, err := m.build(ctx)
-	return aliasView{models: models, healthKnown: healthKnown, limits: limits}, err
+	models, healthKnown, limits, deps, err := m.build(ctx)
+	return aliasView{models: models, healthKnown: healthKnown, limits: limits, deps: deps}, err
 }
 
 // build reads per model name of the model list the models behind it, whether health was readable, and the limits.
-func (m *ModelAliases) build(ctx context.Context) (map[string]AliasModels, bool, map[string]ModelLimit, error) {
+func (m *ModelAliases) build(ctx context.Context) (map[string]AliasModels, bool, map[string]ModelLimit, map[string][]deployFacts, error) {
 	deps, err := m.src.ModelInfo(ctx)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, nil, nil, err
 	}
+	var engines map[string]string
+	if m.engines != nil {
+		if engines, err = m.engines(ctx); err != nil {
+			m.log.Warnw("model aliases: engines of the GPU catalogue not readable", "error", err)
+		}
+	}
+	facts := map[string][]deployFacts{}
 	limits := smallestLimits(deps)
 	// Health is matched per deployment id; without one (older LiteLLM) per address and model, which the passthrough and alias deployments of one machine share.
 	healthyID, badID, healthyAt, badAt := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -175,9 +197,12 @@ func (m *ModelAliases) build(ctx context.Context) (map[string]AliasModels, bool,
 			models[name] = am
 		}
 		am.Deployments++
-		if herr == nil && isHealthy(d) {
+		up := herr == nil && isHealthy(d)
+		if up {
 			am.Healthy++
 		}
+		device, engine := deviceOf(d, name, engines)
+		facts[d.ModelName] = append(facts[d.ModelName], deployFacts{model: name, device: device, engine: engine, in: int(d.Info.MaxInputTokens), out: int(d.Info.MaxOutputTokens), healthy: up})
 	}
 
 	out := make(map[string]AliasModels, len(byAlias))
@@ -197,7 +222,7 @@ func (m *ModelAliases) build(ctx context.Context) (map[string]AliasModels, bool,
 		})
 		out[a] = AliasModels{Alias: a, Models: list, Limit: limits[a]}
 	}
-	return out, herr == nil, limits, nil
+	return out, herr == nil, limits, facts, nil
 }
 
 // getModelAliases godoc

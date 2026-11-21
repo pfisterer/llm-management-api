@@ -31,6 +31,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/llm/modeldesc"
 	"github.com/pfisterer/llm-management-api/internal/platform/background"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
@@ -86,6 +87,7 @@ type allStores struct {
 	tokens   *token.Service
 	research research.Store
 	jobs     gpu.JobStore
+	descs    modeldesc.Store
 	// db is the connection, for the readiness check; nil in memory.
 	db *gorm.DB
 }
@@ -93,7 +95,7 @@ type allStores struct {
 // stores opens the fleet, classification, GPU, usage and project stores on one connection. It waits up to dbWait for Postgres: since the NetworkPolicies a new pod is let through only a moment after it starts. Creating or migrating a table is fatal; the rest of the startup is not (background.Step).
 func stores(ctx context.Context, cfg Config, log *zap.SugaredLogger) (allStores, error) {
 	if cfg.DBType == "memory" {
-		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore(), gpu.NewMemoryJobStore(), nil}, nil
+		return allStores{fleet.NewMemoryStore(), classify.NewMemoryStore(), gpu.NewMemoryStore(), usage.NewMemoryStore(), workspace.NewMemoryStore(), workspace.NewMemoryCredentials(), gpu.NewMemoryFleetStore(), gpu.NewMemoryModelStore(), token.NewService(webserver.APITokenPrefix, token.NewMemoryStore()), research.NewMemoryStore(), gpu.NewMemoryJobStore(), modeldesc.NewMemoryStore(), nil}, nil
 	}
 	if cfg.DBType != "postgres" {
 		return allStores{}, fmt.Errorf("unsupported DB_TYPE %q", cfg.DBType)
@@ -160,7 +162,12 @@ func stores(ctx context.Context, cfg Config, log *zap.SugaredLogger) (allStores,
 	if err != nil {
 		return allStores{}, err
 	}
-	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs, js, db}, nil
+	// The descriptions of the served models (model_descriptions).
+	ds, err := modeldesc.NewGormStore(db)
+	if err != nil {
+		return allStores{}, err
+	}
+	return allStores{fs, cs, gs, us, ws, wc, gf, gm, ts, rs, js, ds, db}, nil
 }
 
 // dbWait is how long the service waits for Postgres and the OIDC provider at startup before it gives up (decided 10.11.2026).
@@ -418,6 +425,10 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	lite := litellm.New(cfg.LiteLLMURL, cfg.LiteLLMMasterKey, 15*time.Second)
 	// The models behind the aliases and the limits of every model name: for the self-service (/v1/models/aliases) and for the workspace keys (VS Code's maxInputTokens).
 	aliasView := webserver.NewModelAliases(lite, cfg.LLMBaseModels, log)
+	aliasView.SetDescriptions(st.descs)
+	if gpuSvc != nil {
+		aliasView.SetEngines(gpuSvc.ServedEngines)
+	}
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser, keys.KeyBudget{Share: cfg.LLMKeyBudgetShare, Window: cfg.LLMKeyBudgetWindow})
 	if wsSvc != nil {
 		// The tree reads what a project used of its LLM tokens from the project's team.
