@@ -3,6 +3,7 @@ package access
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestRoleOf(t *testing.T) {
@@ -57,8 +58,44 @@ func TestRoleAtLeast(t *testing.T) {
 
 type groupResolver map[string][]string
 
-func (g groupResolver) UserTokens(_ context.Context, email string) []string {
-	return append([]string{"user:" + email}, g[email]...)
+func (g groupResolver) UserTokens(_ context.Context, email string) ([]string, bool) {
+	return append([]string{"user:" + email}, g[email]...), true
+}
+
+// flakyResolver answers degraded (user token only) while down is set, completely otherwise.
+type flakyResolver struct {
+	down   bool
+	groups []string
+	calls  int
+}
+
+func (f *flakyResolver) UserTokens(_ context.Context, email string) ([]string, bool) {
+	f.calls++
+	if f.down {
+		return []string{"user:" + email}, false
+	}
+	return append([]string{"user:" + email}, f.groups...), true
+}
+
+// A degraded answer is not cached: once the role-provider is back, the next request has the groups again; a complete answer is.
+func TestServiceDoesNotCacheDegradedTokens(t *testing.T) {
+	roles, err := NewRoles([]string{"group:root_uni"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &flakyResolver{down: true, groups: []string{"group:root_uni"}}
+	svc := NewService(r, roles, time.Hour)
+	if p := svc.Who(context.Background(), "boss@dhbw.de"); p.Role != RoleUser {
+		t.Fatalf("while down: %+v, want user", p)
+	}
+	r.down = false
+	if p := svc.Who(context.Background(), "boss@dhbw.de"); p.Role != RoleAdmin {
+		t.Fatalf("after recovery: %+v, want admin", p)
+	}
+	r.down = true
+	if p := svc.Who(context.Background(), "boss@dhbw.de"); p.Role != RoleAdmin || r.calls != 2 {
+		t.Fatalf("complete answer not served from cache: %+v, calls %d", p, r.calls)
+	}
 }
 
 // The role comes from the person's groups as the role provider resolves them.

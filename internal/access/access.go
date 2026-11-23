@@ -102,9 +102,9 @@ func (r Roles) RoleOf(tokens []string) Role {
 	return role
 }
 
-// TokenResolver returns the role-provider tokens of a person. Implementations must always include "user:<email>", even when the role-provider is down, so that what is written for a person keeps working (degraded, never wider).
+// TokenResolver returns the role-provider tokens of a person. Implementations must always include "user:<email>", even when the role-provider is down, so that what is written for a person keeps working (degraded, never wider); complete says whether the role-provider answered.
 type TokenResolver interface {
-	UserTokens(ctx context.Context, email string) []string
+	UserTokens(ctx context.Context, email string) (tokens []string, complete bool)
 }
 
 // Person is who somebody is to this service.
@@ -141,8 +141,9 @@ func (s *Service) tokens(ctx context.Context, email string) []string {
 	if tokens, ok := s.cache.Get(email); ok {
 		return tokens
 	}
-	tokens := s.resolver.UserTokens(ctx, email)
-	if s.cacheTTL > 0 {
+	tokens, complete := s.resolver.UserTokens(ctx, email)
+	// A degraded answer (role-provider down) is used for this request only: cached, it would withhold the person's group rights for a whole TTL after the role-provider is back.
+	if s.cacheTTL > 0 && complete {
 		s.cache.Set(email, tokens)
 	}
 	return tokens

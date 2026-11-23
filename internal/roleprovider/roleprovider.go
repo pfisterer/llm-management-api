@@ -14,8 +14,8 @@ import (
 
 // Provider is what the rest of the service needs from the role-provider.
 type Provider interface {
-	// UserTokens never fails: on any error it degrades to "user:<email>", so what is written for the person still applies and what is written for their groups does not — fewer rights, never more.
-	UserTokens(ctx context.Context, email string) []string
+	// UserTokens never fails: on any error it degrades to "user:<email>", so what is written for the person still applies and what is written for their groups does not — fewer rights, never more. complete is false for such a degraded answer, so a caller does not keep it once the role-provider is back.
+	UserTokens(ctx context.Context, email string) (tokens []string, complete bool)
 }
 
 // ---------------------------------------------------------------- http
@@ -39,19 +39,19 @@ func NewHTTP(baseURL, apiToken string, timeout time.Duration, log *zap.SugaredLo
 	return &HTTP{client: c, log: log}, nil
 }
 
-func (h *HTTP) UserTokens(ctx context.Context, email string) []string {
+func (h *HTTP) UserTokens(ctx context.Context, email string) ([]string, bool) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	fallback := []string{"user:" + email}
 	resp, err := h.client.GetUserTokensWithResponse(ctx, email)
 	if err != nil {
 		h.log.Warnw("role-provider unreachable, using user token only", "email", email, zap.Error(err))
-		return fallback
+		return fallback, false
 	}
 	if resp.JSON200 == nil {
 		h.log.Warnw("role-provider: unexpected status, using user token only", "email", email, "status", resp.StatusCode())
-		return fallback
+		return fallback, false
 	}
-	return withUserToken(*resp.JSON200, email)
+	return withUserToken(*resp.JSON200, email), true
 }
 
 // withUserToken makes sure the person's own token is present, whatever the
@@ -73,7 +73,7 @@ type Mock struct {
 	Memberships map[string][]string // email -> group tokens
 }
 
-func (m *Mock) UserTokens(_ context.Context, email string) []string {
+func (m *Mock) UserTokens(_ context.Context, email string) ([]string, bool) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	return withUserToken(append([]string{}, m.Memberships[email]...), email)
+	return withUserToken(append([]string{}, m.Memberships[email]...), email), true
 }
