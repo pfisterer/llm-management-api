@@ -45,6 +45,8 @@ func buildJob(cfg Config, name, builder string, e Environment, slug, arch, image
 			map[string]any{"name": "state", "emptyDir": map[string]any{}},
 		},
 	}
+	// Before the clone and the build (the repository's own code runs in it): in the builder image, as its default user, nothing added.
+	withEgressGuard(podSpec, egressGuardInit(builder, cfg.EgressGuard, map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}))
 	if byDigest {
 		c := podSpec["containers"].([]any)[0].(map[string]any)
 		c["env"] = append(c["env"].([]any), map[string]any{"name": "PUSH_BY_DIGEST", "value": "1"})

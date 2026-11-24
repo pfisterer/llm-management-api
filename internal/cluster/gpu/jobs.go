@@ -739,6 +739,7 @@ func (s *Service) jobObject(r JobRecord, sp JobSpec) map[string]any {
 	home := "homes/" + user
 	// As the hub's init container dhbw-dirs: the home, the areas and their mount points, created as the person in the init image, which alone sees the whole volume.
 	spec["initContainers"] = []any{areaDirsInit(s.cfg.Jobs.InitImage, home, sp.Areas, map[string]any{"runAsUser": 1000, "runAsGroup": 100, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}})}
+	withEgressGuard(spec, egressGuardInit(s.cfg.Jobs.InitImage, s.cfg.EgressGuard, map[string]any{"runAsUser": 1000, "runAsGroup": 100, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}))
 	mounts := append([]any{map[string]any{"name": "home", "mountPath": HomeDir, "subPath": home}}, areaMounts(HomeDir, sp.Areas, false)...)
 	spec["containers"] = []any{map[string]any{
 		"name":    "job",

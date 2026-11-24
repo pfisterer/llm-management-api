@@ -182,6 +182,7 @@ func LoadConfig() (Config, error) {
 		InferenceAPIKey:    envconf.String("GPU_INFERENCE_API_KEY", ""),
 		InferenceNamespace: envconf.String("GPU_INFERENCE_NAMESPACE", gpu.DefaultInferenceNamespace),
 		WorkspaceNamespace: envconf.String("GPU_WORKSPACE_NAMESPACE", gpu.DefaultWorkspaceNamespace),
+		EgressGuard:        envconf.String("GPU_EGRESS_GUARD", ""),
 		Kernels:            gpu.KernelConfig{Queue: envconf.String("GPU_KERNEL_QUEUE", ""), NoGPU: envconf.Bool("GPU_KERNEL_NO_GPU", false)},
 		Jobs:               gpu.JobConfig{InitImage: envconf.String("GPU_JOB_INIT_IMAGE", ""), StorageClass: envconf.String("GPU_JOB_STORAGE_CLASS", ""), StorageAccess: envconf.String("GPU_JOB_STORAGE_ACCESS", ""), GraceSeconds: envconf.Int("GPU_JOB_GRACE_SECONDS", 0)},
 	}

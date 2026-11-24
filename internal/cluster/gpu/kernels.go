@@ -403,6 +403,8 @@ func (s *Service) kernelPod(o *KernelOwner, r KernelRequest, deadline time.Durat
 		container["workingDir"] = r.WorkingDir
 	}
 	spec["containers"] = []any{container}
+	// The guard in the hub's init image (Jobs.InitImage), as the person, before the kernel runs their code.
+	withEgressGuard(spec, egressGuardInit(s.cfg.Jobs.InitImage, s.cfg.EgressGuard, map[string]any{"runAsUser": 1000, "runAsGroup": 100, "allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}))
 	return map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",

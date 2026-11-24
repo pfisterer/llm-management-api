@@ -108,6 +108,8 @@ gpu:
     queue: ""
     noGPU: false
   # Batch jobs (POST /v1/gpu/jobs, docs/architektur.md "Batch-Jobs"): batch/v1 Jobs in the workspace namespace, in the project's queue job-<slug>--<class>; initImage is the image that creates the person's home in the project's volume before the job (the hub's init image, a base pinned by digest). Empty = no batch jobs. The ServiceAccount needs create/delete/list on jobs and get on pods/log there, and create/delete on Kueue cohorts.
+  # host:port of an address the egress NetworkPolicies of builds, batch jobs and GPU kernels block (e.g. "10.43.0.1:443", the Kubernetes API's service address): those pods first wait in an init container until their policy is in force (kube-router installs it only seconds after the pod starts). Empty = no guard.
+  egressGuard: ""
   jobs:
     initImage: ""
     # The project's volume ws-<slug> when a job comes before any workspace with storage, as the hub makes it; empty = juicefs-projects, ReadWriteMany. Needs create/patch on persistentvolumeclaims in the workspace namespace.

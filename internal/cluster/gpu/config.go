@@ -38,6 +38,9 @@ type Config struct {
 
 	WorkspaceNamespace string // jupyterhub: where the workspace pods run whose usage is booked
 
+	// EgressGuard is host:port of an address the egress NetworkPolicies of builds, batch jobs and GPU kernels block (the Kubernetes API's service address, 10.43.0.1:443); those pods then first wait in the init container dhbw-egress-guard until the policy is in force (egressguard.go). Empty = no guard (a cluster without these policies).
+	EgressGuard string
+
 	Kernels KernelConfig // GPU kernel pods of "CPU + GPU-Kernel" (kernels.go)
 	Jobs    JobConfig    // batch jobs (jobs.go)
 }
