@@ -147,3 +147,59 @@ func TestImageHost(t *testing.T) {
 		}
 	}
 }
+
+// A project running a build from a private repository gets a pull secret with the private project's pull robot, also without credentials; with credentials the robot goes beside them. A finished image in the private project is refused, under any port of the registry.
+func TestPrivateBuildPullSecret(t *testing.T) {
+	ctx := context.Background()
+	s, _, secrets, without := credServiceWithout(t)
+	s.SetPrivateImages("reg.example/envs-private/", Basic{Username: "robot$envs-private+pull", Token: "pulltoken"})
+	mgr := []Member{{Token: "user:a@dhbw.de", Role: RoleManager}}
+	for _, slug := range []string{"privat", "beides", "frei"} {
+		if _, err := s.create(ctx, Project{Slug: slug, Profiles: []string{"cpu"}, Members: mgr}, "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, slug := range []string{"privat", "beides"} {
+		p, _ := s.store.Get(ctx, slug)
+		p.ImageGitURL, p.ProjectImage = "https://gitlab.dhbw.de/o/r", "reg.example/envs-private/"+slug+"--gitlab-dhbw-de-o-r:0123456789ab-python-v2.0.0"
+		if err := s.store.Update(ctx, &p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.SetCredential(ctx, "beides", "gitlab.dhbw.de", "deploy", "geheim", "a@dhbw.de")
+	robot := base64.StdEncoding.EncodeToString([]byte("robot$envs-private+pull:pulltoken"))
+	for _, slug := range []string{"privat", "beides"} {
+		var cfg struct {
+			Auths map[string]struct {
+				Auth string `json:"auth"`
+			} `json:"auths"`
+		}
+		if err := json.Unmarshal((*secrets)[slug].DockerConfig, &cfg); err != nil || cfg.Auths["reg.example"].Auth != robot {
+			t.Errorf("%s: %s %v", slug, (*secrets)[slug].DockerConfig, err)
+		}
+	}
+	if cfg := string((*secrets)["beides"].DockerConfig); !strings.Contains(cfg, "gitlab.dhbw.de") {
+		t.Errorf("beides lost its credential: %s", cfg)
+	}
+	if !slices.Equal(*without, []string{"frei"}) {
+		t.Errorf("without %v", *without)
+	}
+	privat, _ := s.store.Get(ctx, "privat")
+	frei, _ := s.store.Get(ctx, "frei")
+	if !s.NeedsPullSecret(ctx, privat) || s.NeedsPullSecret(ctx, frei) {
+		t.Error("NeedsPullSecret")
+	}
+	for image, want := range map[string]bool{
+		"reg.example/envs-private/privat--x:1": true, "reg.example:443/envs-private/beides--x:1": true, "REG.EXAMPLE/envs-private/a:1": true,
+		"reg.example/envs/x:1": false, "other.example/envs-private/x:1": false, "reg.example/envs-private-not/x:1": false,
+	} {
+		if got := s.inPrivateProject(image); got != want {
+			t.Errorf("inPrivateProject(%s) = %v", image, got)
+		}
+	}
+	p := frei
+	p.ProjectImage = "reg.example/envs-private/privat--gitlab-dhbw-de-o-r:0123456789ab-python-v2.0.0"
+	if err := s.applyProjectImage(ctx, &p, frei, true); err == nil || !strings.Contains(err.Error(), "privaten Harbor-Projekt") {
+		t.Errorf("finished private image: %v", err)
+	}
+}

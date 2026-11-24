@@ -74,8 +74,19 @@ type jobStatus struct {
 	} `json:"conditions"`
 }
 
-func (k *kube) createJob(ctx context.Context, ns string, job map[string]any) error {
-	return k.do(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+ns+"/jobs", job, nil)
+// createJob creates a Job and returns its uid, which a Secret it owns names.
+func (k *kube) createJob(ctx context.Context, ns string, job map[string]any) (string, error) {
+	var created struct {
+		Metadata struct {
+			UID string `json:"uid"`
+		} `json:"metadata"`
+	}
+	err := k.do(ctx, http.MethodPost, "/apis/batch/v1/namespaces/"+ns+"/jobs", job, &created)
+	return created.Metadata.UID, err
+}
+
+func (k *kube) createSecret(ctx context.Context, ns string, secret map[string]any) error {
+	return k.do(ctx, http.MethodPost, "/api/v1/namespaces/"+ns+"/secrets", secret, nil)
 }
 
 func (k *kube) jobStatus(ctx context.Context, ns, name string) (jobStatus, error) {

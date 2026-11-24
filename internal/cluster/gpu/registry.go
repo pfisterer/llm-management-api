@@ -12,10 +12,13 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
 )
 
-// registry reads Harbor's API anonymously (oci.Harbor): the projects platform and envs are public. Pushing is done by the build jobs with their own robot account.
+// registry reads Harbor's API anonymously (oci.Harbor): the projects platform and envs are public. The private project of builds from private repositories is read with its pull robot (private, withPrivate). Pushing is done by the build jobs with their own robot account.
 type registry struct {
 	host   string
 	harbor *oci.Harbor
+	// privateProject and private: the private project and a client with its pull robot; empty = none.
+	privateProject string
+	private        *oci.Harbor
 
 	builder ttlcache.Value[string]
 }
@@ -24,8 +27,21 @@ func newRegistry(host string) *registry {
 	return &registry{host: host, builder: ttlcache.Value[string]{TTL: 5 * time.Minute}, harbor: &oci.Harbor{Client: &oci.Client{HTTP: httpx.RetryingClient(15 * time.Second)}, Host: host}}
 }
 
+// withPrivate reads the private project with its pull robot.
+func (r *registry) withPrivate(project, user, token string) *registry {
+	if project != "" && token != "" {
+		h := *r.harbor
+		h.Auth = &oci.Auth{Username: user, Password: token}
+		r.privateProject, r.private = project, &h
+	}
+	return r
+}
+
 // exists reports whether project/repo:tag is in the registry.
 func (r *registry) exists(ctx context.Context, project, repo, tag string) (bool, error) {
+	if r.private != nil && project == r.privateProject {
+		return r.private.ArtifactExists(ctx, project, repo, tag)
+	}
 	return r.harbor.ArtifactExists(ctx, project, repo, tag)
 }
 

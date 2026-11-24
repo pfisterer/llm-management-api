@@ -289,7 +289,7 @@ func TestImageCleanup(t *testing.T) {
 	// The last pass shows in the metrics.
 	var w promtext.Writer
 	s.writeCleanupMetrics(&w)
-	if out := string(w.Bytes()); !strings.Contains(out, `aiaas_image_cleanup_last_run_ok{dry_run="false"} 1`) || !strings.Contains(out, `aiaas_image_cleanup_artifacts{state="young",dry_run="false"} 2`) {
+	if out := string(w.Bytes()); !strings.Contains(out, `aiaas_image_cleanup_last_run_ok{dry_run="false",project="envs"} 1`) || !strings.Contains(out, `aiaas_image_cleanup_artifacts{state="young",dry_run="false",project="envs"} 2`) {
 		t.Errorf("metrics:\n%s", out)
 	}
 }

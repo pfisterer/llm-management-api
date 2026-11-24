@@ -21,7 +21,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// Access to private repositories and images: a project keeps per host one user name and token (GitHub: a classic PAT with repo and read:packages, GitLab: a deploy token with read_repository and read_registry, Forgejo: a token with read:repository and read:package). The token is stored encrypted and never handed out again. It is used where the host comes up: the check of a finished image (registry), the check and the checkout of the material (Git), and on the nodes as the project's pull secret (ws-pull-<slug>) and the checkout's Git credentials (ws-git-<slug>), both kept by the GPU part in the workspace namespace (SetCredentialSecrets). Builds from private repositories are not offered: their images would land in the public Harbor project envs.
+// Access to private repositories and images: a project keeps per host one user name and token (GitHub: a classic PAT with repo and read:packages, GitLab: a deploy token with read_repository and read_registry, Forgejo: a token with read:repository and read:package). The token is stored encrypted and never handed out again. It is used where the host comes up: the check of a finished image (registry), the check and the checkout of the material (Git), the build of the project image from a private repository (CredentialFor: only in the build's clone container, gpu.withPrivateClone), and on the nodes as the project's pull secret (ws-pull-<slug>) and the checkout's Git credentials (ws-git-<slug>), both kept by the GPU part in the workspace namespace (SetCredentialSecrets).
+//
+// An image built from a private repository lands in the private Harbor project (envs-private, SetPrivateImages), in a repository of its project. The pull secret of a project running such an image also carries the pull robot of that project, even without credentials of its own. That robot could pull every private build, so only the service sets such an image (from the project's own build): a finished image there is refused (applyProjectImage), and the policy workspace-pods lets a pod name only its own project's pull secret.
 
 // PullSecretName and GitSecretName are a project's secrets in the workspace namespace.
 func PullSecretName(slug string) string { return "ws-pull-" + slug }
@@ -159,6 +161,50 @@ func (s *Service) DeleteCredential(ctx context.Context, project, host string) er
 	return s.SyncCredentialSecrets(ctx)
 }
 
+// SetPrivateImages names the images built from private repositories (prefix <registry>/<private project>/) and the robot that pulls them, which the pull secrets of their projects carry.
+func (s *Service) SetPrivateImages(prefix string, pull Basic) {
+	s.privateImages, s.privatePull = prefix, pull
+}
+
+// privateImage tells whether an image is a build from a private repository.
+func (s *Service) privateImage(image string) bool {
+	return s.privateImages != "" && strings.HasPrefix(image, s.privateImages)
+}
+
+// inPrivateProject tells whether an image names the private project on the platform's registry, under any port: the check for an image a project enters itself.
+func (s *Service) inPrivateProject(image string) bool {
+	if s.privateImages == "" {
+		return false
+	}
+	host, project, _ := strings.Cut(strings.TrimSuffix(s.privateImages, "/"), "/")
+	ih, rest, ok := strings.Cut(strings.ToLower(image), "/")
+	if !ok {
+		return false
+	}
+	ih, _, _ = strings.Cut(ih, ":")
+	host, _, _ = strings.Cut(host, ":")
+	return ih == host && strings.HasPrefix(rest, project+"/")
+}
+
+// privateImageAuth is the pull robot for an image built from a private repository; nil for any other.
+func (s *Service) privateImageAuth(image string) *Basic {
+	if !s.privateImage(image) {
+		return nil
+	}
+	b := s.privatePull
+	return &b
+}
+
+// NeedsPullSecret tells whether a project's pods get its pull secret: it has credentials, or it runs an image built from a private repository.
+func (s *Service) NeedsPullSecret(ctx context.Context, p Project) bool {
+	return s.privateImage(p.ProjectImage) || s.HasCredentials(ctx, p.Slug)
+}
+
+// CredentialFor is a project's user and token for a host (for the build from a private repository, gpu.Service.SetGitAuth); nil = none.
+func (s *Service) CredentialFor(ctx context.Context, project, host string) *Basic {
+	return s.credentialFor(ctx, project, host)
+}
+
 // credentialFor is a project's user and token for a host; nil = none (or the token cannot be opened).
 func (s *Service) credentialFor(ctx context.Context, project, host string) *Basic {
 	if s.creds == nil || project == "" {
@@ -246,6 +292,25 @@ func (s *Service) SyncCredentialSecrets(ctx context.Context) error {
 		slices.Sort(git)
 		docker, _ := json.Marshal(map[string]any{"auths": auths})
 		want[project] = ProjectSecrets{DockerConfig: docker, GitCredentials: []byte(strings.Join(git, "\n") + "\n")}
+	}
+	// A project running a build from a private repository: its pull secret carries the private project's pull robot as well (for the registry's host, in place of a credential the project might have there), with or without credentials of its own.
+	for _, p := range projects {
+		if !s.privateImage(p.ProjectImage) {
+			continue
+		}
+		ps := want[p.Slug]
+		var cfg struct {
+			Auths map[string]any `json:"auths"`
+		}
+		if len(ps.DockerConfig) > 0 {
+			_ = json.Unmarshal(ps.DockerConfig, &cfg)
+		}
+		if cfg.Auths == nil {
+			cfg.Auths = map[string]any{}
+		}
+		cfg.Auths[imageHost(p.ProjectImage)] = map[string]any{"auth": base64.StdEncoding.EncodeToString([]byte(s.privatePull.Username + ":" + s.privatePull.Token))}
+		ps.DockerConfig, _ = json.Marshal(map[string]any{"auths": cfg.Auths})
+		want[p.Slug] = ps
 	}
 	var without []string
 	for _, p := range projects {

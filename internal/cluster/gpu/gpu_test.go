@@ -69,13 +69,14 @@ type fakeBuilds struct {
 	status  map[string]jobStatus
 	log     string
 	logs    map[string]string // per job, before log
+	secrets []map[string]any
 }
 
-func (f *fakeBuilds) createJob(_ context.Context, _ string, job map[string]any) error {
+func (f *fakeBuilds) createJob(_ context.Context, _ string, job map[string]any) (string, error) {
 	name := job["metadata"].(map[string]any)["name"].(string)
 	for _, c := range f.created {
 		if c == name {
-			return errAlreadyExists
+			return "", errAlreadyExists
 		}
 	}
 	f.created = append(f.created, name)
@@ -83,6 +84,11 @@ func (f *fakeBuilds) createJob(_ context.Context, _ string, job map[string]any) 
 		f.jobs = map[string]map[string]any{}
 	}
 	f.jobs[name] = job
+	return "uid-" + name, nil
+}
+
+func (f *fakeBuilds) createSecret(_ context.Context, _ string, secret map[string]any) error {
+	f.secrets = append(f.secrets, secret)
 	return nil
 }
 
@@ -114,9 +120,13 @@ func (f *fakeBuilds) jobLog(_ context.Context, _, name string, _ int) (string, e
 	return "log", nil
 }
 
-type fakeImages struct{ have map[string]bool }
+type fakeImages struct {
+	have    map[string]bool
+	project []string // the Harbor project of every lookup
+}
 
-func (f *fakeImages) exists(_ context.Context, _, repo, tag string) (bool, error) {
+func (f *fakeImages) exists(_ context.Context, project, repo, tag string) (bool, error) {
+	f.project = append(f.project, project)
 	return f.have[repo+":"+tag], nil
 }
 func (f *fakeImages) newestBuilder(context.Context) (string, error) {

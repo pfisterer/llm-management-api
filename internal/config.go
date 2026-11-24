@@ -82,9 +82,11 @@ type Config struct {
 	HarborScanUser  string
 	HarborScanToken string
 	// ImageCleanup deletes the images of environments that are gone from the Harbor project envs: IMAGE_CLEANUP_ENABLED, IMAGE_CLEANUP_DRY_RUN (only log what would go), IMAGE_CLEANUP_MIN_AGE_DAYS (an artifact pushed or pulled more recently stays), IMAGE_CLEANUP_INTERVAL_MINUTES. Deleting needs the robot account HarborCleanupUser/HarborCleanupToken (list and delete on repositories and artifacts in envs); without it the cleanup stays a dry run.
-	ImageCleanup       gpu.ImageCleanupConfig
-	HarborCleanupUser  string
-	HarborCleanupToken string
+	ImageCleanup              gpu.ImageCleanupConfig
+	HarborCleanupUser         string
+	HarborCleanupToken        string
+	HarborPrivateCleanupUser  string
+	HarborPrivateCleanupToken string
 	// Budget tree (docs/bauplan.md, Stufe 8): its token for /v1/tree (empty = off) and where people get a project. The LLM tokens, rate limits and extra models come from the tree's projects, one pool (a LiteLLM team) per project.
 	TreeToken      string
 	SelfServiceURL string
@@ -163,20 +165,25 @@ func LoadConfig() (Config, error) {
 		Readme:              envconf.String("FLEET_README", ""),
 	}
 	cfg.GPU = gpu.Config{
-		Enabled:         strings.EqualFold(envconf.String("GPU_ENABLED", "false"), "true"),
-		KubeAPIURL:      envconf.String("GPU_KUBE_API_URL", ""),
-		KubeToken:       envconf.String("GPU_KUBE_TOKEN", ""),
-		KubeCA:          envconf.String("GPU_KUBE_CA", ""),
-		BuildNamespace:  envconf.String("GPU_BUILD_NAMESPACE", gpu.DefaultBuildNamespace),
-		Registry:        envconf.String("GPU_REGISTRY", ""),
-		EnvsProject:     envconf.String("GPU_ENVS_PROJECT", gpu.DefaultEnvsProject),
-		BuilderImage:    envconf.String("GPU_BUILDER_IMAGE", ""),
-		BuilderSecret:   envconf.String("GPU_BUILDER_SECRET", gpu.DefaultBuilderSecret),
-		BuildPlatforms:  envconf.StringSlice("GPU_BUILD_PLATFORMS", []string{"amd64"}, strings.ToLower),
-		IndexImage:      envconf.String("GPU_INDEX_IMAGE", ""),
-		GitHosts:        envconf.StringSlice("GPU_GIT_HOSTS", gpu.DefaultGitHosts(), strings.ToLower),
-		JupyterURL:      strings.TrimRight(envconf.String("JUPYTERHUB_URL", ""), "/"),
-		JupyterAPIToken: envconf.String("JUPYTERHUB_API_TOKEN", ""),
+		Enabled:        strings.EqualFold(envconf.String("GPU_ENABLED", "false"), "true"),
+		KubeAPIURL:     envconf.String("GPU_KUBE_API_URL", ""),
+		KubeToken:      envconf.String("GPU_KUBE_TOKEN", ""),
+		KubeCA:         envconf.String("GPU_KUBE_CA", ""),
+		BuildNamespace: envconf.String("GPU_BUILD_NAMESPACE", gpu.DefaultBuildNamespace),
+		Registry:       envconf.String("GPU_REGISTRY", ""),
+		EnvsProject:    envconf.String("GPU_ENVS_PROJECT", gpu.DefaultEnvsProject),
+		BuilderImage:   envconf.String("GPU_BUILDER_IMAGE", ""),
+		BuilderSecret:  envconf.String("GPU_BUILDER_SECRET", gpu.DefaultBuilderSecret),
+		// Builds from private repositories (gpu.Config.PrivateBuilds): the private Harbor project, the builder's secret in the build namespace and the pull robot the projects' pull secrets carry.
+		PrivateEnvsProject:   envconf.String("GPU_PRIVATE_ENVS_PROJECT", ""),
+		PrivateBuilderSecret: envconf.String("GPU_PRIVATE_BUILDER_SECRET", gpu.DefaultPrivateBuilderSecret),
+		PrivatePullUser:      envconf.String("GPU_PRIVATE_PULL_USER", ""),
+		PrivatePullToken:     envconf.String("GPU_PRIVATE_PULL_TOKEN", ""),
+		BuildPlatforms:       envconf.StringSlice("GPU_BUILD_PLATFORMS", []string{"amd64"}, strings.ToLower),
+		IndexImage:           envconf.String("GPU_INDEX_IMAGE", ""),
+		GitHosts:             envconf.StringSlice("GPU_GIT_HOSTS", gpu.DefaultGitHosts(), strings.ToLower),
+		JupyterURL:           strings.TrimRight(envconf.String("JUPYTERHUB_URL", ""), "/"),
+		JupyterAPIToken:      envconf.String("JUPYTERHUB_API_TOKEN", ""),
 
 		InferenceURL:       envconf.String("GPU_INFERENCE_URL", ""),
 		InferenceAPIKey:    envconf.String("GPU_INFERENCE_API_KEY", ""),
@@ -205,6 +212,9 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.HarborCleanupUser = envconf.String("HARBOR_CLEANUP_USER", "")
 	cfg.HarborCleanupToken = envconf.String("HARBOR_CLEANUP_TOKEN", "")
+	// The same for the private project of builds from private repositories (robot$envs-private+cleanup); without it the cleanup leaves that project alone.
+	cfg.HarborPrivateCleanupUser = envconf.String("HARBOR_PRIVATE_CLEANUP_USER", "")
+	cfg.HarborPrivateCleanupToken = envconf.String("HARBOR_PRIVATE_CLEANUP_TOKEN", "")
 	for name, dst := range map[string]*float64{"WORKSPACE_IMAGE_MAX_GB": &cfg.WorkspaceImageMaxGB, "WORKSPACE_IMAGE_HINT_GB": &cfg.WorkspaceImageHintGB} {
 		if raw := envconf.String(name, ""); raw != "" {
 			v, err := strconv.ParseFloat(raw, 64)

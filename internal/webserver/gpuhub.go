@@ -200,7 +200,11 @@ func hubProjects(ctx context.Context, ws *workspace.Service, mine []workspace.Mi
 		}
 		pull, git := "", ""
 		if ws.HasCredentials(ctx, m.Slug) {
-			pull, git = workspace.PullSecretName(m.Slug), workspace.GitSecretName(m.Slug)
+			git = workspace.GitSecretName(m.Slug)
+		}
+		// Also without credentials for a build from a private repository: the secret then carries the private project's pull robot.
+		if ws.NeedsPullSecret(ctx, m.Project) {
+			pull = workspace.PullSecretName(m.Slug)
 		}
 		out = append(out, HubProject{PullSecret: pull, GitSecret: git, GPUClasses: hubClasses, Slug: m.Slug, Name: m.Name, Profiles: offeredProfiles(m), ProjectImage: ws.EffectiveImage(m.Project), ImageDerived: m.Derived(), SplitNeedsBase: splitNeedsBase(m), ImageLabel: ws.ImageLabel(m.Project), StorageGB: m.StorageGB, Areas: m.Areas, EndsAt: m.EndsAt, DeleteAt: m.DeleteAt, ImagePending: m.ImagePending(), ImageBuild: m.ImageBuild, MaterialGitURL: m.MaterialGitURL, MaterialGitRef: m.MaterialGitRef, ImageArchs: archs, Release: m.ReleaseEffective, ScratchGB: m.ScratchEffectiveGB})
 	}

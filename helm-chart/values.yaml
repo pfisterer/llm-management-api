@@ -33,6 +33,9 @@ secrets:
   harborScanToken: ""
   # Token of the robot account gpu.imageCleanup.user (deletes images of environments that are gone from Harbor's project envs).
   harborCleanupToken: ""
+  # Tokens of the robot accounts gpu.privateBuilds.pullUser (pulls the builds from private repositories; the projects' pull secrets carry it) and gpu.imageCleanup.privateUser (cleans up the private project).
+  harborPrivatePullToken: ""
+  harborPrivateCleanupToken: ""
   # Key of the people's pseudonyms in the research log of the GPU cluster's workloads (table research_workloads, HMAC-SHA256, at least 16 characters); empty = the log records no person at all. A new key gives everybody new pseudonyms.
   researchPseudonymKey: ""
   # Token of the budget tree (resource-management-api) for /v1/tree; empty = off.
@@ -92,6 +95,11 @@ gpu:
   # Empty: newest tag of <registry>/platform/repo2docker-buildkit.
   builderImage: ""
   builderSecret: harbor-envs-builder
+  # Builds from private repositories (with the project's access to the Git host): into the private Harbor project, pushed with the robot in builderSecret (in buildNamespace), pulled with pullUser (token secrets.harborPrivatePullToken). Empty project = not offered. The ServiceAccount needs create on secrets in buildNamespace (the clone's access, owned by the build job).
+  privateBuilds:
+    project: ""
+    builderSecret: harbor-envs-private-builder
+    pullUser: ""
   # Architectures project images from Git are built for where their base has them: each other than amd64 natively in its own job on a node of it (kubernetes.io/arch, tolerating the lab pool's taint), then an index (crane, indexImage; empty = the service's default) joins them. [amd64] = one amd64 build as before.
   buildPlatforms: [amd64]
   indexImage: ""
@@ -132,6 +140,8 @@ gpu:
     minAgeDays: 7
     intervalMinutes: 60
     user: ""
+    # Robot account with list and delete in the private project of builds from private repositories (robot$envs-private+cleanup, token secrets.harborPrivateCleanupToken); empty = that project is left alone.
+    privateUser: ""
   # Research log of the GPU cluster's workloads (table research_workloads: request, Kueue admission, start, end and its reason per pod; the person only as pseudonym with secrets.researchPseudonymKey): rows are kept this many days; 0 = no log. The ServiceAccount needs list on Kueue workloads and on events in the workspace and inference namespaces.
   researchRetentionDays: 730
   # Listener for JupyterHub's access questions: a Service with these external IPs (the WireGuard link address of the node), so it is reachable from the GPU cluster only.

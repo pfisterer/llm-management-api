@@ -141,6 +141,10 @@ func (s *Service) applyProjectImage(ctx context.Context, p *Project, cur Project
 	if !imageRE.MatchString(p.ProjectImage) {
 		return invalid("Projekt-Image %q ist kein Image-Name wie ghcr.io/org/kurs:2026.", "Project image %q is no image name like ghcr.io/org/course:2026.", p.ProjectImage)
 	}
+	if s.inPrivateProject(p.ProjectImage) {
+		// The pull robot of the private project could pull every project's private build: only the service sets such an image, from the project's own build.
+		return refuse("Images aus dem privaten Harbor-Projekt entstehen nur als Build des Projekts aus seinem Git-Repository; als fertiges Image lassen sie sich nicht eintragen.", "Images in the private Harbor project only come from the project's own build from its Git repository; they cannot be entered as a ready-made image.")
+	}
 	p.ImageDigest, p.ImageUpdate = "", ""
 	s.clearImageFacts(p)
 	if s.inspect == nil {
@@ -267,12 +271,12 @@ func (s *Service) clearImageFacts(p *Project) {
 	p.ImageSize, p.ImageUser, p.ImageWarnings, p.ImageScan, p.ImageArchs = 0, "", nil, nil, nil
 }
 
-// inspectBuilt reads a finished build from Git like a saved image (size, warnings, and its architectures: those of its index for a build for several), never refusing it; it is in the public project envs. Its registry not answering leaves the facts empty for the next check to fill (until then it counts as amd64); it tells whether it read them.
+// inspectBuilt reads a finished build from Git like a saved image (size, warnings, and its architectures: those of its index for a build for several), never refusing it; it is in the public project envs, or (from a private repository) in the private project, read with its pull robot. Its registry not answering leaves the facts empty for the next check to fill (until then it counts as amd64); it tells whether it read them.
 func (s *Service) inspectBuilt(ctx context.Context, p *Project) bool {
 	if s.inspect == nil || p.ProjectImage == "" {
 		return false
 	}
-	img, err := s.inspect(ctx, p.ProjectImage, nil)
+	img, err := s.inspect(ctx, p.ProjectImage, s.privateImageAuth(p.ProjectImage))
 	if err != nil {
 		return false
 	}
@@ -345,7 +349,14 @@ func (s *Service) ProjectImageBuilt(ctx context.Context, slug, gitURL, image str
 	p.ProjectImage, p.UpdatedBy = image, "project-image-build"
 	s.clearImageFacts(&p)
 	s.inspectBuilt(ctx, &p)
-	return s.store.Update(ctx, &p)
+	if err := s.store.Update(ctx, &p); err != nil {
+		return err
+	}
+	if s.privateImage(image) {
+		// Its pull secret now, not at the next pass of the sync: a start right away would wait for it.
+		_ = s.SyncCredentialSecrets(ctx)
+	}
+	return nil
 }
 
 // sameRepo compares repository URLs loosely (the build keeps the canonical form: lower-case host, no .git, no trailing slash).
@@ -380,7 +391,7 @@ func (s *Service) PrepullImages(ctx context.Context) ([]ArchImage, error) {
 		}
 		if p.Active(s.now()) {
 			secret := ""
-			if finishedImage(p) && s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)) != nil {
+			if (finishedImage(p) && s.credentialFor(ctx, p.Slug, imageHost(p.ProjectImage)) != nil) || s.privateImage(p.ProjectImage) {
 				secret = PullSecretName(p.Slug)
 			}
 			add(s.EffectiveImage(p), s.EffectiveArchs(p), false, secret)

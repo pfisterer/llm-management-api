@@ -13,7 +13,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
 )
 
-// Image cleanup in Harbor: one periodic sweep compares the artifacts in the Harbor project of the environments (envs) with the images still referred to, and deletes the rest. It covers every way an environment goes (a project deleted by an admin or by the budget tree after its grace days, a rebuild that forgets the older build, a crash between both) and old leftovers, so no deletion path has to call Harbor itself, and a failed delete is simply tried again at the next pass.
+// Image cleanup in Harbor: one periodic sweep per Harbor project of the environments (envs, and envs-private for builds from private repositories, each with its own cleanup robot) compares the artifacts in it with the images still referred to, and deletes the rest. It covers every way an environment goes (a project deleted by an admin or by the budget tree after its grace days, a rebuild that forgets the older build, a crash between both) and old leftovers, so no deletion path has to call Harbor itself, and a failed delete is simply tried again at the next pass.
 //
 // Kept is every artifact one of whose tags, or whose digest, an environment record (all projects, any status) or a project (its image by tag, digest, offered update) names: images are shared between projects with the same repository and commit, so an image goes only once nobody names it. The build cache envs/buildcache:<repository>-course (<repository>-<arch>-course for an architecture other than amd64) stays while any image of that repository is kept. An image built for several architectures (multi_arch.go) is an index under its tag whose variants were pushed without a tag: Harbor lists only the index and deletes the variants with it. A variant that has a tag anyway (<tag>-<arch>, as the platform images have them) is listed on its own: it stays with its index or with the image its tag names, and goes after the index (Harbor refuses it before). An index stays when something names one of its variants by digest. Only the envs project is ever touched; the platform images and the bases are in platform. An artifact pushed or pulled within MinAge stays as well (a build that is just being saved, something unknown still using it), and the references are read again right before deleting, so an environment created during the pass keeps its image.
 
@@ -62,13 +62,25 @@ type ImageCleanup struct {
 
 // NewImageCleanup makes the sweep over the envs project; projectRefs are the images the projects refer to (workspace.Service.ReferencedImages), the environment records are read from the service's store.
 func (s *Service) NewImageCleanup(h HarborRepos, cfg ImageCleanupConfig, projectRefs func(ctx context.Context) ([]string, error)) *ImageCleanup {
+	return s.newImageCleanup(s.cfg.EnvsProject, h, cfg, projectRefs)
+}
+
+// NewPrivateImageCleanup makes the same sweep over the private project of builds from private repositories (Config.PrivateEnvsProject), with a client holding that project's cleanup robot; nil when there is no private project.
+func (s *Service) NewPrivateImageCleanup(h HarborRepos, cfg ImageCleanupConfig, projectRefs func(ctx context.Context) ([]string, error)) *ImageCleanup {
+	if s.cfg.PrivateEnvsProject == "" {
+		return nil
+	}
+	return s.newImageCleanup(s.cfg.PrivateEnvsProject, h, cfg, projectRefs)
+}
+
+func (s *Service) newImageCleanup(project string, h HarborRepos, cfg ImageCleanupConfig, projectRefs func(ctx context.Context) ([]string, error)) *ImageCleanup {
 	if cfg.MinAge <= 0 {
 		cfg.MinAge = 7 * 24 * time.Hour
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = time.Hour
 	}
-	return &ImageCleanup{svc: s, harbor: h, project: s.cfg.EnvsProject, cfg: cfg, refs: projectRefs, now: time.Now}
+	return &ImageCleanup{svc: s, harbor: h, project: project, cfg: cfg, refs: projectRefs, now: time.Now}
 }
 
 // references are the tags and digests per repository of the envs project that something names, and the repositories named at all.
@@ -374,7 +386,7 @@ func lastUsed(arts []oci.HarborArtifact) time.Time {
 }
 
 func (c *ImageCleanup) record(res CleanupResult) CleanupResult {
-	c.svc.cleanupLast.Store(&res)
+	c.svc.cleanupLast.Store(c.project, &res)
 	return res
 }
 
@@ -384,29 +396,45 @@ func (c *ImageCleanup) Start(ctx context.Context, firstDelay time.Duration) {
 	background.Run(ctx, c.svc.log, "image_cleanup", background.Schedule{Interval: c.cfg.Interval, First: firstDelay}, func(ctx context.Context) { c.Sweep(ctx) })
 }
 
-// writeCleanupMetrics writes the last pass of the image cleanup, if one ran.
+// writeCleanupMetrics writes the last pass of the image cleanup per Harbor project, if one ran.
 func (s *Service) writeCleanupMetrics(w *promtext.Writer) {
-	res := s.cleanupLast.Load()
-	if res == nil {
+	var projects []string
+	last := map[string]*CleanupResult{}
+	s.cleanupLast.Range(func(k, v any) bool {
+		projects = append(projects, k.(string))
+		last[k.(string)] = v.(*CleanupResult)
+		return true
+	})
+	if len(projects) == 0 {
 		return
 	}
-	dry := "false"
-	if res.DryRun {
-		dry = "true"
+	slices.Sort(projects)
+	dryOf := func(res *CleanupResult) string {
+		if res.DryRun {
+			return "true"
+		}
+		return "false"
 	}
-	w.Header("aiaas_image_cleanup_last_run_timestamp_seconds", "gauge", "When the image cleanup in Harbor (project envs) last ran.")
-	w.Sample("aiaas_image_cleanup_last_run_timestamp_seconds", float64(res.At.Unix()), "dry_run", dry)
-	ok := 0.0
-	if res.OK {
-		ok = 1
+	w.Header("aiaas_image_cleanup_last_run_timestamp_seconds", "gauge", "When the image cleanup in Harbor last ran, per Harbor project (envs, envs-private).")
+	for _, p := range projects {
+		w.Sample("aiaas_image_cleanup_last_run_timestamp_seconds", float64(last[p].At.Unix()), "dry_run", dryOf(last[p]), "project", p)
 	}
 	w.Header("aiaas_image_cleanup_last_run_ok", "gauge", "1 when the last pass of the image cleanup read everything and every delete succeeded; failures are tried again at the next pass.")
-	w.Sample("aiaas_image_cleanup_last_run_ok", ok, "dry_run", dry)
-	w.Header("aiaas_image_cleanup_artifacts", "gauge", "Artifacts in the Harbor project envs at the last pass of the image cleanup, by state: referenced (named by an environment or a project), young (unreferenced, but pushed or pulled within the minimum age), orphaned (unreferenced and older: deleted, or due in a dry run), deleted, failed (deletes and listings).")
-	for _, kv := range []struct {
-		state string
-		n     int
-	}{{"referenced", res.Referenced}, {"young", res.Young}, {"orphaned", res.Orphaned}, {"deleted", res.Deleted}, {"failed", res.Failed}} {
-		w.Sample("aiaas_image_cleanup_artifacts", float64(kv.n), "state", kv.state, "dry_run", dry)
+	for _, p := range projects {
+		ok := 0.0
+		if last[p].OK {
+			ok = 1
+		}
+		w.Sample("aiaas_image_cleanup_last_run_ok", ok, "dry_run", dryOf(last[p]), "project", p)
+	}
+	w.Header("aiaas_image_cleanup_artifacts", "gauge", "Artifacts in the Harbor project at the last pass of the image cleanup, by state: referenced (named by an environment or a project), young (unreferenced, but pushed or pulled within the minimum age), orphaned (unreferenced and older: deleted, or due in a dry run), deleted, failed (deletes and listings).")
+	for _, p := range projects {
+		res := last[p]
+		for _, kv := range []struct {
+			state string
+			n     int
+		}{{"referenced", res.Referenced}, {"young", res.Young}, {"orphaned", res.Orphaned}, {"deleted", res.Deleted}, {"failed", res.Failed}} {
+			w.Sample("aiaas_image_cleanup_artifacts", float64(kv.n), "state", kv.state, "dry_run", dryOf(res), "project", p)
+		}
 	}
 }

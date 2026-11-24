@@ -330,6 +330,12 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			if err != nil {
 				return fmt.Errorf("WORKSPACE_CREDENTIALS_KEY: %w", err)
 			}
+			// Builds from private repositories: cloned with the project's access, into the private Harbor project, pulled with its robot through the project's pull secret.
+			gpuSvc.SetGitAuth(wsSvc.CredentialFor)
+			if cfg.GPU.PrivateBuilds() {
+				wsSvc.SetPrivateImages(cfg.GPU.Registry+"/"+cfg.GPU.PrivateEnvsProject+"/", workspace.Basic{Username: cfg.GPU.PrivatePullUser, Token: cfg.GPU.PrivatePullToken})
+				log.Infow("builds from private repositories enabled", "project", cfg.GPU.PrivateEnvsProject)
+			}
 		}
 		gpuSvc.SetBases(wsCfg.Bases)
 		// Bases have versions since 17.10.2026: every project keeps the version it runs now.
@@ -608,6 +614,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 			}
 			cleanup := gpuSvc.NewImageCleanup(harbor, ic, wsSvc.ReferencedImages)
 			cleanup.Start(ctx, 5*time.Minute)
+			// The private project with its own cleanup robot (anonymously it is not even readable); without one it is left alone.
+			if cfg.HarborPrivateCleanupUser != "" {
+				private := &oci.Harbor{Client: harbor.Client, Host: cfg.GPU.Registry, Auth: &oci.Auth{Username: cfg.HarborPrivateCleanupUser, Password: cfg.HarborPrivateCleanupToken}}
+				if pc := gpuSvc.NewPrivateImageCleanup(private, cfg.ImageCleanup, wsSvc.ReferencedImages); pc != nil {
+					pc.Start(ctx, 7*time.Minute)
+				}
+			}
 		}
 	}
 	// The startup listener gives the API's address back to the real one.

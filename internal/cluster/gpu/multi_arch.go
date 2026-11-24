@@ -114,7 +114,7 @@ func (s *Service) refreshPlatforms(ctx context.Context, e Environment) Environme
 	switch {
 	case errors.Is(err, ErrNotFound):
 		// Jobs gone (cleaned up after a day): decide by the registry.
-		ok, rerr := s.images.exists(ctx, s.cfg.EnvsProject, slug, tag)
+		ok, rerr := s.images.exists(ctx, s.envsProjectOf(e), slug, tag)
 		switch {
 		case rerr != nil:
 			return e
@@ -170,7 +170,7 @@ func (s *Service) refreshPlatforms(ctx context.Context, e Environment) Environme
 			missing = append(missing, fmt.Sprintf("%s: %d Minuten nach amd64 noch nicht fertig, abgebrochen", arch, int(archGrace.Minutes())))
 		}
 	}
-	err = s.builds.createJob(ctx, ns, indexJob(s.cfg, index, slug, e.Image, variants))
+	_, err = s.builds.createJob(ctx, ns, indexJob(s.cfg, index, slug, e.Image, variants, s.builderSecret(e)))
 	if err != nil && !errors.Is(err, errAlreadyExists) {
 		s.log.Warnw("index job not created", "job", index, "error", err)
 		return e

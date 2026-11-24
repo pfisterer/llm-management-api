@@ -192,6 +192,9 @@ type Service struct {
 	// credGone are the projects deleted since this process started, whose secrets every sync removes (cheap: the GPU part remembers what is gone).
 	credGone map[string]bool
 	credMu   sync.Mutex
+	// privateImages is the prefix (<registry>/<private project>/) of images built from private repositories and privatePull the robot that pulls them (SetPrivateImages); empty = none.
+	privateImages string
+	privatePull   Basic
 	// starts counts the start decisions (metrics.go); in memory, back to zero on a restart.
 	starts *promtext.CounterVec
 }

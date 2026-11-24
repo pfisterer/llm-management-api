@@ -19,9 +19,10 @@ import (
 
 // projectImageClone clones the repository, up to three times with a pause in between: the job has backoffLimit 0, and a single "Connection reset by peer" from the Git host would otherwise fail the whole build (like the material's checkout in the hub). Only the last failure writes a "dhbw: " line, the message the service shows (the first such line in the log wins).
 const projectImageClone = `export GIT_TERMINAL_PROMPT=0
+REPO_DIR=${REPO_DIR:-/tmp/repo}
 for i in 1 2 3; do
-  rm -rf /tmp/repo
-  if git clone --quiet --no-checkout "$GIT_URL" /tmp/repo 2>/tmp/clone.err; then break; fi
+  rm -rf "$REPO_DIR"
+  if git clone --quiet --no-checkout "$GIT_URL" "$REPO_DIR" 2>/tmp/clone.err; then break; fi
   cat /tmp/clone.err >&2
   if [ "$i" -eq 3 ]; then
     r=$(grep -iE 'fatal|error' /tmp/clone.err | tail -1 | sed 's/^fatal: //' | cut -c1-200 || true)
@@ -35,9 +36,13 @@ done
 `
 
 // projectImageScript is the build job's script: it clones the repository, writes the Dockerfile from the repository's files and builds it with BuildKit for BUILD_ARCH. With PUSH_BY_DIGEST=1 (one architecture of a build for several, multi_arch.go) it pushes the image to the repository IMAGE without a tag and ends with the line "dhbw-digest: sha256:…", which the index job is given.
-const projectImageScript = "set -euo pipefail\n" + projectImageClone + `git -C /tmp/repo checkout --quiet "$GIT_COMMIT"
-dir=/tmp/repo
-for d in binder .binder; do if [ -d "/tmp/repo/$d" ]; then dir="/tmp/repo/$d"; break; fi; done
+//
+// REPO_DIR is where the repository goes (default /tmp/repo); PRECLONED=1 means the clone container of a private build (projectImageCloneScript) has put it there already.
+const projectImageScript = "set -euo pipefail\nif [ -z \"${PRECLONED:-}\" ]; then\n" + projectImageClone + `git -C "$REPO_DIR" checkout --quiet "$GIT_COMMIT"
+fi
+REPO_DIR=${REPO_DIR:-/tmp/repo}
+dir="$REPO_DIR"
+for d in binder .binder; do if [ -d "$REPO_DIR/$d" ]; then dir="$REPO_DIR/$d"; break; fi; done
 if [ -f "$dir/Dockerfile" ]; then
   echo "dhbw: Das Repository hat ein Dockerfile. Aus Git wird das Projekt-Image aus requirements.txt, environment.yml, apt.txt und postBuild gebaut; ein eigenes Image (FROM …/platform/notebook-base) selbst bauen und im Projekt als fertiges Image eintragen."
   exit 1
@@ -83,6 +88,9 @@ buildctl-daemonless.sh build --progress=plain --frontend dockerfile.v0 --local c
 if [ "${PUSH_BY_DIGEST:-}" = 1 ]; then
   echo "dhbw-digest: $(python3 -c 'import json; print(json.load(open("/tmp/build-metadata.json"))["containerimage.digest"])')"
 fi`
+
+// projectImageCloneScript is the clone container of a private build (withPrivateClone): clone and check out into REPO_DIR, nothing else.
+const projectImageCloneScript = "set -euo pipefail\n" + projectImageClone + `git -C "$REPO_DIR" checkout --quiet "$GIT_COMMIT"`
 
 var tagUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
@@ -288,7 +296,7 @@ func (s *Service) RebaseProjectImages(ctx context.Context) error {
 		}
 		slug := slugOf(e.Image)
 		tag := projectImageTag(e.Commit, base)
-		e.Base, e.Image = base, fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
+		e.Base, e.Image = base, s.imageName(e, slug, tag)
 		if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Image, err))
 			continue

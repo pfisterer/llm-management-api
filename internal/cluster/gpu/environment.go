@@ -19,7 +19,7 @@ const (
 	StatusFailed   Status = "failed"
 )
 
-// Environment is a project image built from a Git repository at a commit on notebook-base (Harbor envs/<slug>:<commit>-<base release>, docs/bauplan.md 10.12). Owner is "project:<slug>". Images are shared: two projects with the same repository and commit get the same image, built once.
+// Environment is a project image built from a Git repository at a commit on notebook-base (Harbor envs/<slug>:<commit>-<base release>, docs/bauplan.md 10.12). Owner is "project:<slug>". Images of public repositories are shared: two projects with the same repository and commit get the same image, built once. A private repository (cloned with the project's access to its host) is built into the private project instead, in a repository of the owning project (envs-private/<project>--<slug>), and never shared: another project with the same repository builds its own.
 type Environment struct {
 	ID     uint   `json:"id" gorm:"primaryKey"`
 	Owner  string `json:"owner" gorm:"index;not null"`
@@ -32,7 +32,9 @@ type Environment struct {
 	// Base is the notebook-base release the image is built on; a newer one rebuilds it (Service.RebaseProjectImages).
 	Base string `json:"base,omitempty"`
 	// Platforms are the architectures a build for several makes: one job per architecture pushes <image>-<arch>, then an index joins those that succeeded under the image's tag ("amd64,arm64"). Empty = one amd64 build that pushes the image itself.
-	Platforms string    `json:"platforms,omitempty"`
+	Platforms string `json:"platforms,omitempty"`
+	// Private: built from a private repository into Config.PrivateEnvsProject.
+	Private   bool      `json:"private,omitempty"`
 	Status    Status    `json:"status" gorm:"not null"`
 	JobName   string    `json:"-"`
 	Message   string    `json:"message,omitempty"`

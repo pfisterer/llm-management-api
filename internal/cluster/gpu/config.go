@@ -23,6 +23,11 @@ type Config struct {
 	EnvsProject   string // envs
 	BuilderImage  string // optional; default: newest tag of platform/repo2docker-buildkit
 	BuilderSecret string // pull/push secret in BuildNamespace (harbor-envs-builder)
+	// Builds from private repositories (with the project's access to the Git host) go into the private Harbor project PrivateEnvsProject (envs-private), pushed with the robot in PrivateBuilderSecret and pulled with the robot PrivatePullUser/PrivatePullToken, which the projects' pull secrets carry. Empty PrivateEnvsProject or PrivatePullToken = no builds from private repositories.
+	PrivateEnvsProject   string // envs-private
+	PrivateBuilderSecret string // pull/push secret in BuildNamespace (harbor-envs-private-builder)
+	PrivatePullUser      string // robot$envs-private+pull
+	PrivatePullToken     string
 	// BuildPlatforms are the architectures project images from Git are built for, where their base has them: amd64 on the build nodes, every other one in its own job on a node of that architecture, then an index joins them (IndexImage, crane). Empty or only amd64 = one amd64 build as before.
 	BuildPlatforms []string
 	IndexImage     string // image with crane that writes the index; default DefaultIndexImage
@@ -47,11 +52,12 @@ type Config struct {
 
 // Defaults of the GPU part's settings, in one place: LoadConfig (internal/config.go) uses them for unset variables, newService for a Config left empty (tests).
 const (
-	DefaultBuildNamespace     = "env-build"
-	DefaultEnvsProject        = "envs"
-	DefaultBuilderSecret      = "harbor-envs-builder"
-	DefaultWorkspaceNamespace = "jupyterhub"
-	DefaultInferenceNamespace = "inference"
+	DefaultBuildNamespace       = "env-build"
+	DefaultEnvsProject          = "envs"
+	DefaultBuilderSecret        = "harbor-envs-builder"
+	DefaultPrivateBuilderSecret = "harbor-envs-private-builder"
+	DefaultWorkspaceNamespace   = "jupyterhub"
+	DefaultInferenceNamespace   = "inference"
 )
 
 // DefaultGitHosts are the Git hosts environments may come from when GPU_GIT_HOSTS is not set.
@@ -68,6 +74,9 @@ func (c *Config) withDefaults() {
 	if c.BuilderSecret == "" {
 		c.BuilderSecret = DefaultBuilderSecret
 	}
+	if c.PrivateBuilderSecret == "" {
+		c.PrivateBuilderSecret = DefaultPrivateBuilderSecret
+	}
 	if len(c.GitHosts) == 0 {
 		c.GitHosts = DefaultGitHosts()
 	}
@@ -75,6 +84,9 @@ func (c *Config) withDefaults() {
 		c.WorkspaceNamespace = DefaultWorkspaceNamespace
 	}
 }
+
+// PrivateBuilds tells whether builds from private repositories are set up.
+func (c Config) PrivateBuilds() bool { return c.PrivateEnvsProject != "" && c.PrivatePullToken != "" }
 
 func (c Config) Validate() error {
 	if !c.Enabled {

@@ -67,10 +67,13 @@ func TestProjectImageCloneGivesUp(t *testing.T) {
 	}
 }
 
-// The job runs the clone step first, before the checkout.
+// The job runs the clone step first, before the checkout, unless the clone container of a private build did both (PRECLONED); that container runs the same clone.
 func TestProjectImageScriptStartsWithClone(t *testing.T) {
-	if !strings.HasPrefix(projectImageScript, "set -euo pipefail\n"+projectImageClone+"git -C /tmp/repo checkout") {
+	if !strings.HasPrefix(projectImageScript, "set -euo pipefail\nif [ -z \"${PRECLONED:-}\" ]; then\n"+projectImageClone+"git -C \"$REPO_DIR\" checkout") {
 		t.Errorf("script starts with %q", projectImageScript[:200])
+	}
+	if projectImageCloneScript != "set -euo pipefail\n"+projectImageClone+`git -C "$REPO_DIR" checkout --quiet "$GIT_COMMIT"` {
+		t.Errorf("clone script %q", projectImageCloneScript)
 	}
 }
 

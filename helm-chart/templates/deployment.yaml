@@ -139,6 +139,15 @@ spec:
             - {name: GPU_ENVS_PROJECT, value: {{ .Values.gpu.envsProject | quote }}}
             - {name: GPU_BUILDER_IMAGE, value: {{ .Values.gpu.builderImage | quote }}}
             - {name: GPU_BUILDER_SECRET, value: {{ .Values.gpu.builderSecret | quote }}}
+            {{- with .Values.gpu.privateBuilds }}
+            {{- if .project }}
+            - {name: GPU_PRIVATE_ENVS_PROJECT, value: {{ .project | quote }}}
+            - {name: GPU_PRIVATE_BUILDER_SECRET, value: {{ .builderSecret | default "harbor-envs-private-builder" | quote }}}
+            - {name: GPU_PRIVATE_PULL_USER, value: {{ required "gpu.privateBuilds.pullUser is required" .pullUser | quote }}}
+            - name: GPU_PRIVATE_PULL_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: harbor-private-pull-token, optional: true}}
+            {{- end }}
+            {{- end }}
             - {name: GPU_BUILD_PLATFORMS, value: {{ join "," .Values.gpu.buildPlatforms | quote }}}
             - {name: GPU_INDEX_IMAGE, value: {{ .Values.gpu.indexImage | quote }}}
             - {name: GPU_GIT_HOSTS, value: {{ join "," .Values.gpu.gitHosts | quote }}}
@@ -195,6 +204,11 @@ spec:
             - {name: HARBOR_CLEANUP_USER, value: {{ . | quote }}}
             - name: HARBOR_CLEANUP_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $secret }}, key: harbor-cleanup-token, optional: true}}
+            {{- end }}
+            {{- with .privateUser }}
+            - {name: HARBOR_PRIVATE_CLEANUP_USER, value: {{ . | quote }}}
+            - name: HARBOR_PRIVATE_CLEANUP_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: harbor-private-cleanup-token, optional: true}}
             {{- end }}
             {{- end }}
             {{- end }}

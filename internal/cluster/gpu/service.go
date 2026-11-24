@@ -2,6 +2,8 @@ package gpu
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -11,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/msg"
@@ -29,7 +30,8 @@ var ErrInvalidRepo = msg.Err(msg.T("Repository nicht verwendbar", "Repository no
 // exists; servers starts JupyterHub servers. Interfaces so the service can be
 // tested without the cluster.
 type builds interface {
-	createJob(ctx context.Context, ns string, job map[string]any) error
+	createJob(ctx context.Context, ns string, job map[string]any) (uid string, err error)
+	createSecret(ctx context.Context, ns string, secret map[string]any) error
 	jobStatus(ctx context.Context, ns, name string) (jobStatus, error)
 	deleteJob(ctx context.Context, ns, name string) error
 	jobLog(ctx context.Context, ns, job string, tail int) (string, error)
@@ -59,6 +61,8 @@ type Service struct {
 	images  images
 	servers servers
 	refs    refResolver
+	// gitAuth is a project's access to a Git host (SetGitAuth), for builds from private repositories; nil = none.
+	gitAuth func(ctx context.Context, project, host string) *workspace.Basic
 	pods    podLister
 	k8s     kubeDoer // kernel pods (kernels.go); nil in tests without them
 	log     *zap.SugaredLogger
@@ -96,8 +100,8 @@ type Service struct {
 	// gapBusy is when each node last ran a GPU pod other than a gap filler (gapfill.go: the delay before a gap filler comes back).
 	gapBusy map[string]time.Time
 	gapMu   sync.Mutex
-	// cleanupLast is the last pass of the image cleanup in Harbor (image_cleanup.go), for the metrics; nil = none yet.
-	cleanupLast atomic.Pointer[CleanupResult]
+	// cleanupLast is the last pass of the image cleanup in Harbor per Harbor project (image_cleanup.go: project -> *CleanupResult), for the metrics.
+	cleanupLast sync.Map
 	// research is the research log (research.go): told why the service ends a workspace pod and what a waiting GPU kernel was shown; nil = none.
 	research *research.Recorder
 	// kernelEnds counts the GPU kernels that ended by reason (kernel_ends.go), for the metrics.
@@ -118,7 +122,7 @@ func New(cfg Config, store Store, log *zap.SugaredLogger) (*Service, error) {
 	}
 	git := newGitClient()
 	h := newHub(cfg.JupyterURL, cfg.JupyterAPIToken)
-	s := newService(cfg, store, k, newRegistry(cfg.Registry), h,
+	s := newService(cfg, store, k, newRegistry(cfg.Registry).withPrivate(cfg.PrivateEnvsProject, cfg.PrivatePullUser, cfg.PrivatePullToken), h,
 		func(ctx context.Context, u string, auth *workspace.Basic) (gitRefs, error) {
 			return fetchRefs(ctx, git, u, auth)
 		}, log)
@@ -141,7 +145,7 @@ var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
 
 // normaliseRepo checks a repository URL: https, an allowed host, no
 // credentials, at least owner/name. Returns the canonical URL and the image
-// repository name (slug) in Harbor envs/.
+// repository name (slug) in Harbor envs/ (for a private repository the project's slug goes before it, privateRepo).
 func (s *Service) normaliseRepo(raw string) (string, string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -183,8 +187,21 @@ func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name str
 		return Environment{}, err
 	}
 	refs, err := s.refs(ctx, canonical, nil)
+	private := false
 	if err != nil {
-		return Environment{}, msg.Errorf("%w: %v", "%w: %v", ErrInvalidRepo, err)
+		// Not readable without login: a private repository, built with the project's access to its host into the private project.
+		auth := s.repoAuth(ctx, owner, canonical)
+		if auth == nil {
+			return Environment{}, msg.Errorf("%w: %v (ein privates Repository braucht unter „Zugänge“ einen Zugang des Projekts für %s)", "%w: %v (a private repository needs an access of the project for %s under “Accesses”)", ErrInvalidRepo, err, hostOf(canonical))
+		}
+		if !s.cfg.PrivateBuilds() {
+			return Environment{}, msg.Errorf("%w: Builds aus privaten Repositories sind hier nicht eingerichtet", "%w: builds from private repositories are not set up here", ErrInvalidRepo)
+		}
+		if refs, err = s.refs(ctx, canonical, auth); err != nil {
+			return Environment{}, msg.Errorf("%w: %v (auch mit dem Zugang des Projekts für %s)", "%w: %v (also with the project's access for %s)", ErrInvalidRepo, err, hostOf(canonical))
+		}
+		project, _ := strings.CutPrefix(owner, "project:")
+		slug, private = privateRepo(project, slug), true
 	}
 	commit, branch, err := refs.resolve(ref)
 	if err != nil {
@@ -196,9 +213,9 @@ func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name str
 	if strings.TrimSpace(name) == "" {
 		name = pathBase(canonical)
 	}
-	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit, Base: base}
+	e := Environment{Owner: owner, Name: strings.TrimSpace(name), GitURL: canonical, Ref: strings.TrimSpace(ref), Branch: branch, Commit: commit, Base: base, Private: private}
 	tag := projectImageTag(commit, e.Base)
-	e.Image = fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.cfg.EnvsProject, slug, tag)
+	e.Image = s.imageName(e, slug, tag)
 	if err := s.startBuildIfMissing(ctx, &e, slug, tag, false); err != nil {
 		return Environment{}, err
 	}
@@ -207,12 +224,49 @@ func (s *Service) create(ctx context.Context, owner, base, gitURL, ref, name str
 
 func pathBase(u string) string { return u[strings.LastIndex(u, "/")+1:] }
 
-// jobName is a Job name (at most 63 characters, no dots) for an image: the slug shortened to fit the tag.
+// hostOf is the host of a canonical repository address (https://host/owner/name).
+func hostOf(canonical string) string {
+	h, _, _ := strings.Cut(strings.TrimPrefix(canonical, "https://"), "/")
+	return h
+}
+
+// privateRepo is the repository of a private build in the private project: the owning project's slug before the repository's, so no other project's build lands in it (and the cleanup's references stay per project).
+func privateRepo(project, slug string) string { return project + "--" + slug }
+
+// envsProjectOf is the Harbor project an environment's image is in.
+func (s *Service) envsProjectOf(e Environment) string {
+	if e.Private {
+		return s.cfg.PrivateEnvsProject
+	}
+	return s.cfg.EnvsProject
+}
+
+// imageName is an environment's image: repository slug (privateRepo for a private one) and tag in its Harbor project.
+func (s *Service) imageName(e Environment, slug, tag string) string {
+	return fmt.Sprintf("%s/%s/%s:%s", s.cfg.Registry, s.envsProjectOf(e), slug, tag)
+}
+
+// SetGitAuth gives the service the projects' access to Git hosts (workspace.Service.CredentialFor): a repository that is not public is built with it, also when a new base rebuilds it.
+func (s *Service) SetGitAuth(f func(ctx context.Context, project, host string) *workspace.Basic) {
+	s.gitAuth = f
+}
+
+// repoAuth is the owning project's access to a repository's host; nil = none.
+func (s *Service) repoAuth(ctx context.Context, owner, canonical string) *workspace.Basic {
+	project, ok := strings.CutPrefix(owner, "project:")
+	if !ok || s.gitAuth == nil {
+		return nil
+	}
+	return s.gitAuth(ctx, project, hostOf(canonical))
+}
+
+// jobName is a Job name (at most 63 characters, no dots) for an image: the slug shortened to fit the tag, with a short hash of the whole slug when it was shortened, so two repositories (or, for private builds, two projects) that start alike never share a job.
 func jobName(slug, tag string) string {
 	tag = strings.ReplaceAll(tag, ".", "-")
 	s := slug
 	if n := 63 - len("env-") - 1 - len(tag); len(s) > min(40, n) {
-		s = strings.TrimRight(s[:min(40, n)], "-")
+		sum := sha256.Sum256([]byte(slug))
+		s = strings.TrimRight(s[:min(40, n)-7], "-") + "-" + hex.EncodeToString(sum[:3])
 	}
 	return "env-" + s + "-" + tag
 }
@@ -225,7 +279,7 @@ func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug,
 		e.Platforms = strings.Join(platforms, ",")
 	}
 	if !force {
-		ok, err := s.images.exists(ctx, s.cfg.EnvsProject, slug, tag)
+		ok, err := s.images.exists(ctx, s.envsProjectOf(*e), slug, tag)
 		if err != nil {
 			return err
 		}
@@ -259,6 +313,13 @@ func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug,
 			}
 		}
 	}
+	var auth *workspace.Basic
+	if e.Private {
+		// The clone's access, read now: the token goes into a Secret owned by the build job (gitSecret), never into the job.
+		if auth = s.repoAuth(ctx, e.Owner, e.GitURL); auth == nil {
+			return msg.Errorf("%w: das Projekt hat keinen Zugang mehr für %s", "%w: the project no longer has an access for %s", ErrInvalidRepo, hostOf(e.GitURL))
+		}
+	}
 	e.JobName = builds[0].name // the amd64 build: its log is the build's log
 	for _, b := range builds {
 		if force {
@@ -266,13 +327,20 @@ func (s *Service) startBuildIfMissing(ctx context.Context, e *Environment, slug,
 				return err
 			}
 		}
-		err := s.builds.createJob(ctx, s.cfg.BuildNamespace, buildJob(s.cfg, b.name, builder, *e, slug, b.arch, b.image, b.cache, e.Platforms != ""))
+		uid, err := s.builds.createJob(ctx, s.cfg.BuildNamespace, buildJob(s.cfg, b.name, builder, *e, slug, b.arch, b.image, b.cache, e.Platforms != ""))
 		if errors.Is(err, errAlreadyExists) {
-			// Someone else builds the same repository and commit: share the job.
-			err = nil
+			// Someone else builds the same repository and commit (for a private one: the same project): share the job.
+			continue
 		}
 		if err != nil {
 			return err
+		}
+		// The job's pod waits for its clone's Secret, which the job owns (Kubernetes deletes it with the job).
+		if auth != nil {
+			if err := s.builds.createSecret(ctx, s.cfg.BuildNamespace, gitSecret(b.name, uid, e.GitURL, *auth)); err != nil {
+				_ = s.builds.deleteJob(ctx, s.cfg.BuildNamespace, b.name)
+				return fmt.Errorf("clone secret: %w", err)
+			}
 		}
 	}
 	e.Status, e.Message = StatusBuilding, ""
@@ -291,7 +359,7 @@ func (s *Service) refresh(ctx context.Context, e Environment) Environment {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		// Job gone (cleaned up after a day): decide by the registry.
-		if ok, rerr := s.images.exists(ctx, s.cfg.EnvsProject, slugOf(e.Image), tagOf(e.Image)); rerr == nil && ok {
+		if ok, rerr := s.images.exists(ctx, s.envsProjectOf(e), slugOf(e.Image), tagOf(e.Image)); rerr == nil && ok {
 			e.Status = StatusReady
 		} else if rerr == nil {
 			e.Status, e.Message = StatusFailed, "Build nicht mehr vorhanden, Image fehlt."
