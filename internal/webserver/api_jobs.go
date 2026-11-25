@@ -351,13 +351,14 @@ func (s *Server) getJobLog(c *gin.Context) {
 // cancelJob godoc
 //
 //	@ID				cancelGPUJob
-//	@Summary		Cancel a batch job
-//	@Description	Ends a waiting or running job; what it used stays booked. The person's own jobs (also after they left the project), all of the project for its managers and admins. An ended job is returned as it is.
+//	@Summary		Cancel or delete a batch job
+//	@Description	A waiting or running job is cancelled: it ends, what it used stays booked, and the job is returned (200). An ended job (succeeded, failed, cancelled) is deleted from the list (204): its row and, while Kubernetes still keeps it, the finished Job with its pod. Deleting does not touch the accounting: the GPU, CPU and RAM hours are booked per day in the usage (GET /v1/workspaces/usage), and only live jobs reserve anything of a budget. Files the job wrote stay in the home (~/jobs/<name>/). The person's own jobs (also after they left the project), all of the project for its managers and admins.
 //	@Tags			gpu
 //	@Produce		json
 //	@Security		BearerAuth
 //	@Param			id	path		string	true	"job id"
-//	@Success		200	{object}	gpu.Job
+//	@Success		200	{object}	gpu.Job	"cancelled"
+//	@Success		204	"deleted"
 //	@Failure		404	{object}	ErrorResponse
 //	@Router			/v1/gpu/jobs/{id} [delete]
 func (s *Server) cancelJob(c *gin.Context) {
@@ -368,12 +369,71 @@ func (s *Server) cancelJob(c *gin.Context) {
 		s.fail(c, jobErrors, "cancel", err)
 		return
 	}
+	if !jobLive(j) {
+		if err := s.gpu.DeleteJob(ctx, j.ID, a.person); err != nil {
+			s.fail(c, jobErrors, "delete", err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
 	j, err = s.gpu.CancelJob(ctx, j.ID, a.person)
 	if err != nil {
 		s.fail(c, jobErrors, "cancel", err)
 		return
 	}
 	c.JSON(http.StatusOK, j)
+}
+
+// jobLive: the job still waits or runs (cancel), else it has ended (delete).
+func jobLive(j gpu.Job) bool { return j.State == gpu.JobQueued || j.State == gpu.JobRunning }
+
+// DeleteJobsResponse is how many ended jobs a bulk delete removed.
+type DeleteJobsResponse struct {
+	Deleted int `json:"deleted"`
+}
+
+// deleteEndedJobs godoc
+//
+//	@ID				deleteEndedGPUJobs
+//	@Summary		Delete ended batch jobs
+//	@Description	Deletes every ended job (succeeded, failed, cancelled) the caller sees in the list with the same filter (GET /v1/gpu/jobs): without project their own, with project their own there, or all of the project when they manage it. state=ended is required, so that a bare DELETE never removes anything. Live jobs are left alone. As for a single job, the accounting is not touched and files stay in the home.
+//	@Tags			gpu
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			state	query		string	true	"must be ended"	Enums(ended)
+//	@Param			project	query		string	false	"workspace project slug"
+//	@Success		200		{object}	DeleteJobsResponse
+//	@Failure		400		{object}	ErrorResponse
+//	@Router			/v1/gpu/jobs [delete]
+func (s *Server) deleteEndedJobs(c *gin.Context) {
+	if c.Query("state") != "ended" {
+		abort(c, http.StatusBadRequest, "invalid", msg.T("state=ended fehlt: gelöscht werden nur beendete Jobs.", "state=ended is missing: only ended jobs are deleted."))
+		return
+	}
+	ctx := c.Request.Context()
+	a := s.jobActor(c)
+	jobs, err := listJobsFor(ctx, s.ws, s.gpu, a, c.Query("project"))
+	if err != nil {
+		s.fail(c, jobErrors, "list", err)
+		return
+	}
+	n := 0
+	for _, j := range jobs {
+		if jobLive(j) {
+			continue
+		}
+		switch err := s.gpu.DeleteJob(ctx, j.ID, a.person); {
+		case err == nil:
+			n++
+		case errors.Is(err, gpu.ErrNotFound), errors.Is(err, gpu.ErrJobLive):
+			// gone or started again meanwhile: nothing to delete
+		default:
+			s.fail(c, jobErrors, "delete", err)
+			return
+		}
+	}
+	c.JSON(http.StatusOK, DeleteJobsResponse{Deleted: n})
 }
 
 // jobFilesAccess is the part of the home of the job's person that the actor may read, relative to the home: the whole home for that person while a member of the job's project (their own files, as in a workspace), else only the job's folder jobs/<name> (its output and checkpoints) — for the project's managers and admins, and for the person after leaving the project.

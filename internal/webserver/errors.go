@@ -36,7 +36,9 @@ var keyFailureRule = apierr.As(func(kf *keyFailure) *apiError {
 var (
 	// refusalRules: workspace.Invalid is 400 invalid, workspace.Refusal 409 refused (a refusal by the project's rules, decided 10.11.2026).
 	refusalRules = []apierr.Rule{
-		apierr.As(func(inv *workspace.Invalid) *apiError { return apierr.New(http.StatusBadRequest, "invalid", inv.Reason) }),
+		apierr.As(func(inv *workspace.Invalid) *apiError {
+			return apierr.New(http.StatusBadRequest, "invalid", inv.Reason)
+		}),
 		apierr.As(func(r *workspace.Refusal) *apiError { return apierr.New(http.StatusConflict, "refused", r.Reason) }),
 	}
 	// jobRefusedRule: gpu.JobRefused is 400 invalid.
@@ -70,7 +72,8 @@ var (
 	// gpuErrors: the servers in JupyterHub and the GPU cluster.
 	gpuErrors = area("", clusterFallback, append([]apierr.Rule{apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Nicht gefunden.", "Not found."))}, hubRules...)...)
 	// jobErrors: the batch jobs.
-	jobErrors = area("batch job ", clusterFallback, append(refusalRules, jobRefusedRule, apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Job nicht gefunden.", "Job not found.")))...)
+	jobErrors = area("batch job ", clusterFallback, append(refusalRules, jobRefusedRule, apierr.Is(gpu.ErrNotFound, http.StatusNotFound, "not_found", msg.T("Job nicht gefunden.", "Job not found.")),
+		apierr.Is(gpu.ErrJobLive, http.StatusConflict, "job_live", msg.T("Der Job wartet oder läuft noch; erst abbrechen, dann löschen.", "The job is still waiting or running; cancel it first, then delete it.")))...)
 )
 
 // classify turns a service's error into the API's answer, by the rules of the area, and is the one place that logs the cause of a 5xx (what names the operation, in English). An apiError (e.g. of manager or workspaceAccess) stays as it is; a keyFailure keeps its own status, code and text in every area.

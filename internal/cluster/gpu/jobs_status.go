@@ -628,6 +628,38 @@ func (s *Service) CancelJob(ctx context.Context, id, by string) (Job, error) {
 	return r.job(), nil
 }
 
+// ErrJobLive is returned by DeleteJob for a job that still waits or runs: it is cancelled first (CancelJob).
+var ErrJobLive = errors.New("job is still waiting or running")
+
+// DeleteJob removes an ended job (succeeded, failed, cancelled) from the list: its row in gpu_jobs and, while Kubernetes still keeps it (JobTTL), the finished Job with its pod. The accounting is not touched: what the job used is booked minute by minute into workspace_usage_daily (package usage samples the job pods like the workspaces), and only live jobs reserve anything of a GPU-hours budget (JobReservations). Files the job wrote stay in the home (~/jobs/<name>/).
+func (s *Service) DeleteJob(ctx context.Context, id, by string) error {
+	if s.jobs == nil || !JobID(id) {
+		return ErrNotFound
+	}
+	r, err := s.jobs.Job(ctx, id)
+	if err != nil {
+		return err
+	}
+	if r.live() {
+		return ErrJobLive
+	}
+	if s.k8s != nil {
+		if err := s.k8s.do(ctx, http.MethodDelete, "/apis/batch/v1/namespaces/"+s.workspaceNamespace()+"/jobs/"+r.ID+"?propagationPolicy=Background", nil, nil); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	deleted, err := s.jobs.DeleteJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		// Gone meanwhile, or started again in between (not possible for an ended job, but the row decides).
+		return ErrNotFound
+	}
+	s.log.Infow("batch job deleted", "job", id, "by", by, "project", r.Project)
+	return nil
+}
+
 // JobReservations is what a project's live jobs still hold of its GPU-hours budgets (workspace.SetJobReservations): its GPUs × what is left of its MaxHours over all its attempts, waiting or running (limitJobHours keeps a job evicted and admitted again within it).
 func (s *Service) JobReservations(ctx context.Context, project string) ([]workspace.Reservation, error) {
 	if s.jobs == nil {

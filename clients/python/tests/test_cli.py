@@ -293,3 +293,51 @@ class JobCommands(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Delete(unittest.TestCase):
+    """dhbw-cloud job delete: an ended job is deleted (204), a live one is refused before anything is sent, --ended deletes all ended ones."""
+
+    def setUp(self):
+        self.calls = []
+        states = {"j-0000000001": "succeeded", "j-0000000002": "running"}
+
+        def service(request):
+            self.calls.append((request.method, request.url.path, dict(request.url.params)))
+            jid = request.url.path.rsplit("/", 1)[-1]
+            if request.method == "GET" and jid in states:
+                return httpx.Response(200, json={"id": jid, "name": "train", "project": "t-kurs", "state": states[jid], "gpu_class": "general-large", "max_hours": 2})
+            if request.method == "DELETE" and request.url.path.endswith("/gpu/jobs"):
+                return httpx.Response(200, json={"deleted": 3})
+            if request.method == "DELETE" and jid in states:
+                return httpx.Response(204)
+            return httpx.Response(404, json={"error": "?"})
+
+        c = AuthenticatedClient(base_url="http://svc", token="t", httpx_args={"transport": httpx.MockTransport(service)}, raise_on_unexpected_status=False)
+        patcher = mock.patch.object(_config, "client", lambda timeout=30.0: c)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_delete_ended(self):
+        code, out, _ = self.run_cli("job", "delete", "j-0000000001")
+        self.assertEqual(code, 0)
+        self.assertIn("gelöscht", out)
+        self.assertIn(("DELETE", "/v1/gpu/jobs/j-0000000001", {}), self.calls)
+
+    def test_delete_live_refused(self):
+        code, _, err = self.run_cli("job", "delete", "j-0000000002")
+        self.assertEqual(code, 1)
+        self.assertIn("job cancel", err)
+        self.assertNotIn("DELETE", [m for m, _, _ in self.calls])
+
+    def test_delete_all_ended(self):
+        code, out, _ = self.run_cli("job", "delete", "--ended")
+        self.assertEqual(code, 0)
+        self.assertIn("3 beendete Jobs gelöscht", out)
+        self.assertIn(("DELETE", "/v1/gpu/jobs", {"state": "ended"}), self.calls)

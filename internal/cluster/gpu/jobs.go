@@ -295,6 +295,8 @@ type JobStore interface {
 	Jobs(ctx context.Context, f JobFilter) ([]JobRecord, error)
 	Job(ctx context.Context, id string) (JobRecord, error)
 	SaveJob(ctx context.Context, r JobRecord) error
+	// DeleteJob removes the row of an ended job (succeeded, failed, cancelled); a live one (queued, running) stays and false is returned, as for an unknown id.
+	DeleteJob(ctx context.Context, id string) (bool, error)
 }
 
 // MemoryJobStore is a JobStore in memory (tests, development without a database).
@@ -333,6 +335,17 @@ func (m *MemoryJobStore) SaveJob(_ context.Context, r JobRecord) error {
 	defer m.mu.Unlock()
 	m.rows[r.ID] = r
 	return nil
+}
+
+func (m *MemoryJobStore) DeleteJob(_ context.Context, id string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok || r.live() {
+		return false, nil
+	}
+	delete(m.rows, id)
+	return true, nil
 }
 
 func (f JobFilter) match(r JobRecord) bool {
@@ -375,6 +388,11 @@ func (g *GormJobStore) Job(ctx context.Context, id string) (JobRecord, error) {
 
 func (g *GormJobStore) SaveJob(ctx context.Context, r JobRecord) error {
 	return g.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&r).Error
+}
+
+func (g *GormJobStore) DeleteJob(ctx context.Context, id string) (bool, error) {
+	res := g.db.WithContext(ctx).Where("id = ? AND state NOT IN ?", id, []string{JobQueued, JobRunning}).Delete(&JobRecord{})
+	return res.RowsAffected > 0, res.Error
 }
 
 // jobProjectLocker is a JobStore that serialises check and submit of a project's jobs across the replicas of the service (GormJobStore: a Postgres advisory lock).

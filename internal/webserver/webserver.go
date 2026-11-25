@@ -267,6 +267,7 @@ func (s *Server) jobRoutes(v1 *gin.RouterGroup) {
 	// Without requireWorkspace: a person removed from their only project still sees and cancels their own jobs, which run on; visibleJob and listJobs show only their own and those of projects they manage.
 	j := v1.Group("/gpu/jobs")
 	j.GET("", s.listJobs)
+	j.DELETE("", s.deleteEndedJobs)
 	j.GET("/:id", s.getJob)
 	j.GET("/:id/log", s.getJobLog)
 	j.GET("/:id/files", s.listJobFiles)

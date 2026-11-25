@@ -43,7 +43,7 @@ func TestMCPReadOnlyToken(t *testing.T) {
 			t.Errorf("read tool %q missing from %v", want, names)
 		}
 	}
-	for _, write := range []string{"start_server", "stop_server", "submit_job", "cancel_job"} {
+	for _, write := range []string{"start_server", "stop_server", "submit_job", "cancel_job", "delete_job"} {
 		if slices.Contains(names, write) {
 			t.Errorf("writing tool %q offered to a read-only token", write)
 		}

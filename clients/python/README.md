@@ -132,6 +132,8 @@ dhbw-cloud job status j-4f3a9c0d2e       # Einzelheiten; --json für alles
 dhbw-cloud job log j-4f3a9c0d2e          # Ende der Ausgabe (-n Zeilen)
 dhbw-cloud job log -f j-4f3a9c0d2e       # verfolgen, bis der Job endet
 dhbw-cloud job cancel j-4f3a9c0d2e       # abbrechen
+dhbw-cloud job delete j-4f3a9c0d2e       # beendeten Job aus der Liste löschen (Dateien bleiben)
+dhbw-cloud job delete --ended            # alle beendeten eigenen Jobs löschen
 dhbw-cloud job watch                     # alle eigenen wartenden und laufenden Jobs beobachten, bis sie fertig sind
 ```
 

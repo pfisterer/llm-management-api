@@ -83,7 +83,8 @@ var mcpRouteCoverage = map[string]mcptest.Route{
 	"GET /v1/gpu/jobs/:id/log":            {Tools: []string{"get_job_log"}},
 	"GET /v1/gpu/jobs/:id/files":          {Tools: []string{"list_job_files"}},
 	"GET /v1/gpu/jobs/:id/files/download": {Omitted: "streams a file's bytes (up to 5 GB), which do not belong in a model's context; the CLI dhbw-cloud downloads"},
-	"DELETE /v1/gpu/jobs/:id":             {Tools: []string{"cancel_job"}},
+	"DELETE /v1/gpu/jobs/:id":             {Tools: []string{"cancel_job", "delete_job"}},
+	"DELETE /v1/gpu/jobs":                 {Omitted: "deleting all ended jobs at once is a person's step in the UI, which shows the count and asks first; delete_job deletes one"},
 
 	"GET /v1/gpu/fleet":                {Omitted: "GPU administration (admin): pools, tiers and node assignments"},
 	"PUT /v1/gpu/fleet/nodes/:name":    {Omitted: "GPU administration (admin)"},

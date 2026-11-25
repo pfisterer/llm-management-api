@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from . import _config
-from .api.api.gpu import cancel_gpu_job, download_gpu_job_file, get_gpu_job, get_gpu_job_log, get_gpu_start_options, list_gpu_job_files, list_gpu_jobs, submit_gpu_job
+from .api.api.gpu import cancel_gpu_job, delete_ended_gpu_jobs, download_gpu_job_file, get_gpu_job, get_gpu_job_log, get_gpu_start_options, list_gpu_job_files, list_gpu_jobs, submit_gpu_job
 from .api.api.workspaces import list_workspace_projects
 from .api.models import WebserverSubmitJobRequest
 from .api.types import UNSET
@@ -35,7 +35,9 @@ Ergebnis in der Liste: eine Zeile „RESULT …“ in der Ausgabe (die letzte z�
 
 Verdrängbar trotz garantiertem Budget: --preemptible gibt die GPU für Workspaces frei.
 
-Ergebnisse ohne Workspace: dhbw-cloud job files <id>, dhbw-cloud job get <id> <pfad>. status, log und cancel ohne ID gelten dem zuletzt von hier abgeschickten Job; dhbw-cloud job watch beobachtet alle eigenen."""
+Ergebnisse ohne Workspace: dhbw-cloud job files <id>, dhbw-cloud job get <id> <pfad>. status, log, cancel und delete ohne ID gelten dem zuletzt von hier abgeschickten Job; dhbw-cloud job watch beobachtet alle eigenen.
+
+Aufräumen: dhbw-cloud job delete <id> löscht einen beendeten Job aus der Liste, dhbw-cloud job delete --ended alle beendeten eigenen (mit --project als Verwaltende alle des Projekts). Dateien in ~/jobs/<name> bleiben, die verbrauchten Stunden bleiben gebucht."""
 
 STATES = {"queued": "wartet", "running": "läuft", "succeeded": "fertig", "failed": "gescheitert", "cancelled": "abgebrochen"}
 
@@ -337,6 +339,25 @@ def cmd_cancel(args):
     print(_row(job))
 
 
+def cmd_delete(args):
+    """Delete ended jobs from the list: one by id, or with --ended all ended ones (own; with --project all of a project one manages). Files in ~/jobs/<name>/ stay; the used hours stay booked."""
+    if args.ended:
+        from .api.models.delete_ended_gpu_jobs_state import DeleteEndedGPUJobsState
+        c = _config.client()
+        project = resolve_project(args.project, _projects(c), unknown_ok=True) if args.project else UNSET
+        res = _check(delete_ended_gpu_jobs.sync_detailed(client=c, state=DeleteEndedGPUJobsState.ENDED, project=project))
+        print(f"{res.to_dict().get('deleted', 0)} beendete Jobs gelöscht")
+        return
+    job_id = _job_id(args)
+    job = _check(get_gpu_job.sync_detailed(job_id, client=_config.client()))
+    if job.to_dict().get("state") in ("queued", "running"):
+        raise Failed(f"Job {job_id} wartet oder läuft noch: erst dhbw-cloud job cancel {job_id}, dann löschen.")
+    resp = cancel_gpu_job.sync_detailed(job_id, client=_config.client())
+    if resp.status_code != 204:
+        _check(resp, ok=())
+    print(f"Job {job_id} gelöscht (Dateien in ~/jobs/ bleiben)")
+
+
 def _watch_line(j):
     """What `job watch` compares between two looks at a job: its state, place in the queue, evictions and result."""
     d = j.to_dict()
@@ -484,6 +505,11 @@ def main(argv=None):
     s = jobs.add_parser("cancel", help="Job abbrechen")
     s.add_argument("id", nargs="?", help="Job-ID; Standard der zuletzt von hier abgeschickte Job")
     s.set_defaults(func=cmd_cancel)
+    s = jobs.add_parser("delete", help="Beendeten Job aus der Liste löschen (Dateien bleiben); --ended: alle beendeten")
+    s.add_argument("id", nargs="?", help="Job-ID; Standard der zuletzt von hier abgeschickte Job")
+    s.add_argument("--ended", action="store_true", help="alle beendeten eigenen Jobs löschen")
+    s.add_argument("--project", help="mit --ended: alle beendeten Jobs dieses Projekts (als Verwaltende)")
+    s.set_defaults(func=cmd_delete)
     args = p.parse_args(argv)
     if getattr(args, "command", None) and args.command[:1] == ["--"]:
         args.command = args.command[1:]

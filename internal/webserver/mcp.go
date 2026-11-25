@@ -548,6 +548,26 @@ func (s *Server) registerJobTools(srv *mcp.Server, cl mcpCaller) {
 		}
 		return nil, j, nil
 	})
+
+	mcpserve.AddTool(srv, cl, true, &mcp.Tool{
+		Name:        "delete_job",
+		Description: "Delete an ended batch job (succeeded, failed, cancelled) from the list. The accounting is not touched (what it used stays booked in the usage), files it wrote stay in ~/jobs/<name>/. A waiting or running job is refused: cancel it first with cancel_job. The caller's own jobs, and those of projects they manage.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJobInput) (*mcp.CallToolResult, mcpDeleteJobOutput, error) {
+		j, err := visibleJob(ctx, s.ws, s.gpu, a, in.ID)
+		if err != nil {
+			return nil, mcpDeleteJobOutput{}, s.mcpFail(jobErrors, "delete", err)
+		}
+		s.log.Infow("MCP delete_job", "actor", cl.actorEmail(), "user", cl.Email, "job", j.ID)
+		if err := s.gpu.DeleteJob(ctx, j.ID, a.person); err != nil {
+			return nil, mcpDeleteJobOutput{}, s.mcpFail(jobErrors, "delete", err)
+		}
+		return nil, mcpDeleteJobOutput{Deleted: j.ID}, nil
+	})
+}
+
+// mcpDeleteJobOutput names the job delete_job removed.
+type mcpDeleteJobOutput struct {
+	Deleted string `json:"deleted" jsonschema:"id of the deleted job"`
 }
 
 // actorEmail is who really calls, for the log: the admin acting on behalf, else the person.
