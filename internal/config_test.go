@@ -7,7 +7,7 @@ import (
 
 // validKeyConfig is the smallest configuration validate accepts (development mode, no role provider over HTTP, no GPU).
 func validKeyConfig() Config {
-	return Config{DevMode: true, LiteLLMURL: "http://litellm-backend:4001", LiteLLMMasterKey: "m", MaxKeysPerUser: 5, LLMKeyBudgetShare: 0.05, LLMKeyBudgetWindow: "4h", APITokenTTLHours: 24, APITokenMaxTTLHours: 8760, MaxAPITokensPerUser: 10}
+	return Config{DevMode: true, LiteLLMURL: "http://litellm-backend:4001", LiteLLMMasterKey: "m", MaxKeysPerUser: 5, LLMKeyBudgetShare: 0.05, LLMDollarsPerMTokens: 0.5, LLMKeyBudgetWindow: "4h", APITokenTTLHours: 24, APITokenMaxTTLHours: 8760, MaxAPITokensPerUser: 10}
 }
 
 func TestValidateKeyLimits(t *testing.T) {

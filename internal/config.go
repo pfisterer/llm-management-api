@@ -95,8 +95,10 @@ type Config struct {
 	LLMDefaultTPM int
 	LLMBaseModels []string
 	// Every key's short-term safety budget: this share of its project's budget per window.
-	LLMKeyBudgetShare  float64
-	LLMKeyBudgetWindow string
+	LLMKeyBudgetShare float64
+	// LLMDollarsPerMTokens is the reference price of a million tokens in LiteLLM's money (keys.DollarsPerMTokens).
+	LLMDollarsPerMTokens float64
+	LLMKeyBudgetWindow   string
 	// How often LiteLLM's teams (one per project), quotas and keys are brought in step with the tree (besides right after each change from the tree).
 	BudgetSyncInterval time.Duration
 
@@ -236,6 +238,11 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("LLM_KEY_BUDGET_SHARE is not a number: %w", err)
 	}
 	cfg.LLMKeyBudgetShare = share
+	price, err := strconv.ParseFloat(envconf.String("LLM_DOLLARS_PER_MTOKENS", "0.5"), 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("LLM_DOLLARS_PER_MTOKENS is not a number: %w", err)
+	}
+	cfg.LLMDollarsPerMTokens = price
 	cfg.SelfServiceURL = envconf.String("SELF_SERVICE_URL", "")
 	cfg.BudgetSyncInterval = time.Duration(envconf.Int("BUDGET_SYNC_SECONDS", 600)) * time.Second
 	cfg.APITokenTTLHours = envconf.Int("API_TOKEN_TTL_HOURS", 24)
@@ -277,6 +284,9 @@ func (c Config) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing configuration: %s", strings.Join(missing, ", "))
+	}
+	if c.LLMDollarsPerMTokens <= 0 {
+		return fmt.Errorf("LLM_DOLLARS_PER_MTOKENS must be more than 0 (got %v)", c.LLMDollarsPerMTokens)
 	}
 	if c.LLMKeyBudgetShare <= 0 || c.LLMKeyBudgetShare > 1 {
 		return fmt.Errorf("LLM_KEY_BUDGET_SHARE must be more than 0 and at most 1 (got %v)", c.LLMKeyBudgetShare)

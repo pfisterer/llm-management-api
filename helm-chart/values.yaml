@@ -80,6 +80,8 @@ config:
   llmDefaultTpm: 200000
   llmBaseModels: [chat-default, chat-fast, code, agent, embedding]
   llmKeyBudgetShare: "0.05"
+  # Reference price of a million tokens in LiteLLM's money: tree amounts are converted to a team budget with it, spend back into tokens. 0.5 = the default model's input price (modelPricing.default in aiaas-deployment); since 25.11.2026, before 0.1 (keys.DollarsPerMTokens).
+  llmDollarsPerMTokens: "0.5"
   llmKeyBudgetWindow: 4h
   selfServiceUrl: ""
 

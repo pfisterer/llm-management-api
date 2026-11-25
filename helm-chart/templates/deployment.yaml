@@ -107,6 +107,7 @@ spec:
             - {name: LLM_DEFAULT_TPM, value: {{ .Values.config.llmDefaultTpm | int64 | quote }}}
             - {name: LLM_BASE_MODELS, value: {{ join "," .Values.config.llmBaseModels | quote }}}
             - {name: LLM_KEY_BUDGET_SHARE, value: {{ .Values.config.llmKeyBudgetShare | quote }}}
+            - {name: LLM_DOLLARS_PER_MTOKENS, value: {{ .Values.config.llmDollarsPerMTokens | quote }}}
             - {name: LLM_KEY_BUDGET_WINDOW, value: {{ .Values.config.llmKeyBudgetWindow | quote }}}
             - {name: SELF_SERVICE_URL, value: {{ .Values.config.selfServiceUrl | quote }}}
             - name: TREE_API_TOKEN

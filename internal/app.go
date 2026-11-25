@@ -435,6 +435,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	if gpuSvc != nil {
 		aliasView.SetEngines(gpuSvc.ServedEngines)
 	}
+	keys.DollarsPerMTokens = cfg.LLMDollarsPerMTokens
 	keySvc := keys.NewService(lite, cfg.MaxKeysPerUser, keys.KeyBudget{Share: cfg.LLMKeyBudgetShare, Window: cfg.LLMKeyBudgetWindow})
 	if wsSvc != nil {
 		// The tree reads what a project used of its LLM tokens from the project's team.

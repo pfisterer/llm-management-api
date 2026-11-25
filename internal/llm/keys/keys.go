@@ -26,8 +26,10 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
 )
 
-// DollarsPerMTokens is what a million tokens cost in LiteLLM's budgets here: every model is priced at 1e-7 per token, so a budget in "dollars" is a token budget.
-const DollarsPerMTokens = 0.1
+// DollarsPerMTokens is the reference price of a million tokens in LiteLLM's budgets: what the budget tree's token amounts (llm_mtokens) are converted to a team's money budget with, and spend back into tokens. Set at startup from LLM_DOLLARS_PER_MTOKENS (chart config.llmDollarsPerMTokens).
+//
+// Until 25.11.2026 it was 0.1 on the assumption that every model costs 1e-7 per token; LiteLLM prices the models per input and output token (aiaas-deployment, modelPricing), the default model (code, agent) at 5e-7 input and 1.5e-6 output, so a "million tokens" in the portal bought about a fifth of that. The reference price is now 0.5 per million — the default model's input price, close to the measured mix on staging (6.5 M tokens for 3.36, 0.52 per million, nearly all input): a token in the portal is a real token of the default model; a dearer model (chat-default, chat-large) uses up the budget faster, as the portal says. The budget tree converted its stored amounts at the same time (openstack-management-api, llm-mtokens × 0.2), so every money budget stayed what it was.
+var DollarsPerMTokens = 0.5
 
 // PoolWindow is the window of a pool's budget; the team's spend resets after it.
 const PoolWindow = usage.LLMWindow
