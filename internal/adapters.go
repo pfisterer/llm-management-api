@@ -2,10 +2,15 @@ package app
 
 import (
 	"context"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/pfisterer/llm-management-api/internal/cluster/gpu"
 	"github.com/pfisterer/llm-management-api/internal/cluster/usage"
 	"github.com/pfisterer/llm-management-api/internal/cluster/workspace"
+	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/llm/usageprofiles"
 )
 
 // The GPU part (package gpu) knows the cluster, the workspace part (package workspace) the projects, and usage the booking; neither imports the other's view of a pod. The mappings between them live here, in one place, rather than inline in run().
@@ -88,4 +93,48 @@ func workspaceGPUClasses(g *gpu.Service) func(ctx context.Context) ([]workspace.
 		}
 		return out, err
 	}
+}
+
+// spendSource reads LiteLLM's spend logs as rows of the usage profiles: successful requests of keys under a model alias, without LiteLLM's own health checks.
+type spendSource struct{ lite *litellm.Client }
+
+func (s spendSource) SpendRows(ctx context.Context, from, to time.Time) ([]usageprofiles.Row, error) {
+	logs, err := s.lite.SpendLogs(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]usageprofiles.Row, 0, len(logs))
+	for _, l := range logs {
+		if l.Status != "" && !strings.EqualFold(l.Status, "success") {
+			continue
+		}
+		if l.TeamAlias() == "litellm-internal-health-check" {
+			continue
+		}
+		start, ok := litellm.SpendTime(l.StartTime)
+		if !ok {
+			continue
+		}
+		end, _ := litellm.SpendTime(l.EndTime)
+		alias := l.ModelGroup
+		if alias == "" {
+			alias = l.Model
+		}
+		out = append(out, usageprofiles.Row{Key: l.APIKey, Alias: alias, Input: l.PromptTokens, Output: l.CompletionTokens, Start: start, End: end, UserAgent: l.UserAgent()})
+	}
+	return out, nil
+}
+
+// keyWindowHours is the key budget's window (LLM_KEY_BUDGET_WINDOW, e.g. 4h or 1d) in whole hours, 4 when it cannot be read.
+func keyWindowHours(w string) int {
+	w = strings.TrimSpace(w)
+	if d, err := time.ParseDuration(w); err == nil && d >= time.Hour {
+		return int(d / time.Hour)
+	}
+	if n, ok := strings.CutSuffix(w, "d"); ok {
+		if days, err := strconv.Atoi(n); err == nil && days > 0 {
+			return days * 24
+		}
+	}
+	return 4
 }

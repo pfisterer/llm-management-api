@@ -31,6 +31,7 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
+	"github.com/pfisterer/llm-management-api/internal/llm/usageprofiles"
 	"github.com/pfisterer/llm-management-api/internal/llm/modeldesc"
 	"github.com/pfisterer/llm-management-api/internal/platform/background"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
@@ -450,6 +451,11 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		budgets = webserver.NewBudgetSync(webserver.BudgetSync{Lite: lite, Keys: keySvc, Access: accessSvc, Quota: quota, Interval: cfg.BudgetSyncInterval, Log: log})
 		onTree = budgets.Nudge
 	}
+	// The usage profiles: LiteLLM's spend logs of the last days, reduced to aggregates per model alias, computed now and then every USAGE_PROFILES_INTERVAL_HOURS (nightly), never per request.
+	var profiles *usageprofiles.Service
+	if cfg.UsageProfileDays > 0 && cfg.TreeToken != "" {
+		profiles = &usageprofiles.Service{Source: spendSource{lite}, Days: cfg.UsageProfileDays, MinKeys: cfg.UsageProfileMinKeys, WindowHours: keyWindowHours(cfg.LLMKeyBudgetWindow)}
+	}
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
 		DevAuthUser:  cfg.DevAuthUser,
@@ -466,6 +472,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Keys:         keySvc,
 		Quota:        quota,
 		TreeToken:    cfg.TreeToken,
+		Profiles:     profiles,
 		OnTreeChange: onTree,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
@@ -532,6 +539,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	// Every background loop runs through package background (the Start methods too): a panic is logged and counted (aiaas_background_panics_total) and the loop goes on at its next tick.
 	if budgets != nil {
 		budgets.Start(ctx)
+	}
+	if profiles != nil {
+		background.Every(ctx, log, "usage_profiles", time.Duration(cfg.UsageProfileIntervalHours)*time.Hour, true, func(ctx context.Context) {
+			if err := profiles.Refresh(ctx); err != nil {
+				log.Warnw("usage profiles not computed", "error", err)
+			}
+		})
 	}
 	if gpuSvc != nil {
 		// Workspace usage (docs/bauplan.md, Stufe 4 W1): every minute what the running workspace pods reserve, booked per day, project, person, profile and GPU class.

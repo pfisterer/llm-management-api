@@ -48,6 +48,8 @@ type Options struct {
 	Gateway string
 	// TreeToken lets the budget tree (resource-management-api) manage its projects under /v1/tree; empty = off.
 	TreeToken string
+	// Profiles are the usage profiles of the LLM gateway (GET /v1/usage-profiles, with the tree's token); nil = off.
+	Profiles ProfileReport
 	// OnTreeChange runs after the tree created, changed or removed a project (the budget sync's nudge); nil = nothing.
 	OnTreeChange func()
 	Fleet        *fleet.Service
@@ -81,6 +83,7 @@ type Server struct {
 	master   string
 	gateway  string
 	treeTok  string
+	profiles ProfileReport
 	onTree   func()
 	fleet    *fleet.Service
 	health   fleet.HealthSource
@@ -105,7 +108,7 @@ func New(o Options) *Server {
 		probes = &ginweb.Health{}
 	}
 	return &Server{probes: probes, tokens: tokens, devMode: o.DevMode, devUser: strings.ToLower(strings.TrimSpace(o.DevAuthUser)), version: o.Version, swagger: o.SwaggerJSON, chatURL: o.ChatURL, apiURL: o.APIURL, adminUI: o.AdminUIURL,
-		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, master: o.MasterKey, gateway: o.Gateway, treeTok: o.TreeToken, onTree: o.OnTreeChange,
+		verifier: o.Verifier, access: o.Access, keys: o.Keys, quota: o.Quota, master: o.MasterKey, gateway: o.Gateway, treeTok: o.TreeToken, profiles: o.Profiles, onTree: o.OnTreeChange,
 		fleet: o.Fleet, health: o.Health, material: o.Material, aliases: o.Aliases, gpu: o.GPU, usage: o.Usage, ws: o.Workspaces, log: o.Log}
 }
 
@@ -199,6 +202,11 @@ func (s *Server) Router() *gin.Engine {
 		t.PUT("/projects/:node", s.putTreeProject)
 		t.DELETE("/projects/:node", s.deleteTreeProject)
 		t.GET("/catalog", s.getTreeCatalog)
+	}
+
+	if s.profiles != nil && s.treeTok != "" {
+		// Aggregates only, for the resource estimator of the budget tree, by the tree's token.
+		r.GET("/v1/usage-profiles", ginweb.DisableCaching(), s.requireTreeToken, s.getUsageProfiles)
 	}
 
 	if s.gpu != nil && s.usage != nil && s.ws != nil {

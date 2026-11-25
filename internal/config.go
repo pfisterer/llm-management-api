@@ -96,6 +96,10 @@ type Config struct {
 	LLMBaseModels []string
 	// Every key's short-term safety budget: this share of its project's budget per window.
 	LLMKeyBudgetShare float64
+	// The usage profiles of the LLM gateway (GET /v1/usage-profiles): the days read from LiteLLM's spend logs (0 = off), the distinct keys a figure needs, the hours between two computations.
+	UsageProfileDays          int
+	UsageProfileMinKeys       int
+	UsageProfileIntervalHours int
 	// LLMDollarsPerMTokens is the reference price of a million tokens in LiteLLM's money (keys.DollarsPerMTokens).
 	LLMDollarsPerMTokens float64
 	LLMKeyBudgetWindow   string
@@ -229,6 +233,9 @@ func LoadConfig() (Config, error) {
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	cfg.GroupDirsRemove = envconf.Bool("WORKSPACE_GROUP_DIRS_REMOVE", false)
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
+	cfg.UsageProfileDays = envconf.Int("USAGE_PROFILES_DAYS", 14)
+	cfg.UsageProfileMinKeys = max(envconf.Int("USAGE_PROFILES_MIN_KEYS", 5), 1)
+	cfg.UsageProfileIntervalHours = max(envconf.Int("USAGE_PROFILES_INTERVAL_HOURS", 24), 1)
 	cfg.LLMDefaultRPM = envconf.Int("LLM_DEFAULT_RPM", 60)
 	cfg.LLMDefaultTPM = envconf.Int("LLM_DEFAULT_TPM", 200000)
 	cfg.LLMBaseModels = envconf.StringSlice("LLM_BASE_MODELS", []string{"chat-default", "chat-fast", "code", "agent", "embedding"})

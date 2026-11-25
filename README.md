@@ -188,6 +188,7 @@ Never stored: the person's identity — only the HMAC-SHA256 pseudonym under `RE
 | `LITELLM_UI_USERNAME`, `LITELLM_UI_PASSWORD` | shared LiteLLM UI account for the autologin |
 | `LLM_DEFAULT_RPM`, `LLM_DEFAULT_TPM` | requests and tokens per minute of a project for which the tree sets none, default 60 and 200000 (0 = no limit) |
 | `LLM_BASE_MODELS` | model groups every project may use, comma-separated, default `chat-default,chat-fast,code,agent,embedding` (the stable aliases); the tree adds more per project |
+| `USAGE_PROFILES_DAYS`, `USAGE_PROFILES_MIN_KEYS`, `USAGE_PROFILES_INTERVAL_HOURS` | the usage profiles of the LLM gateway for the budget tree's resource estimator (`GET /v1/usage-profiles`, with `TREE_API_TOKEN`): the days of LiteLLM's spend logs read (default `14`, `0` = off), the distinct keys an alias or figure needs (default `5`, fewer = left out), the hours between two computations (default `24`); only aggregates per model alias, nothing per person, key, team or project |
 | `LLM_KEY_BUDGET_SHARE`, `LLM_KEY_BUDGET_WINDOW` | every key's short-term budget: this share of its project's budget per window, default `0.05` per `4h` (the window at most `30d`) |
 | `MAX_KEYS_PER_USER` | own keys per person, default 5, at most 20 |
 | `TREE_API_TOKEN` | the budget tree's token for `/v1/tree`; empty = no tree API |
