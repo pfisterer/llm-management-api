@@ -25,6 +25,10 @@ type ProfileReport interface {
 //	@Failure		503	{object}	ErrorResponse
 //	@Router			/v1/usage-profiles [get]
 func (s *Server) getUsageProfiles(c *gin.Context) {
+	if s.profiles == nil {
+		abortMachine(c, http.StatusServiceUnavailable, "disabled", "Die Nutzungsprofile sind abgeschaltet.")
+		return
+	}
 	rep, ok := s.profiles.Report()
 	if !ok {
 		abortMachine(c, http.StatusServiceUnavailable, "not_ready", "Die Nutzungsprofile sind noch nicht berechnet.")

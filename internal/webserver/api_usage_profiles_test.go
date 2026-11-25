@@ -39,6 +39,11 @@ func TestUsageProfilesAPI(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(out, `"alias":"code"`) || !strings.Contains(out, `"median":13000`) {
 		t.Errorf("profiles: %d %s", code, out)
 	}
+	// Switched off (USAGE_PROFILES_ENABLED false): 503, for the estimator to use its own profiles.
+	h = New(Options{DevMode: true, DevAuthUser: testDevUser, TreeToken: "tree-secret", Log: zap.NewNop().Sugar()}).Router()
+	if code, _ := treeDo(h, "GET", "/v1/usage-profiles", "tree-secret", ""); code != http.StatusServiceUnavailable {
+		t.Errorf("switched off: %d, want 503", code)
+	}
 	// Without a tree token the route does not exist.
 	h = New(Options{DevMode: true, DevAuthUser: testDevUser, Profiles: *p, Log: zap.NewNop().Sugar()}).Router()
 	if code, _ := treeDo(h, "GET", "/v1/usage-profiles", "", ""); code != http.StatusNotFound && code != http.StatusUnauthorized {

@@ -54,6 +54,7 @@ var mcpRouteCoverage = map[string]mcptest.Route{
 	"GET /v1/tree/projects":                                       {Omitted: "machine API of the budget tree with its own token, not a person's"},
 	"PUT /v1/tree/projects/:node":                                 {Omitted: "machine API of the budget tree with its own token, not a person's"},
 	"DELETE /v1/tree/projects/:node":                              {Omitted: "machine API of the budget tree with its own token, not a person's"},
+	"GET /v1/usage-profiles":                                      {Omitted: "machine API of the budget tree with its own token, not a person's"},
 	"GET /v1/tree/catalog":                                        {Omitted: "machine API of the budget tree with its own token, not a person's"},
 	"GET /v1/workspaces/usage/me":                                 {Tools: []string{"get_my_workspace_usage"}},
 	"GET /v1/workspaces/usage":                                    {Tools: []string{"get_project_usage"}},

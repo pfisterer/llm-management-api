@@ -96,7 +96,8 @@ type Config struct {
 	LLMBaseModels []string
 	// Every key's short-term safety budget: this share of its project's budget per window.
 	LLMKeyBudgetShare float64
-	// The usage profiles of the LLM gateway (GET /v1/usage-profiles): the days read from LiteLLM's spend logs (0 = off), the distinct keys a figure needs, the hours between two computations.
+	// The usage profiles of the LLM gateway (GET /v1/usage-profiles): whether they are computed at all (USAGE_PROFILES_ENABLED, default false: the computation reads the spend logs into memory, which a large LiteLLM database does not fit; off, the endpoint answers 503 and the estimator uses its own profiles), the days read from LiteLLM's spend logs (0 = off), the distinct keys a figure needs, the hours between two computations.
+	UsageProfilesEnabled      bool
 	UsageProfileDays          int
 	UsageProfileMinKeys       int
 	UsageProfileIntervalHours int
@@ -233,6 +234,7 @@ func LoadConfig() (Config, error) {
 	cfg.GPUHubToken = envconf.String("GPU_HUB_TOKEN", "")
 	cfg.GroupDirsRemove = envconf.Bool("WORKSPACE_GROUP_DIRS_REMOVE", false)
 	cfg.TreeToken = envconf.String("TREE_API_TOKEN", "")
+	cfg.UsageProfilesEnabled = envconf.Bool("USAGE_PROFILES_ENABLED", false)
 	cfg.UsageProfileDays = envconf.Int("USAGE_PROFILES_DAYS", 14)
 	cfg.UsageProfileMinKeys = max(envconf.Int("USAGE_PROFILES_MIN_KEYS", 5), 1)
 	cfg.UsageProfileIntervalHours = max(envconf.Int("USAGE_PROFILES_INTERVAL_HOURS", 24), 1)

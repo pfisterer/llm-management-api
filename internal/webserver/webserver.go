@@ -204,8 +204,8 @@ func (s *Server) Router() *gin.Engine {
 		t.GET("/catalog", s.getTreeCatalog)
 	}
 
-	if s.profiles != nil && s.treeTok != "" {
-		// Aggregates only, for the resource estimator of the budget tree, by the tree's token.
+	if s.treeTok != "" {
+		// Aggregates only, for the resource estimator of the budget tree, by the tree's token. Switched off (USAGE_PROFILES_ENABLED false) it answers 503, like before the first computation.
 		r.GET("/v1/usage-profiles", ginweb.DisableCaching(), s.requireTreeToken, s.getUsageProfiles)
 	}
 

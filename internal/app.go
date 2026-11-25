@@ -31,8 +31,8 @@ import (
 	"github.com/pfisterer/llm-management-api/internal/llm/fleet"
 	"github.com/pfisterer/llm-management-api/internal/llm/keys"
 	"github.com/pfisterer/llm-management-api/internal/llm/litellm"
-	"github.com/pfisterer/llm-management-api/internal/llm/usageprofiles"
 	"github.com/pfisterer/llm-management-api/internal/llm/modeldesc"
+	"github.com/pfisterer/llm-management-api/internal/llm/usageprofiles"
 	"github.com/pfisterer/llm-management-api/internal/platform/background"
 	"github.com/pfisterer/llm-management-api/internal/platform/oci"
 	"github.com/pfisterer/llm-management-api/internal/platform/ttlcache"
@@ -453,8 +453,13 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 	}
 	// The usage profiles: LiteLLM's spend logs of the last days, reduced to aggregates per model alias, computed now and then every USAGE_PROFILES_INTERVAL_HOURS (nightly), never per request.
 	var profiles *usageprofiles.Service
-	if cfg.UsageProfileDays > 0 && cfg.TreeToken != "" {
+	if cfg.UsageProfilesEnabled && cfg.UsageProfileDays > 0 && cfg.TreeToken != "" {
 		profiles = &usageprofiles.Service{Source: spendSource{lite}, Days: cfg.UsageProfileDays, MinKeys: cfg.UsageProfileMinKeys, WindowHours: keyWindowHours(cfg.LLMKeyBudgetWindow)}
+	}
+	// An interface holding a nil *Service is not nil: hand the server a real nil when the profiles are off, so it answers 503 instead of calling a nil service.
+	var profileReport webserver.ProfileReport
+	if profiles != nil {
+		profileReport = profiles
 	}
 	srv := webserver.New(webserver.Options{
 		DevMode:      cfg.DevMode,
@@ -472,7 +477,7 @@ func run(cfg Config, log *zap.SugaredLogger) error {
 		Keys:         keySvc,
 		Quota:        quota,
 		TreeToken:    cfg.TreeToken,
-		Profiles:     profiles,
+		Profiles:     profileReport,
 		OnTreeChange: onTree,
 		Fleet:        fleetSvc,
 		Health:       webserver.LiteLLMHealth(lite),
