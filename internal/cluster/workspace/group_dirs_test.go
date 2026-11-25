@@ -75,6 +75,13 @@ func TestGroupDirPlanFor(t *testing.T) {
 	if g := member[0].Groups[0]; g.UsedGiB != nil {
 		t.Fatalf("member sees the size: %+v", g)
 	}
+	// Who else is in the project is the managers' to see: a member gets only their own entry.
+	if len(member[0].Members) != 1 || member[0].Members[0].Token != "user:a@dhbw.de" {
+		t.Fatalf("member sees the other members: %+v", member[0].Members)
+	}
+	if len(mine[0].Members) != 2 {
+		t.Fatalf("manager misses members: %+v", mine[0].Members)
+	}
 	// A size a client sends is never stored.
 	p, _ := s.Get(ctx, "kurs")
 	x := 99.0

@@ -330,9 +330,10 @@ func (s *Service) ForPerson(ctx context.Context, tokens []string, person string,
 		if m.Areas == nil {
 			m.Areas = []Area{}
 		}
-		// Who is in which group is the managers' business: everybody else sees only the groups they belong to, and not who changed the project last (during the group choice, who chose last).
+		// Who is in which group is the managers' business: everybody else sees only the groups they belong to, and not who changed the project last (during the group choice, who chose last). Nor who else is in the project: of the members only their own entries (the person, or a group they are in), as the budget tree shows a project to its members.
 		if role != RoleManager && role != "admin" {
 			m.Groups = slices.DeleteFunc(slices.Clone(m.Groups), func(g Group) bool { return g.Archived || !g.inGroup(tokens) })
+			m.Members = slices.DeleteFunc(slices.Clone(m.Members), func(x Member) bool { return !slices.Contains(tokens, x.Token) })
 			m.UpdatedBy = ""
 		} else {
 			// What each group's folder holds, so removing one (which deletes its folder) is not a surprise.
